@@ -1,0 +1,12 @@
+# Rust build artifacts
+/target
+
+# Logs
+*.log
+
+# OS noise
+.DS_Store
+Thumbs.db
+
+# Local runtime state (never commit personal download state)
+.harbor/
