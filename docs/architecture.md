@@ -3,7 +3,7 @@
 > Status: design document for the intended implementation. The repo has no code
 > yet; nothing here describes shipped behavior.
 >
-> Contract: `C:/tmp/harbour-context.md` is the single source of truth. Every
+> Contract: `docs/context.md` is the single source of truth. Every
 > name, keybind, and decision below is normative. Identifiers follow Rust
 > snake_case (`info_hash`, `size_bytes`, `reports_health`).
 
