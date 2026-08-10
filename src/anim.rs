@@ -256,10 +256,13 @@ mod tests {
 
         std::thread::sleep(first);
 
-        // Second frame, top of loop: elapsed() reports the period just paced.
+        // Second frame, top of loop: elapsed() reports the period just
+        // paced. Sleep never returns early, so the floor is the paced period
+        // itself; the ceiling is deliberately loose because loaded CI runners
+        // can oversleep a 33ms frame 2-3x (macOS runner measured 62ms).
         let dt = ticker.elapsed();
         assert!(
-            (dt.as_secs_f64() - first.as_secs_f64()).abs() < 0.025,
+            dt >= first - slack && dt < Duration::from_millis(200),
             "elapsed {dt:?} vs paced {first:?}"
         );
 
