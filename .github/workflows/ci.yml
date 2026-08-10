@@ -7,13 +7,24 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    # NFR-08 names Windows Terminal as the primary target, FR-06 resolves
+    # %USERPROFILE% vs $HOME, and FR-55 requires same-volume atomic rename.
+    # Path resolution, rename semantics and file locking are exactly what differs
+    # per-OS, so the matrix has to exist before persistence lands, not after.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
       - run: cargo build --all-targets
       - run: cargo test --all-targets
       - run: cargo clippy --all-targets -- -D warnings
+      # Formatting is platform-independent; running it once keeps the matrix cheap.
       - run: cargo fmt --check
+        if: matrix.os == 'ubuntu-latest'
