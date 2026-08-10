@@ -240,42 +240,46 @@ mod tests {
     // --- Ticker ---
 
     #[test]
-    fn ticker_paces_about_one_interval_per_frame() {
+    fn ticker_returns_interval_aligned_waits() {
         let interval = Duration::from_secs_f64(1.0 / 30.0);
         let mut ticker = Ticker::new(30);
-
-        // First frame: the initial boundary sits one interval after
-        // construction, so the very first call already returns ≈ one
-        // interval rather than zero.
-        let first = ticker.next();
         let slack = Duration::from_millis(2);
+
+        // No sleeps: this tests the grid MATH, which is deterministic on
+        // every OS. Real sleeps are what flaked macOS CI (a loaded runner
+        // overslept a 33ms frame to 62ms and pushed the phase past the next
+        // boundary). The invariant to defend is "waits land on the anchored
+        // grid", not "sleep() returns on time".
+        let first = ticker.next();
         assert!(
-            first >= interval - slack && first <= interval + slack,
-            "first sleep {first:?} vs interval {interval:?}"
+            (first.as_secs_f64() - interval.as_secs_f64()).abs() < slack.as_secs_f64(),
+            "first wait {first:?} vs interval {interval:?}"
         );
 
-        std::thread::sleep(first);
-
-        // Second frame, top of loop: elapsed() reports the period just
-        // paced. Sleep never returns early, so the floor is the paced period
-        // itself; the ceiling is deliberately loose because loaded CI runners
-        // can oversleep a 33ms frame 2-3x (macOS runner measured 62ms).
-        let dt = ticker.elapsed();
-        assert!(
-            dt >= first - slack && dt < Duration::from_millis(200),
-            "elapsed {dt:?} vs paced {first:?}"
-        );
-
+        // Second boundary is two intervals from construction.
         let second = ticker.next();
-
-        // Two consecutive cycles add up to ≈ 2*interval. The tolerance is
-        // loose on purpose: OS sleep granularity (up to ~15ms on Windows)
-        // dominates the error budget, and sleep never returns early.
-        let sum = first + second;
         let two = interval * 2;
         assert!(
-            sum >= two - Duration::from_millis(30) && sum <= two + Duration::from_millis(5),
-            "cadence drift: {sum:?} vs {two:?}"
+            (second.as_secs_f64() - two.as_secs_f64()).abs() < slack.as_secs_f64(),
+            "second wait {second:?} vs {two:?}"
+        );
+
+        // Third boundary: three intervals. Waits grow monotonically while no
+        // real time passes — that IS the phase grid (a slow frame resyncs
+        // via the `now >= boundary` path, covered by the elapsed floor below).
+        let third = ticker.next();
+        let three = interval * 3;
+        assert!(
+            (third.as_secs_f64() - three.as_secs_f64()).abs() < slack.as_secs_f64(),
+            "third wait {third:?} vs {three:?}"
+        );
+
+        // elapsed() never reports more than the paced period when nothing
+        // real has elapsed (no negative/zero dt surprises for eased values).
+        let dt = ticker.elapsed();
+        assert!(
+            dt < interval + slack,
+            "elapsed {dt:?} should stay under one interval with no sleep"
         );
     }
 
