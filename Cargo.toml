@@ -1,0 +1,9 @@
+[package]
+name = "harbour"
+version = "0.1.0"
+edition = "2024"
+description = "Curated torrents straight from your terminal"
+license = "MIT"
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }

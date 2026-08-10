@@ -1,12 +1,8 @@
-# Rust build artifacts
 /target
-
-# Logs
+**/*.rs.bk
+*.swp
+.env
+.env.*
+!.env.example
 *.log
-
-# OS noise
 .DS_Store
-Thumbs.db
-
-# Local runtime state (never commit personal download state)
-.harbor/
