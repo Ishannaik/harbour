@@ -140,3 +140,179 @@ You've already got that right.
 Lazy 1337x magnets (§1) is the only one I'd genuinely push for; `429` (§2) is a
 five-line fix; §3 is three questions, not requests. Everything else in
 `docs/sources.md` I'd have written the same way.
+
+---
+---
+
+# Dhruv's reply — confirmation + detailed answers
+
+> From Dhruv (Sources & Cache), 2026-08-10.
+
+## Confirmation — everything checks out
+
+Confirmed against the docs, the SPEC, and the code on the `sources/*` branches as
+it stands: §3.4's detail-page magnets, §6's no-retry-on-4xx, §5's
+`NON_ALPHANUMERIC` encoding, and §7's negative caching are all written down in
+`docs/sources.md` *and* implemented in the shared fetch layer (`net.rs`), the
+magnet builder (`magnet.rs`, pinned by tests) and the cache scaffolding
+(`cache.rs`). Current state of the track:
+
+- **fetch layer** — `SourceClient` (reqwest + rustls, browser UA, per-source
+  cookie jar, 10 s timeout), 2 retries at exponential backoff (200→400→800 ms),
+  every 4xx mapped to `SourceError::Blocked` and never retried, `fetch_first_ok`
+  rotating across mirror hosts (including on 429) — `net.rs`.
+- **magnets** — `build_magnet` lowercases the 40-hex hash and percent-encodes
+  `dn` with `NON_ALPHANUMERIC`; tests cover `&`, `.` and Unicode in titles.
+- **hash / size helpers** — `parse::magnet_info_hash` (lowercase 40-hex from any
+  text) and `parse::parse_size_bytes` (SI + IEC), unit-tested.
+- **registry** — all 10 sources pinned by the matrix test, `reports_health =
+  false` for FitGirl and SubsPlease; 22 tests green, `clippy -D warnings` clean.
+- **scrapers** — being built in three parallel workstreams (RSS first —
+  EZTV/Nyaa/SubsPlease — then JSON YTS/TPB, then HTML 1337x/FitGirl/BitTorrented),
+  each shipping real captured fixtures only (AGENTS rule 7).
+
+So: no corrections needed — your read and mine are the same. Detailed answers
+below, numbered to match your notes.
+
+## Reply to §1 — lazy 1337x magnets
+
+Agreed on the root cause: request count — not parse time — is the only latency
+lever on this shape, and 1337x registered twice is the worst tail in the search
+path. I verified your "sixteen requests" worst case against `plan-engine.md` §A
+and it's accurate (list + ~4 detail pages, ×2 sources, ×retry). Two answers:
+
+1. **Lazy detail fetch — yes, and I will *not* work around it in the scraper.**
+   This is exactly the shared-types question you named. The 1337x adapter ships
+   per the current public contract, where `TorrentResult.magnet: String` must be
+   populated at search time, so it starts with §3.4's bounded, deduplicated
+   follow-up loop (list → max N detail pages, deduped by detail URL, throttled,
+   one session). The moment the phase-1 freeze lands a "magnet present or
+   resolvable on demand" shape, the adapter drops its follow-up loop entirely and
+   the *engine's* session resolves the magnet on `d`/selection. I'm keeping the
+   adapter's internals (row parsing → display fields) cleanly separated from
+   magnet resolution so that cut is a deletion, not a rewrite. Please shape the
+   type so a *displayable* row never requires the magnet — that's the one half I
+   genuinely can't ship from the scraper side.
+2. **One shared fetch for both 1337x sources — worth it, with one condition.**
+   Category narrowing is server-side (a separate search path per category), so
+   today the two sources already hit two URLs. But the site-wide
+   `/search/<q>/...` results table carries per-row category info on the mirrors
+   I know; if the first fixture confirms that, the two sources share ONE fetch
+   and filter rows client-side — halving request count and making both answers
+   arrive together. If the fixture shows no per-row category signal, the coupling
+   isn't worth it and they keep separate fetches. Decided and recorded at the
+   scraper once the fixture lands.
+
+Bottom line: this is the item I'm treating as blocking-adjacent for the freeze —
+the latency win is unreachable until the type allows it.
+
+## Reply to §2 — `429` is the 4xx that deserves a retry
+
+Agreed, and it lands in the fetch layer (`net.rs`) so every source gets it at
+once: honour `Retry-After` (and `RateLimit-*` equivalents when present) when the
+suggested wait is **≤ 2 s** *and* the remaining time fits inside the source's
+overall deadline — retry with exactly the server-requested delay, keeping the
+"never make the user wait" property. Anything longer, and any 403/404/Cloudflare
+challenge, stays terminal `Blocked`. I'm also folding in the cheap trick you
+stole from the reference product — detecting the anti-bot layer via the `server`
+response header — as a `Blocked` classify helper beside `parse.rs`, so HTML
+adapters fail *fast* on a challenge page instead of retrying into it.
+
+## Reply to §3 — your three questions
+
+**(a) Negative TTL on hard failures (~60 s).** I'm for it, with three guardrails
+so it doesn't bend the design:
+
+- **per *host*, not per source** — a YTS search with `yts.mx` dead but `yts.am`
+  healthy must not be parked behind the dead primary;
+- **only for *hard* failure classes** — connection refused, TLS error, 5xx after
+  retries, `Blocked`. A clean "no results" answer is already negative-cached at
+  the normal TTL (§7) and must stay a distinct case;
+- **it lives as data in the cache layer** (`cache/search/<source>/<query>.json`
+  gains a small `failed_at` marker), *enforced by the engine in phase 4* — never
+  sticky state inside the source, because §1.1's statelessness is a contract I
+  won't cross.
+
+Short (≈60 s) is right, and it pays for itself the day the UI lands
+search-as-you-type. I'll add the marker shape + semantics to `docs/sources.md` §7
+so the engine track can schedule against it.
+
+**(b) 10 s default vs ~3 s interactive.** Genuine answer: the two numbers are
+answering different questions, and streaming does the user-facing half:
+
+- The 10 s ceiling exists for correctness *at the top of the source*, where host
+  rotation (each probe consumes budget) and follow-up fetches (1337x, FitGirl)
+  both sit.
+- What a user actually feels is *first results*, and FR-13 already streams per
+  source — so the fix is an internal deadline **budget** inside each search
+  (list phase ≈3 s, follow-up phase the remainder, total ≤10 s) plus a config
+  knob (`HARBOUR_SOURCE_TIMEOUT`) so the ceiling is tunable without a rebuild.
+- Net: default ceiling stays 10 s; a source's first rows should appear well under
+  3 s for the common single-host sources; a source that blows its budget reports
+  `offline` for that search and the other nine keep streaming.
+
+That's a `net.rs` + engine-event contract, not a Spec rewrite — I'll note the
+budget split in `docs/sources.md` §6.
+
+**(c) EZTV local filter.** Accepted as the default — it's a *stated* limitation
+in §3.5 ("old-season searches return nothing even though episodes exist") and a
+fixture can never surface feed depth, so making it invisible-by-design is right.
+But "accepted" isn't "closed": at fixture-capture time I'll probe each mirror's
+`/ezrss.xml` for feed-side query support and pin any mirror that filters
+server-side (per-mirror `search_path` config), falling back to the local filter
+when a mirror doesn't. One parked idea, not a promise: a mirror whose feed
+supports query params usually also supports deeper windows, which would fix the
+depth invisibility rather than just the latency.
+
+## Reply to §4 — blood-money notes
+
+- **Sticky host failover** — the idea is right and cheap; the placement is the
+  catch. A module-level "last host that answered" index *inside* the source would
+  violate §1.1 (a source must never leak state between searches). So the sticky
+  hint becomes a **session-scope** thing the engine passes in per search
+  ("start probes at host X"), and the scraper just honours the order. Until that
+  boundary exists we probe in spec order (§3.2) and accept the one-extra-request
+  per dead primary per search. Recorded as a sources↔engine boundary item.
+- **Dedupe before the follow-ups** — confirmed: both FitGirl (§3.1) and 1337x
+  (§3.4) dedupe result *rows* (by post/detail URL) before the bounded follow-up
+  burst, so no detail page is fetched twice.
+- **`dn` percent-encoding** — confirmed in code and tests (`&` and `.` in
+  titles); that was the exact bug class I wanted ruled out.
+- **No hand-rolled entity tables** — agreed: `quick-xml`/`scraper` do the
+  unescaping; if a case ever slips through, the fix is a crate-level unescape,
+  never a regex table. I'll carry that as a decision comment in `parse.rs` so
+  nobody "optimises" it later.
+- **(Added) Fail-fast on challenges gets a live fixture.** Capturing from this
+  network, 1337x answered 403 to the browser-era UA — so the HTML team is
+  capturing `blocked.html` as *real* bytes, and the challenge-detection path gets
+  tested from reality rather than an assumption.
+
+## Reply to §5 — cross-source dedup
+
+Noted, and thanks for flagging it here — the normalization you'd rely on is
+already shipped and tested: `parse::magnet_info_hash` + `magnet::build_magnet`
+lowercase every hash at the boundary (§5), so `info_hash` is join-ready *across*
+sources today, no change needed when the merge is confirmed. Sources-side nothing
+moves: the `(source, query)` cache keys stay per-source (dedupe-for-display is an
+engine/UI concern), and persistence semantics don't change. As a small courtesy,
+I'll make sure the TPB/1337x/YTS fixtures include one deliberately duplicated
+film so the merge path — whenever Ishan confirms it — has real cross-source data
+to chew on instead of synthetic tests.
+
+## What I'm taking from this (+ where it lands)
+
+| Item | Verdict | Where it lands |
+| --- | --- | --- |
+| §1 lazy 1337x magnets | **Yes — needs the freeze type shape** | `TorrentResult.magnet` → present-or-`Resolvable` in the phase-1 freeze; adapter kept separable |
+| §1 shared 1337x fetch | Conditional on per-row category signal in the first fixture | HTML scraper (x1337) |
+| §2 `Retry-After` ≤ 2 s | Accepted | `net.rs` fetch layer — applies to every source |
+| §3a negative TTL ~60 s | Accepted, with guardrails | cache marker + `docs/sources.md` §7 note |
+| §3b per-phase deadline budget + env knob | Accepted | `net.rs` + §6 note (`HARBOUR_SOURCE_TIMEOUT`) |
+| §3c EZTV server-side filter | Probing at capture time; local filter is default | eztv adapter + per-mirror config |
+| §4 sticky host failover | Inbound — session-scope hint, never source state | sources↔engine boundary |
+| §5 cross-source `info_hash` join | Already landed + tested | `parse.rs` / `magnet.rs` |
+
+One line back: the §1 type change is the multiplier for search latency and the
+rest follow it; §2 and §3b land in the fetch layer the scrapers are already
+building against; §3a needs a slot on your engine schedule. Sent, confirmed, and
+back to the scrapers.
