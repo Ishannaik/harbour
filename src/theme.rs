@@ -71,7 +71,10 @@ pub fn rgb_to_ansi_256(r: u8, g: u8, b: u8) -> u8 {
         if avg > 247 {
             return 231;
         }
-        return (232 + ((avg as i16 - 8) * 24 / 239)) as u8;
+        // 8..=247 maps to ramp steps 0..=23 (240-wide span, 24 steps); a 239
+        // divisor would yield step 24 (index 256) at avg == 247, which `as u8`
+        // truncates to 0 — black instead of light gray (CodeRabbit CR-1).
+        return (232 + ((avg as i16 - 8) * 24 / 240)) as u8;
     }
     fn cube(v: u8) -> u8 {
         if v < 48 {
@@ -847,27 +850,29 @@ fn parse_hex(s: &str) -> Result<Color, String> {
     let hex = s
         .strip_prefix('#')
         .ok_or_else(|| format!("`{s}` is not a hex color"))?;
+    // Match on the CHARACTER count, not byte length: a multi-byte char such
+    // as "…" is 3 bytes but 1 char, so byte-length dispatch would index
+    // `.nth(1).unwrap()` past the end and panic. Custom themes are user
+    // input — this must produce a loud ThemeError, not abort (CodeRabbit
+    // CR-2).
+    let chars: Vec<char> = hex.chars().collect();
     let nibble = |c: char| {
         c.to_digit(16)
             .ok_or_else(|| format!("`{s}`: bad hex digit `{c}`"))
     };
-    match hex.len() {
+    match chars.len() {
         3 => {
-            let (r, g, b) = (
-                nibble(hex.chars().next().unwrap())?,
-                nibble(hex.chars().nth(1).unwrap())?,
-                nibble(hex.chars().nth(2).unwrap())?,
-            );
+            let (r, g, b) = (nibble(chars[0])?, nibble(chars[1])?, nibble(chars[2])?);
             let dup = |v: u32| (v * 16 + v) as u8;
             Ok(Color::Rgb(dup(r), dup(g), dup(b)))
         }
         6 => {
-            let val = u32::from_str_radix(hex, 16).map_err(|_| format!("`{s}`: bad hex"))?;
-            Ok(Color::Rgb(
-                ((val >> 16) & 0xff) as u8,
-                ((val >> 8) & 0xff) as u8,
-                (val & 0xff) as u8,
-            ))
+            let pair = |i: usize| -> Result<u8, String> {
+                let hi = nibble(chars[i])?;
+                let lo = nibble(chars[i + 1])?;
+                Ok((hi * 16 + lo) as u8)
+            };
+            Ok(Color::Rgb(pair(0)?, pair(2)?, pair(4)?))
         }
         n => Err(format!("`{s}`: expected 3 or 6 hex digits, got {n}")),
     }
@@ -1040,6 +1045,22 @@ mod tests {
     }
 
     #[test]
+    fn multibyte_hex_errors_instead_of_panicking() {
+        // Regression for CodeRabbit CR-2: "…" is 3 bytes but 1 char, so a
+        // byte-length dispatch used to index past the end and panic. Custom
+        // themes are user input — this must be a loud error, not an abort.
+        let json = r##"{"name":"t","colors":{"accent":"#…"}}"##;
+        let err = Theme::parse(json).unwrap_err();
+        assert!(
+            err.0.contains("expected 3 or 6"),
+            "loud error expected: {err}"
+        );
+        // Same for an emoji-only "hex" value (4 bytes, 1 char).
+        let json = r##"{"name":"t","colors":{"accent":"#😀"}}"##;
+        assert!(Theme::parse(json).is_err());
+    }
+
+    #[test]
     fn out_of_range_index_is_loud() {
         let json = r#"{"name":"t","colors":{"dim":256}}"#;
         assert!(Theme::parse(json).is_err());
@@ -1147,6 +1168,10 @@ mod tests {
         );
         // Pure red maps to the red cube anchor.
         assert_eq!(rgb_to_ansi_256(255, 0, 0), 196);
+        // Ramp overflow regression (CodeRabbit CR-1): avg == 247 must map to
+        // ramp index 255, never truncate 256 → 0 (black).
+        assert_eq!(rgb_to_ansi_256(247, 247, 247), 255);
+        assert_ne!(rgb_to_ansi_256(247, 247, 247), 0);
         // Index passes through untouched.
         assert_eq!(Color::Index(42).to_ansi_256(), 42);
     }
