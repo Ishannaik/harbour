@@ -161,7 +161,7 @@ const GAME_WORDS: &[&str] = &[
 /// [`ANIME_WORDS`], so "slime s01e01" routes to TV but "slime" routes to
 /// Anime. Honest demo heuristic — real relevance is the scrapers' job.
 const TV_WORDS: &[&str] = &[
-    "show", "series", "sitcom", "episode", "s01e", "s1e", "season",
+    "show", "series", "sitcom", "episode", "s01e", "s1e", "season", "shogun",
 ];
 
 /// Words that route a query to the Anime group (nyaa/subsplease).
@@ -178,8 +178,156 @@ const ANIME_WORDS: &[&str] = &[
     "jujutsu",
     "demon slayer",
     "frieren",
-    "shogun",
 ];
+
+/// One demo-catalog entry: keywords that select it (lowercased substrings)
+/// and the real release title the fake rows should show. The catalog exists
+/// so a demo search reads like a real search — "tensura slime" yields
+/// "That Time I Got Reincarnated as a Slime - 01 [1080p] [HEVC]", not
+/// "tensura slime - 01 [...]". Real titles come from the scrapers; this is
+/// display sugar for the fake generator only.
+struct CatalogEntry {
+    category: SourceGroup,
+    keywords: &'static [&'static str],
+    title: &'static str,
+}
+
+const CATALOG: &[CatalogEntry] = &[
+    // Anime
+    CatalogEntry {
+        category: SourceGroup::Anime,
+        keywords: &["slime", "tensura", "reincarnated"],
+        title: "That Time I Got Reincarnated as a Slime",
+    },
+    CatalogEntry {
+        category: SourceGroup::Anime,
+        keywords: &["frieren", "sousou no"],
+        title: "Frieren: Beyond Journey's End",
+    },
+    CatalogEntry {
+        category: SourceGroup::Anime,
+        keywords: &["one piece"],
+        title: "One Piece",
+    },
+    CatalogEntry {
+        category: SourceGroup::Anime,
+        keywords: &["jujutsu"],
+        title: "Jujutsu Kaisen",
+    },
+    CatalogEntry {
+        category: SourceGroup::Anime,
+        keywords: &["demon slayer", "kimetsu"],
+        title: "Demon Slayer: Kimetsu no Yaiba",
+    },
+    CatalogEntry {
+        category: SourceGroup::Anime,
+        keywords: &["naruto"],
+        title: "Naruto",
+    },
+    CatalogEntry {
+        category: SourceGroup::Anime,
+        keywords: &["attack on titan", "shingeki"],
+        title: "Attack on Titan",
+    },
+    // Movies (no year in the title — the source suffix carries one)
+    CatalogEntry {
+        category: SourceGroup::Movies,
+        keywords: &["interstellar"],
+        title: "Interstellar",
+    },
+    CatalogEntry {
+        category: SourceGroup::Movies,
+        keywords: &["dune"],
+        title: "Dune: Part Two",
+    },
+    CatalogEntry {
+        category: SourceGroup::Movies,
+        keywords: &["oppenheimer"],
+        title: "Oppenheimer",
+    },
+    CatalogEntry {
+        category: SourceGroup::Movies,
+        keywords: &["batman"],
+        title: "The Batman",
+    },
+    CatalogEntry {
+        category: SourceGroup::Movies,
+        keywords: &["inception"],
+        title: "Inception",
+    },
+    CatalogEntry {
+        category: SourceGroup::Movies,
+        keywords: &["matrix"],
+        title: "The Matrix",
+    },
+    CatalogEntry {
+        category: SourceGroup::Movies,
+        keywords: &["elden ring movie", "game movie"],
+        title: "Harbour: The Movie",
+    },
+    // TV
+    CatalogEntry {
+        category: SourceGroup::Tv,
+        keywords: &["the boys", "boys"],
+        title: "The Boys",
+    },
+    CatalogEntry {
+        category: SourceGroup::Tv,
+        keywords: &["shogun"],
+        title: "Shogun",
+    },
+    CatalogEntry {
+        category: SourceGroup::Tv,
+        keywords: &["severance"],
+        title: "Severance",
+    },
+    CatalogEntry {
+        category: SourceGroup::Tv,
+        keywords: &["last of us"],
+        title: "The Last of Us",
+    },
+    CatalogEntry {
+        category: SourceGroup::Tv,
+        keywords: &["game of thrones"],
+        title: "Game of Thrones",
+    },
+    // Games
+    CatalogEntry {
+        category: SourceGroup::Games,
+        keywords: &["elden"],
+        title: "Elden Ring",
+    },
+    CatalogEntry {
+        category: SourceGroup::Games,
+        keywords: &["witcher"],
+        title: "The Witcher 3: Wild Hunt",
+    },
+    CatalogEntry {
+        category: SourceGroup::Games,
+        keywords: &["cyberpunk"],
+        title: "Cyberpunk 2077",
+    },
+    CatalogEntry {
+        category: SourceGroup::Games,
+        keywords: &["gta", "grand theft"],
+        title: "Grand Theft Auto V",
+    },
+    CatalogEntry {
+        category: SourceGroup::Games,
+        keywords: &["red dead"],
+        title: "Red Dead Redemption 2",
+    },
+];
+
+/// Real release title when the query matches the demo catalog, else None
+/// (caller falls back to "{query} {suffix}").
+fn release_title(query: &str, category: SourceGroup) -> Option<&'static str> {
+    let q = query.to_ascii_lowercase();
+    CATALOG
+        .iter()
+        .find(|e| e.category == category && e.keywords.iter().any(|k| q.contains(k)))
+        .map(|e| e.title)
+}
 
 /// Which sources answer for a category. Browse mode (empty query) skips this
 /// and uses the whole matrix — a curated library is cross-source by design.
@@ -206,10 +354,14 @@ pub fn fake_results(query: &str) -> Vec<TorrentResult> {
     // Hit count is part of the seeded output: 8..=12.
     let count = 8 + (seed % 5) as usize;
     // Which sources answer this query; browse spans the whole matrix.
-    let sources: &[&str] = if query.is_empty() {
-        &SOURCES.iter().map(|(id, ..)| *id).collect::<Vec<&str>>()
+    let category = if query.is_empty() {
+        None
     } else {
-        category_sources(query_category(query))
+        Some(query_category(query))
+    };
+    let sources: Vec<&str> = match category {
+        Some(cat) => category_sources(cat).to_vec(),
+        None => SOURCES.iter().map(|(id, ..)| *id).collect(),
     };
     (0..count)
         .map(|i| {
@@ -220,11 +372,17 @@ pub fn fake_results(query: &str) -> Vec<TorrentResult> {
             // index spreads hits apart without consuming RNG state.
             let info_hash = hash40(seed ^ (i as u64 + 1).wrapping_mul(0x9e37_79b9_7f4a_7c15));
             // Browse mode (empty query, FR-20) has no search term to paste
-            // into the name — the suffix alone reads as a curated row.
-            let name = if query.is_empty() {
-                suffix.trim().to_string()
-            } else {
-                format!("{query} {suffix}")
+            // into the name — the suffix alone reads as a curated row. A
+            // matched catalog title reads like a real release ("tensura
+            // slime" → "That Time I Got Reincarnated as a Slime - 01 …"),
+            // not the typed term repeated; unmatched queries fall back.
+            let name = match (
+                query.is_empty(),
+                category.and_then(|c| release_title(query, c)),
+            ) {
+                (true, _) => suffix.trim().to_string(),
+                (false, Some(title)) => format!("{title} {suffix}"),
+                (false, None) => format!("{query} {suffix}"),
             };
             TorrentResult {
                 info_hash: info_hash.clone(),
@@ -412,5 +570,47 @@ mod tests {
         seen.sort();
         seen.dedup();
         assert!(seen.len() > 3, "browse should span groups, got {seen:?}");
+    }
+}
+
+#[cfg(test)]
+mod catalog_tests {
+    use super::*;
+
+    #[test]
+    fn catalog_query_shows_real_titles_not_the_typed_term() {
+        let results = fake_results("tensura slime");
+        assert!(!results.is_empty());
+        let first = &results[0].name;
+        assert!(
+            first.contains("That Time I Got Reincarnated as a Slime"),
+            "expected the real title, got: {first}"
+        );
+        assert!(
+            !first.to_ascii_lowercase().contains("tensura"),
+            "typed term must not be pasted into the name: {first}"
+        );
+        // Every row is the same release, episode-styled per source.
+        for r in &results {
+            assert!(r.name.contains("Slime"), "row: {}", r.name);
+        }
+    }
+
+    #[test]
+    fn movie_catalog_and_unmatched_fallback() {
+        let dune = fake_results("dune");
+        assert!(dune[0].name.contains("Dune: Part Two"));
+        // Unmatched queries still produce rows (fallback), deterministically.
+        let xyz = fake_results("xyzzy");
+        assert!(xyz[0].name.to_ascii_lowercase().starts_with("xyzzy"));
+    }
+
+    #[test]
+    fn catalog_is_deterministic() {
+        let a = fake_results("tensura slime");
+        let b = fake_results("tensura slime");
+        let names_a: Vec<&str> = a.iter().map(|r| r.name.as_str()).collect();
+        let names_b: Vec<&str> = b.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(names_a, names_b);
     }
 }

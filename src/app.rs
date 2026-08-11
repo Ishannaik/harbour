@@ -1199,7 +1199,16 @@ mod tests {
         assert!(!a.state.search.searching);
         assert!(a.search_deadline.is_none());
         assert!(!a.state.search.results.is_empty());
-        assert!(a.state.search.results[0].name.contains("dune"));
+        // "dune" hits the movie catalog, so the row carries the real title
+        // (case-sensitive "dune" would miss "Dune: Part Two").
+        assert!(
+            a.state.search.results[0]
+                .name
+                .to_ascii_lowercase()
+                .contains("dune"),
+            "row: {}",
+            a.state.search.results[0].name
+        );
         assert!(a.state.search.source_counts.contains_key("yts"));
         // Same query, same rows (deterministic fake data).
         let first: Vec<String> = a
