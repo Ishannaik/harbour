@@ -794,12 +794,22 @@ fn draw(
     }
 }
 
-/// The status line grows to fit an error banner.
+/// Rows to reserve for the status area.
+///
+/// This must match `ui::status::draw`'s own layout exactly. That view splits
+/// the area it is given into `[Min(0), banner?, status]` and draws only the
+/// bottom two, so handing it fewer rows than it wants does not shrink the
+/// banner — it squeezes it out entirely and the message is never seen. Under-
+/// allocating by a single row was enough to make the safe-mode warning
+/// invisible, which is exactly the class of bug a banner exists to prevent.
 fn status_height(app: &App) -> u16 {
-    match &app.state.error_banner {
-        Some(message) => (message.lines().count() as u16 + 2).clamp(3, 6),
-        None => 1,
-    }
+    banner_height(app.state.error_banner.as_deref()) + 1
+}
+
+/// Banner rows: two borders plus one or two content rows, or zero when there is
+/// nothing to say. Mirrors `ui::status::draw`.
+fn banner_height(message: Option<&str>) -> u16 {
+    message.map_or(0, |m| 2 + m.lines().count().clamp(1, 2) as u16)
 }
 
 /// Turns one terminal event into state changes.
@@ -914,11 +924,22 @@ async fn download_selected(app: &mut App) {
         return;
     };
 
+    // Re-key on the magnet's own infohash rather than the row's.
+    //
+    // The detail-page sources (ReelIndex, GamesHub, TorrentHub) cannot know a
+    // torrent's real infohash from the list page, so they carry the site's own
+    // id in that field as a placeholder until resolution. Enqueuing under the
+    // placeholder would file the item under an id the engine never reports
+    // back — librqbit keys by the real hash — so the row would sit at 0% for
+    // ever while the download actually ran. The magnet is authoritative.
+    let id = crate::core::magnet::info_hash_from_magnet(&magnet)
+        .unwrap_or_else(|| result.info_hash.clone());
+
     let outcome = app
         .queue
         .add(
             AddInput {
-                id: result.info_hash.clone(),
+                id,
                 name: result.name.clone(),
                 source: Some(result.source),
                 magnet: Some(magnet),
