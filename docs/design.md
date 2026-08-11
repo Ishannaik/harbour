@@ -1,8 +1,8 @@
 # harbour — Design v2
 
-*Formalized design for the harbour TUI (crate `harbour-tui`, binary `harbour`). This
+*Formalized design for the harbour TUI (crate `harbour`, binary `harbour`). This
 document describes the **intended** implementation; the repo has no code yet.
-Normative source of truth: `harbour-context.md` (scratch, not committed).*
+Normative source of truth: [`context.md`](context.md).*
 
 ## 1. Design summary
 
