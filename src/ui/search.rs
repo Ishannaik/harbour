@@ -267,7 +267,10 @@ fn draw_search_bar(
             run.push(ch);
         }
         if !run.is_empty() {
-            spans.push(Span::styled(run, Style::default().fg(run_color.to_ratatui())));
+            spans.push(Span::styled(
+                run,
+                Style::default().fg(run_color.to_ratatui()),
+            ));
         }
     } else {
         spans.push(Span::styled(q, Style::default().fg(base.to_ratatui())));
@@ -295,7 +298,7 @@ fn draw_search_bar(
 
 /// Current spinner frame for the 80ms cadence — the index derives from the
 /// module epoch clock (see module docs for why draw() times itself).
-fn spinner_frame<'a>(theme: &'a Theme, elapsed: Duration) -> &'a str {
+fn spinner_frame(theme: &Theme, elapsed: Duration) -> &str {
     let frames = &theme.symbols.spinner_frames;
     if frames.is_empty() {
         return "";
@@ -391,7 +394,13 @@ fn draw_results(frame: &mut Frame, area: Rect, state: &SearchState, theme: &Them
         .skip(start)
         .take(vis.max(1))
     {
-        lines.push(result_line(result, i == state.selected, state, theme, width));
+        lines.push(result_line(
+            result,
+            i == state.selected,
+            state,
+            theme,
+            width,
+        ));
     }
     frame.render_widget(Paragraph::new(lines), area);
 }
@@ -412,8 +421,16 @@ fn result_line(
     let size = fmt_size(result.size_bytes);
     // Zero seeders/leechers means the source doesn't report health (e.g.
     // RSS feeds, docs/sources.md §3.7) — '—', never 0, so no fake health.
-    let seeds = if result.seeders > 0 { result.seeders.to_string() } else { "—".into() };
-    let leeches = if result.leechers > 0 { result.leechers.to_string() } else { "—".into() };
+    let seeds = if result.seeders > 0 {
+        result.seeders.to_string()
+    } else {
+        "—".into()
+    };
+    let leeches = if result.leechers > 0 {
+        result.leechers.to_string()
+    } else {
+        "—".into()
+    };
     let suffix_w = size.chars().count()
         + seeds.chars().count()
         + leeches.chars().count()
@@ -421,7 +438,11 @@ fn result_line(
         + 3; // one gap before each of the four right-aligned cells
     let name = truncate(&result.name, width.saturating_sub(suffix_w + 1));
     let pad = width.saturating_sub(name.chars().count() + suffix_w);
-    let name_fg = if selected { colors.accent() } else { colors.text() };
+    let name_fg = if selected {
+        colors.accent()
+    } else {
+        colors.text()
+    };
     let seed_fg = if result.seeders > 0 {
         colors.success()
     } else {
@@ -500,13 +521,17 @@ fn row_line(spans: Vec<Span<'static>>, selected: bool, colors: &ThemeColors) -> 
     } else {
         Style::default()
     };
-    Line::styled(spans, base)
+    // `Line::styled` builds a line from *text*; a line already made of spans
+    // takes its base style via `.style()`. Same result, and the per-span fg
+    // still wins over the line's bg.
+    Line::from(spans).style(base)
 }
 
 /// One muted, left-aligned line for empty states.
 fn empty_line(text: &str, theme: &Theme) -> Line<'static> {
+    // Owned: the returned Line outlives the borrowed `text`.
     Line::from(Span::styled(
-        text,
+        text.to_string(),
         Style::default().fg(theme.colors.muted().to_ratatui()),
     ))
 }
