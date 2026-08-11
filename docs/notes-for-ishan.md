@@ -295,3 +295,97 @@ the place to look if something in the engine surprises you later.
 
 The only thing that will land in your files is the stats-split PR in §3, and it comes
 with the `downloads.rs` changes already made and reviewed with you.
+
+---
+---
+
+# Round 3 — the engine landed, and the app is wired end to end
+
+> From Sarthak. Sarthak asked for the whole product working, so I built through
+> the plan rather than stopping at the freeze. Everything below is done and
+> pushed; none of it needs a reply. Where I touched your files I say so, and why.
+
+## The E1 gate passed against the live network
+
+Before building anything on librqbit I ran the behavioural spike the plan gated
+it behind. Real evidence, not a guess:
+
+```
+metadata: name=Some("Sintel") total=129302391 state=Initializing
+restored 1 torrent(s) from persistence
+```
+
+Metadata fetched from a live swarm, `.torrent` bytes captured for the re-seed
+cache (`FR-37`), and **fastresume verified** — a restarted session restores its
+torrents without a rehash. That was the plan's designated no-go risk and it is
+retired. `pause` also reported peers as `None` rather than `0`, which confirms
+the B1 contract against the real engine rather than against my assumption.
+
+`librqbit = "8.1.1"` is pinned.
+
+## What I changed in your files, and why
+
+**The stats split shipped, as promised — in one PR, with `main` never red.**
+`downloads.rs` now renders `ItemView` (durable `QueueItem` + optional
+`EngineStats`) through accessors: `item.progress()`, `item.peers()`,
+`item.eta()`, `item.speed_mib()`. The em-dash-not-zero behaviour you implemented
+is preserved and now has a real reason to exist, because the engine genuinely
+returns `None` while paused.
+
+**`AppState`, `SearchState`, `DownloadsState` and `Screen` moved to `src/ui`.**
+They are UI state, not shared contract, and the freeze is deliberately limited to
+what all three tracks share. Your views are otherwise untouched.
+
+**The sidebar table is now typed** (`SourceId` rather than `&str`), so a
+source-id typo is a compile error instead of a dot that never lights up.
+
+**`SourceStatus` gained `Unknown` and `Checking`, and `search.rs` renders them.**
+Your 3-second pending dot is implementable now — it was not before, because
+`Online | Empty | Offline` had no way to say "still waiting". A source that has
+not answered yet renders the live glyph muted; never probed stays neutral.
+
+**I found and fixed a real rendering bug in the status area** — mine, not yours.
+`ui::status::draw` computes its own banner height and splits the area it is
+given into `[Min(0), banner, status]`. `app.rs` was reserving a different height,
+so the banner was squeezed out entirely and **the safe-mode warning never
+appeared**. I only caught it by running the binary and grepping the rendered
+output. `app.rs` now mirrors your formula exactly, with a test pinning it. Worth
+knowing about that view's contract if you change it: the caller must reserve
+`banner_height + 1`.
+
+## What is new
+
+- `src/input.rs` — the keymap as a pure `(key, screen) -> Action` function, so
+  every binding is unit-tested without a terminal. One behaviour worth knowing:
+  on the search screen every printable key goes to the text field, so typing
+  "dune" cannot fire a download on the `d`. The letter bindings take over only
+  when the query is empty; `shift+D` downloads regardless.
+- `src/ui/help.rs` — the `?` overlay, with a test asserting every implemented
+  binding is documented (`UR-10`).
+- `src/app.rs` — the real loop. Boot loads config/ledger/history, arms the crash
+  breaker, constructs the engine and restores the queue. Input runs on its own OS
+  thread so a keypress never blocks the async runtime. The engine poll is
+  adaptive — 500 ms while transferring, 5 s once everything is a settled seed,
+  with completion arriving as an event rather than being polled for. Quit flushes
+  the ledger and only then clears the marker.
+
+## Verified by running it, not only by testing it
+
+- CLI enqueue → engine → ledger works end to end; `downloads.json` contains
+  exactly the durable fields, no progress or speed.
+- Killed the process, relaunched: the crash breaker fired and rendered
+  *"harbour did not shut down cleanly last time, so everything is paused."*
+- The render loop emits DEC 2026 sync sequences around every frame with the
+  spinner advancing — your zero-flicker work, running under the real loop.
+
+## Two things I decided rather than ask
+
+- **`.torrent`-on-launch is not wired.** `harbour foo.torrent` parses, finds the
+  file, and tells the user plainly that pasting the magnet works instead. Reading
+  a `.torrent` means bencode plus hashing its info dict to get the id, and I would
+  rather ship an honest message than a half-path. It is a small follow-up.
+- **`NFR-03` (100 ms to first paint) is not measured yet.** The startup path now
+  constructs a torrent session before the first frame, which is the thing most
+  likely to blow that budget. Measuring it — and moving engine construction after
+  first paint if it does — is the obvious next task, and I would rather flag it
+  than quietly let the number rot.

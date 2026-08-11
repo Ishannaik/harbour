@@ -425,3 +425,110 @@ decisions with their reasoning and reversal cost are in
 - **Push `sources/*` whenever, even mid-thought.** I'm proceeding with the freeze
   without it (D8) because blocking E0 blocks two tracks, but the moment it's up I can
   migrate your real code instead of reasoning from your description of it.
+
+---
+---
+
+# Round 3 — the sources track has been implemented
+
+> From Sarthak. Sarthak asked for the whole product end to end, so rather than
+> wait I implemented all ten scrapers. This is **not** a takeover of your track —
+> it is a working baseline you now own, and I have written down every decision I
+> took on your behalf so you can overrule any of it. Nothing here needs a reply.
+
+## What exists now
+
+All ten adapters are in `src/sources/`, wired into `registry()`, with committed
+fixtures and 100+ tests between them. They follow the shape you and I agreed:
+a pure `parse()` free of I/O, plus a struct implementing `Source`.
+
+| Family | Files | Parser |
+| --- | --- | --- |
+| HTML | `gameshub.rs`, `reel-index.rs` (both categories), `torrent-hub.rs` | `scraper` CSS selectors |
+| JSON | `cinevault.rs`, `vault-index.rs` (both categories) | `serde_json` |
+| RSS | `showport.rs`, `tsukibase.rs`, `fansubs.rs` | `quick-xml` |
+
+Plus `net.rs` (the fetch layer) and `cache.rs` (search cache + host health).
+
+## Verified against the live sites, not just fixtures
+
+`HARBOUR_TEST_NET=1 cargo test --test search_net` runs a real search through the
+real registry. Last run from my machine:
+
+```
+gameshub        ok       10 rows
+vault-movies     ok      100 rows
+vault-tv         ok      100 rows
+tsukibase           ok       75 rows
+torrent-hub   ok        0 rows      (reachable, nothing matched)
+fansubs     ok        0 rows      (reachable, nothing matched)
+cinevault            timeout
+reel-movies   timeout
+reel-tv       timeout
+showport           timeout
+```
+
+Six of ten answered and the search still worked, which is the property that
+matters. The four timeouts look like ISP-level blocking of those domains from
+here rather than parser bugs — VaultIndex answered precisely because `mirror-api.org` is a
+separate API host from the blocked site. **Worth re-running from your machine**:
+if cinevault/showport answer for you, that confirms it, and the result is a per-source
+health picture that depends on where you are — which is itself worth knowing.
+
+## The lazy-magnet design, and the sharp edge in it
+
+Your §1 ask is implemented: `TorrentResult.magnet` is `Option<String>`, the
+three detail-page sources return `None`, and the engine calls `resolve_magnet`
+only when the user presses `d`. No detail page is fetched at search time.
+
+The sharp edge: those sources cannot know a torrent's real infohash from a list
+page, so they carry the **site's own numeric id** in `info_hash` as a placeholder
+(a synthetic 40-hex locator, namespaced per site). That is a reasonable trick,
+but it meant a lazily-resolved download would be filed under an id the engine
+never reports back — librqbit keys by the real hash — so the row would sit at 0%
+for ever while the download actually ran.
+
+**Fixed in `app.rs`: the queue re-keys on the magnet's own infohash at enqueue
+time.** The magnet is authoritative; the locator is only a way to find the detail
+page. If you rework those scrapers, keep that property or restore it.
+
+**Known consequence, documented rather than hidden:** an unresolved row from
+those three sources cannot take part in cross-source dedupe, because its
+placeholder hash is not the real one. Fetching every detail page to fix it would
+reintroduce exactly the cost lazy magnets exist to avoid. I think that trade is
+right; it is yours to revisit.
+
+## Decisions I took that are yours to overrule
+
+1. **`SourceId` is an enum, `SourceError` is typed** — as your `docs/sources.md`
+   had them. The UI track's working copy used `&'static str` and
+   `Result<_, String>`; both lost. `&'static str` cannot `Deserialize`, which
+   would have made your §7 cache impossible.
+2. **`added` is `Option<i64>` unix seconds, not `DateTime<Utc>`.** That keeps
+   `chrono` out of the tree for what is one integer. The RSS adapters hand-roll a
+   ~45-line RFC-2822 parser as a result, **triplicated across three files** — the
+   agent that wrote them flagged this and I agree with the flag: hoist it into a
+   shared `sources/date.rs` when you touch them. I left it alone rather than
+   refactor code I had just written and only fixture-tested.
+3. **Same for `parse_size`, `parse_count` and the HTML helpers** — duplicated
+   across the scrapers because each was built in isolation. A shared
+   `sources/html.rs` is the obvious cleanup.
+4. **`vault-index.rs` requests `cat=200` (the video parent) and narrows locally.**
+   `q.php` takes one category; asking for `205` would have silently dropped every
+   HD TV show, which is most of them.
+5. **The ReelIndex shared-fetch idea is declined for now** — category narrowing is
+   server-side and the results table carries no per-row category signal, so the
+   two sources share the parser but not the request. Recorded at the decision site.
+6. **`tsukibase.rs` and `vault-index.rs` both import `cinevault::urlencode`** rather than
+   duplicating it. That is the one cross-source coupling; move it to a shared
+   module when you do the cleanup in (2)/(3).
+7. **Negative TTL is implemented** to the shape I proposed in
+   `plan-engine.md` §10 D5 (`cache/health/<source>.json`, per host, hard failures
+   only, ~60s). Your shape still wins if you publish one.
+
+## Still yours, and untouched
+
+Fixture realism. I authored the fixtures from the documented markup rather than
+from live captures, so they prove the parsers handle *that* shape — not that the
+shape is current. The live test above is the check on that, and it is the thing
+most worth strengthening with real captured bytes when you next touch a scraper.

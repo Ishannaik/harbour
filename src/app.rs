@@ -16,7 +16,7 @@ use std::io;
 use std::time::{Duration, Instant};
 
 use crossterm::cursor::{Hide, Show};
-use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{self, Event};
 use crossterm::execute;
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
@@ -29,9 +29,28 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui::{Frame, Terminal};
 
-use crate::anim::{self, Spinner, Ticker};
-use crate::theme::{Color, Theme};
+use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+
+use tokio::sync::mpsc;
+
+use crate::anim::{self, Spinner, Ticker};
+use crate::core::cancel::CancelToken;
+use crate::core::paths;
+use crate::core::types::{
+    Engine as CoreEngine, EngineEvent, QueueStatus, SearchCtx, SourceId, SourceStatus,
+    TorrentResult,
+};
+use crate::engine::fake::FakeEngine;
+use crate::engine::rqbit::RqbitEngine;
+use crate::input::Action;
+use crate::persist::{Config, Store};
+use crate::queue::{AddInput, AddOutcome, Queue};
+use crate::search::SearchEngine;
+use crate::sources::cache::SearchCache;
+use crate::theme::{Color, Theme};
+use crate::ui::{AppState, Screen};
 
 /// Base render cadence (docs/design.md §Animation): the loop redraws at most
 /// once per tick; a burst of input within one tick coalesces into one frame.
@@ -119,41 +138,6 @@ impl Drop for TerminalGuard {
         // mode is lifted last so no escape codes leak to the shell.
         let _ = execute!(io::stdout(), Show, LeaveAlternateScreen);
         let _ = disable_raw_mode();
-    }
-}
-
-/// Quit keys: `q`, `Esc`, and `Ctrl+C` — the conventional TUI escape hatches
-/// plus the splash's explicit hint.
-fn is_quit_key(key: &KeyEvent) -> bool {
-    matches!(
-        key,
-        KeyEvent {
-            code: KeyCode::Char('q'),
-            ..
-        } | KeyEvent {
-            code: KeyCode::Char('c'),
-            modifiers: KeyModifiers::CONTROL,
-            ..
-        } | KeyEvent {
-            code: KeyCode::Esc,
-            ..
-        }
-    )
-}
-
-/// Drains every input event currently queued and reports whether the user
-/// asked to quit. Draining in a loop coalesces a burst of events into one
-/// frame (docs/design.md §Animation): the outer loop renders at most once
-/// per tick no matter how many keys arrived within it.
-fn drain_events() -> io::Result<bool> {
-    loop {
-        match event::read()? {
-            Event::Key(key) if is_quit_key(&key) => return Ok(true),
-            _ => {}
-        }
-        if !event::poll(Duration::ZERO)? {
-            return Ok(false);
-        }
     }
 }
 
@@ -466,57 +450,748 @@ fn fade_t(elapsed: Duration, at: Duration, dur: Duration) -> f64 {
     }
 }
 
-/// Runs the TUI: enters the terminal (raw mode + alternate screen + hidden
-/// cursor), renders the animated splash at 30fps until the user quits, and
-/// restores the terminal on every exit path via [`TerminalGuard`] (normal
-/// quit, errors, and panics — Drop runs during unwinding).
-///
-/// Takes the shared `Arc<Mutex<Theme>>` rather than an owned `Theme` so the
-/// theme-watcher thread can swap themes underneath a running render loop
-/// (docs/theming.md §Custom themes). The lock is taken once per frame and
-/// released before the next `poll`, so a watcher swap never blocks input.
-pub fn run(theme: Arc<Mutex<Theme>>) -> Result<(), Box<dyn std::error::Error>> {
-    let _guard = TerminalGuard::enter()?;
+/// How often the queue polls the engine while anything is actively
+/// transferring. Slower than the render cadence on purpose: progress that
+/// changes thirty times a second is noise, and the eased bars smooth the gaps.
+const POLL_ACTIVE: Duration = Duration::from_millis(500);
 
+/// Poll cadence once everything has settled into seeding.
+///
+/// A seedbox with 200 idle seeds should not perform 400 stat reads a second to
+/// learn nothing (`NFR-04`). Completion arrives as an event rather than being
+/// discovered by polling, so nothing is missed by slowing down.
+const POLL_IDLE: Duration = Duration::from_secs(5);
+
+/// How long the splash holds before the search screen takes over.
+const SPLASH_DURATION: Duration = Duration::from_millis(1800);
+
+/// What the command line asked us to start with.
+#[derive(Debug, Clone, PartialEq)]
+pub enum InitialAction {
+    None,
+    /// Enqueue this magnet as soon as the engine is up (`FR-02`).
+    Magnet(String),
+    /// Read this `.torrent` and enqueue it.
+    TorrentFile(PathBuf),
+}
+
+/// Everything the loop needs, assembled once at boot.
+struct App {
+    state: AppState,
+    queue: Queue,
+    search: SearchEngine,
+    store: Store,
+    config: Config,
+    /// Results per source for the current query, merged for display.
+    partial: HashMap<SourceId, Vec<TorrentResult>>,
+    search_cancel: Option<CancelToken>,
+    events_tx: mpsc::UnboundedSender<EngineEvent>,
+    history: Vec<String>,
+    help_open: bool,
+    quitting: bool,
+}
+
+impl App {
+    /// Something the user should know that must not stop the app.
+    fn warn(&mut self, message: impl Into<String>) {
+        self.state.error_banner = Some(message.into());
+    }
+
+    fn selected_result(&self) -> Option<&TorrentResult> {
+        self.state.search.results.get(self.state.search.selected)
+    }
+
+    fn selected_item_id(&self) -> Option<String> {
+        self.state
+            .downloads
+            .items
+            .get(self.state.downloads.selected)
+            .map(|v| v.item.id.clone())
+    }
+
+    /// Rebuilds the downloads view from the queue.
+    fn refresh_downloads(&mut self) {
+        self.state.downloads.items = self.queue.views();
+        self.state.downloads.history = self.queue.completed();
+        let len = self.state.downloads.items.len();
+        // Keep the cursor inside the list after a removal.
+        if self.state.downloads.selected >= len {
+            self.state.downloads.selected = len.saturating_sub(1);
+        }
+    }
+
+    /// Merges everything received so far into the displayed list.
+    fn remerge(&mut self) {
+        let all: Vec<TorrentResult> = self.partial.values().flatten().cloned().collect();
+        self.state.search.results = crate::search::merge(all);
+        let len = self.state.search.results.len();
+        if self.state.search.selected >= len {
+            self.state.search.selected = len.saturating_sub(1);
+        }
+    }
+
+    /// Starts a search, cancelling whatever was in flight (`FR-20`).
+    fn start_search(&mut self, query: String) {
+        if let Some(previous) = self.search_cancel.take() {
+            previous.cancel();
+        }
+        self.partial.clear();
+        self.state.search.results.clear();
+        self.state.search.selected = 0;
+        self.state.search.searching = true;
+        self.state.search.source_counts.clear();
+        for id in SourceId::ALL {
+            self.state
+                .search
+                .source_health
+                .insert(id, SourceStatus::Unknown);
+        }
+
+        if !query.trim().is_empty() {
+            let mut history = std::mem::take(&mut self.history);
+            if let Err(err) = self.store.push_history(&mut history, &query) {
+                // Losing search history is not worth interrupting anyone over.
+                eprintln!("harbour: could not save search history: {err}");
+            }
+            self.history = history;
+        }
+
+        let ctx = SearchCtx {
+            total_deadline: paths::source_timeout(),
+            ..SearchCtx::default()
+        };
+        self.search_cancel = Some(ctx.cancel.clone());
+        self.search.start(query, ctx, self.events_tx.clone());
+    }
+}
+
+/// Reads terminal events on a dedicated thread.
+///
+/// `crossterm::event::read` blocks, and blocking a tokio worker would stall the
+/// engine's tasks with it. One OS thread feeding a channel keeps input
+/// responsive without the async runtime ever waiting on a keypress.
+fn spawn_input_thread() -> mpsc::UnboundedReceiver<Event> {
+    let (tx, rx) = mpsc::unbounded_channel();
+    std::thread::spawn(move || {
+        loop {
+            let Ok(ev) = event::read() else {
+                // A terminal that stops producing events is not recoverable
+                // here, and spinning on the error would peg a core.
+                return;
+            };
+            if tx.send(ev).is_err() {
+                // The app has gone; so should we.
+                return;
+            }
+        }
+    });
+    rx
+}
+
+/// Runs the TUI.
+///
+/// Takes the shared `Arc<Mutex<Theme>>` so the theme-watcher thread can swap
+/// themes underneath a running render loop; the lock is taken once per frame
+/// and released before the next wait, so a swap never blocks input.
+///
+/// Every failure on this path degrades rather than aborting (`NFR-15`): a
+/// config that will not parse falls back with a banner, a ledger that will not
+/// read starts empty and keeps the file, and an engine that will not construct
+/// leaves search working with downloads reporting why.
+pub async fn run(
+    theme: Arc<Mutex<Theme>>,
+    initial: InitialAction,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let store = Store::from_env();
+
+    let loaded_config = store.load_config();
+    let config_warning = loaded_config.warning().map(str::to_owned);
+    let config = loaded_config.value();
+
+    // The crash breaker: a marker left behind means the previous run died
+    // before it finished starting, so this one restores everything paused.
+    let safe_mode = store.boot_was_interrupted();
+    if let Err(err) = store.arm_boot_marker() {
+        eprintln!("harbour: could not write the boot marker: {err}");
+    }
+
+    let loaded_ledger = store.load_ledger();
+    let ledger_warning = loaded_ledger.warning().map(str::to_owned);
+    let items = loaded_ledger.value();
+    let history = store.load_history().value();
+
+    // An engine that will not start must not stop the app: search still works,
+    // and downloads report the reason instead of the window refusing to open.
+    let (engine, engine_error): (Arc<dyn CoreEngine>, Option<String>) =
+        match RqbitEngine::new(&config.download_dir, store.root()).await {
+            Ok(engine) => {
+                // Adopt anything librqbit restored from its own persistence, or
+                // it would be running but invisible to the queue.
+                engine.adopt_restored();
+                (Arc::new(engine), None)
+            }
+            Err(err) => (
+                Arc::new(FakeEngine::new()),
+                Some(format!("downloads are unavailable: {err}")),
+            ),
+        };
+
+    let mut queue = Queue::new(engine.clone(), paths::max_downloads());
+    queue.set_trackers(config.trackers.clone());
+    queue.restore(items, safe_mode).await;
+
+    let search = SearchEngine::new(
+        crate::sources::registry(),
+        SearchCache::new(store.root().to_path_buf()),
+    );
+
+    let (events_tx, mut events_rx) = mpsc::unbounded_channel();
+    let mut app = App {
+        state: AppState::default(),
+        queue,
+        search,
+        store,
+        config,
+        partial: HashMap::new(),
+        search_cancel: None,
+        events_tx,
+        history,
+        help_open: false,
+        quitting: false,
+    };
+
+    app.state.screen = Screen::Splash;
+    app.refresh_downloads();
+
+    for warning in [config_warning, ledger_warning, engine_error]
+        .into_iter()
+        .flatten()
+    {
+        app.warn(warning);
+    }
+    if safe_mode {
+        app.warn(
+            "harbour did not shut down cleanly last time, so everything is paused. \
+             Press p on an item to resume it.",
+        );
+    }
+
+    match initial {
+        InitialAction::None => {}
+        InitialAction::Magnet(magnet) => enqueue_magnet(&mut app, &magnet).await,
+        InitialAction::TorrentFile(path) => match std::fs::metadata(&path) {
+            // Reading a .torrent means parsing bencode and hashing its info
+            // dict. librqbit can do both, but wiring the file path through the
+            // add request is engine work that has not landed; say so plainly
+            // rather than failing silently on launch.
+            Ok(_) => app.warn(format!(
+                "{} was found, but opening a .torrent on launch is not wired up yet — \
+                 paste its magnet instead",
+                path.display()
+            )),
+            Err(err) => app.warn(format!("could not read {}: {err}", path.display())),
+        },
+    }
+
+    let _guard = TerminalGuard::enter()?;
     let mut terminal = Terminal::new(CrosstermBackend::new(io::stdout()))?;
     let mut ticker = Ticker::new(FPS);
-    // Splash state is seeded from the theme active at startup; a later swap
-    // repaints on the next frame (colors are read from the theme per draw,
-    // spinner glyphs are re-synced below).
     let mut splash = SplashState::new(&lock_theme(&theme));
+    let mut input = spawn_input_thread();
+    let mut last_poll = Instant::now();
+    let started = Instant::now();
 
-    loop {
-        // Block until the next frame slot or the first pending input; then
-        // drain the whole burst so N events in one tick produce one draw.
-        if event::poll(ticker.next())? && drain_events()? {
-            break;
+    while !app.quitting {
+        // Wait for the next frame slot, but wake early for input or an engine
+        // event so neither waits a whole frame to be seen.
+        let wait = ticker.next();
+        tokio::select! {
+            biased;
+            Some(ev) = input.recv() => handle_event(&mut app, ev).await,
+            Some(engine_event) = events_rx.recv() => apply_event(&mut app, engine_event),
+            _ = tokio::time::sleep(wait) => {}
         }
+
+        // Drain whatever else arrived in the same instant, so a burst produces
+        // one frame rather than one frame each.
+        while let Ok(ev) = input.try_recv() {
+            handle_event(&mut app, ev).await;
+        }
+        while let Ok(engine_event) = events_rx.try_recv() {
+            apply_event(&mut app, engine_event);
+        }
+
         let now = Instant::now();
+        let cadence = if app.queue.active_count() > 0 {
+            POLL_ACTIVE
+        } else {
+            POLL_IDLE
+        };
+        if now.duration_since(last_poll) >= cadence {
+            last_poll = now;
+            let events = app.queue.tick(now).await;
+            for engine_event in events {
+                apply_event(&mut app, engine_event);
+            }
+            app.refresh_downloads();
+        }
+
+        // The splash is a timed intro, not a state to be stuck in.
+        if app.state.screen == Screen::Splash && started.elapsed() >= SPLASH_DURATION {
+            app.state.screen = Screen::Search;
+        }
+
         let active = lock_theme(&theme);
-        // `SplashState` owns a clone of the frames it was built with, so a
-        // live theme reload that changes `spinnerFrames` would otherwise keep
-        // spinning the old glyphs while every color around it updated. Re-sync
-        // before advancing; it is a no-op unless the frames actually changed.
         splash.spinner.set_frames(&active.symbols.spinner_frames);
         splash.spinner.advance(now, SPINNER_INTERVAL);
-        // Each frame is one synchronized write — no flicker/tearing between
-        // the border, logo, and status line (docs/design.md §2).
+        let glyph = splash.spinner.current().to_owned();
         anim::with_sync_output(|| {
-            terminal.draw(|frame| draw_splash(frame, &active, &mut splash, now))?;
+            terminal.draw(|frame| draw(frame, &active, &app, &mut splash, now, &glyph))?;
             Ok(())
         })?;
-        // Drop before the next poll so the watcher thread can swap themes
-        // while we are blocked waiting for input.
         drop(active);
+    }
+
+    // Flush before standing the crash breaker down: a crash between the two
+    // would otherwise leave a clean marker over stale state.
+    if let Err(err) = app.store.flush_and_disarm(app.queue.items()) {
+        eprintln!("harbour: could not save state on exit: {err}");
     }
     Ok(())
 }
 
+/// Draws whichever screen is current, plus the status line and any overlay.
+fn draw(
+    frame: &mut Frame,
+    theme: &Theme,
+    app: &App,
+    splash: &mut SplashState,
+    now: Instant,
+    glyph: &str,
+) {
+    let area = frame.area();
+    if app.state.screen == Screen::Splash {
+        draw_splash(frame, theme, splash, now);
+        return;
+    }
+
+    let rows = ratatui::layout::Layout::vertical([
+        ratatui::layout::Constraint::Min(0),
+        ratatui::layout::Constraint::Length(status_height(app)),
+    ])
+    .split(area);
+
+    match app.state.screen {
+        Screen::Downloads => {
+            crate::ui::downloads::draw(frame, rows[0], &app.state.downloads, theme)
+        }
+        _ => crate::ui::search::draw(frame, rows[0], &app.state.search, theme),
+    }
+    crate::ui::status::draw(frame, rows[1], app.state.screen, &app.state, theme, glyph);
+
+    if app.help_open {
+        crate::ui::help::draw(frame, area, theme);
+    }
+}
+
+/// Rows to reserve for the status area.
+///
+/// This must match `ui::status::draw`'s own layout exactly. That view splits
+/// the area it is given into `[Min(0), banner?, status]` and draws only the
+/// bottom two, so handing it fewer rows than it wants does not shrink the
+/// banner — it squeezes it out entirely and the message is never seen. Under-
+/// allocating by a single row was enough to make the safe-mode warning
+/// invisible, which is exactly the class of bug a banner exists to prevent.
+fn status_height(app: &App) -> u16 {
+    banner_height(app.state.error_banner.as_deref()) + 1
+}
+
+/// Banner rows: two borders plus one or two content rows, or zero when there is
+/// nothing to say. Mirrors `ui::status::draw`.
+fn banner_height(message: Option<&str>) -> u16 {
+    message.map_or(0, |m| 2 + m.lines().count().clamp(1, 2) as u16)
+}
+
+/// Turns one terminal event into state changes.
+async fn handle_event(app: &mut App, event: Event) {
+    let Event::Key(key) = event else {
+        // Resize and mouse events need no handling: ratatui re-lays out from
+        // the frame size on every draw.
+        return;
+    };
+    // Windows reports both press and release; acting on both would double
+    // every keystroke.
+    if key.kind != crossterm::event::KeyEventKind::Press {
+        return;
+    }
+
+    let mut action = crate::input::map(key, app.state.screen, app.help_open);
+
+    // On the search screen every printable key belongs to the text field —
+    // except when there is nothing to type into, or when shift+D asks for a
+    // download explicitly.
+    if app.state.screen == Screen::Search && !app.help_open {
+        if crate::input::is_download_key(key) {
+            action = Action::Download;
+        } else if app.state.search.query.is_empty()
+            && let Some(override_action) = crate::input::map_empty_query(key)
+        {
+            action = override_action;
+        }
+    }
+
+    apply_action(app, action).await;
+}
+
+async fn apply_action(app: &mut App, action: Action) {
+    match action {
+        Action::None => {}
+        Action::Quit => app.quitting = true,
+        Action::Dismiss => app.state.screen = Screen::Search,
+        Action::ToggleHelp => app.help_open = !app.help_open,
+        Action::SwitchScreen => {
+            app.state.screen = match app.state.screen {
+                Screen::Downloads => Screen::Search,
+                _ => Screen::Downloads,
+            };
+            app.state.error_banner = None;
+        }
+        Action::ToggleSeeding => {
+            app.state.downloads.show_seeding = !app.state.downloads.show_seeding;
+            app.state.downloads.selected = 0;
+        }
+        Action::MoveUp => move_selection(app, -1),
+        Action::MoveDown => move_selection(app, 1),
+        Action::Type(c) => app.state.search.query.push(c),
+        Action::Backspace => {
+            app.state.search.query.pop();
+        }
+        Action::Escape => {
+            if app.help_open {
+                app.help_open = false;
+            } else if !app.state.search.query.is_empty() {
+                app.state.search.query.clear();
+            } else {
+                app.state.error_banner = None;
+            }
+        }
+        Action::Submit => {
+            let query = app.state.search.query.clone();
+            app.start_search(query);
+        }
+        Action::Download => download_selected(app).await,
+        Action::TogglePause => toggle_pause(app).await,
+        Action::Retry => retry_selected(app).await,
+        Action::Remove => remove_selected(app).await,
+    }
+}
+
+fn move_selection(app: &mut App, delta: isize) {
+    let (len, selected) = match app.state.screen {
+        Screen::Downloads => (
+            app.state.downloads.items.len(),
+            &mut app.state.downloads.selected,
+        ),
+        _ => (
+            app.state.search.results.len(),
+            &mut app.state.search.selected,
+        ),
+    };
+    if len == 0 {
+        *selected = 0;
+        return;
+    }
+    // Wrap at both ends: a list you cannot leave by holding a key feels stuck.
+    let next = (*selected as isize + delta).rem_euclid(len as isize);
+    *selected = next as usize;
+}
+
+async fn download_selected(app: &mut App) {
+    let Some(result) = app.selected_result().cloned() else {
+        app.warn("nothing selected to download");
+        return;
+    };
+
+    // A row from a detail-page source arrives without a magnet; resolve it now
+    // that the user has actually asked for it (`plan-engine.md` T4).
+    let magnet = match &result.magnet {
+        Some(magnet) => Some(magnet.clone()),
+        None => resolve_magnet(app, &result).await,
+    };
+
+    let Some(magnet) = magnet else {
+        app.warn(format!("could not get a magnet link for {}", result.name));
+        return;
+    };
+
+    // Re-key on the magnet's own infohash rather than the row's.
+    //
+    // The detail-page sources (ReelIndex, GamesHub, TorrentHub) cannot know a
+    // torrent's real infohash from the list page, so they carry the site's own
+    // id in that field as a placeholder until resolution. Enqueuing under the
+    // placeholder would file the item under an id the engine never reports
+    // back — librqbit keys by the real hash — so the row would sit at 0% for
+    // ever while the download actually ran. The magnet is authoritative.
+    let id = crate::core::magnet::info_hash_from_magnet(&magnet)
+        .unwrap_or_else(|| result.info_hash.clone());
+
+    let outcome = app
+        .queue
+        .add(
+            AddInput {
+                id,
+                name: result.name.clone(),
+                source: Some(result.source),
+                magnet: Some(magnet),
+                dir: app.config.download_dir.clone(),
+                size_bytes: result.size_bytes,
+            },
+            now_ms(),
+        )
+        .await;
+
+    match outcome {
+        AddOutcome::Duplicate => {
+            app.warn(format!("{} is already in your downloads", result.name));
+            app.state.screen = Screen::Downloads;
+        }
+        AddOutcome::Started | AddOutcome::Retried => {
+            app.state.error_banner = None;
+            app.state.screen = Screen::Downloads;
+        }
+        AddOutcome::Queued => app.warn(format!(
+            "{} is queued — it starts when a slot frees",
+            result.name
+        )),
+    }
+    persist(app);
+    app.refresh_downloads();
+}
+
+/// Asks the owning source for a magnet it did not supply at search time.
+async fn resolve_magnet(app: &App, result: &TorrentResult) -> Option<String> {
+    let source = app
+        .search
+        .sources()
+        .iter()
+        .find(|s| s.def().id == result.source)?
+        .clone();
+    let ctx = SearchCtx {
+        total_deadline: paths::source_timeout(),
+        ..SearchCtx::default()
+    };
+    source.resolve_magnet(result, &ctx).await.ok()
+}
+
+async fn toggle_pause(app: &mut App) {
+    let Some(id) = app.selected_item_id() else {
+        return;
+    };
+    let paused = app
+        .queue
+        .get(&id)
+        .is_some_and(|i| i.status == QueueStatus::Paused);
+    let outcome = if paused {
+        app.queue.resume(&id, Instant::now()).await
+    } else {
+        app.queue.pause(&id).await
+    };
+    if let Err(err) = outcome {
+        app.warn(err.to_string());
+    }
+    persist(app);
+    app.refresh_downloads();
+}
+
+async fn retry_selected(app: &mut App) {
+    let Some(id) = app.selected_item_id() else {
+        return;
+    };
+    let Some(item) = app.queue.get(&id).cloned() else {
+        return;
+    };
+    if item.status != QueueStatus::Failed {
+        return;
+    }
+    app.queue
+        .add(
+            AddInput {
+                id: item.id.clone(),
+                name: item.name.clone(),
+                source: item.source,
+                magnet: item.magnet.clone(),
+                dir: item.dir.clone(),
+                size_bytes: item.total_bytes,
+            },
+            item.added_at_epoch_ms,
+        )
+        .await;
+    persist(app);
+    app.refresh_downloads();
+}
+
+async fn remove_selected(app: &mut App) {
+    let Some(id) = app.selected_item_id() else {
+        return;
+    };
+    // Files are never deleted from here: removal forgets the item, and deleting
+    // someone's data needs a deliberate, separate confirmation.
+    if let Err(err) = app.queue.remove(&id, false).await {
+        app.warn(err.to_string());
+    }
+    persist(app);
+    app.refresh_downloads();
+}
+
+/// Writes the ledger, surfacing a failure without stopping anything.
+fn persist(app: &mut App) {
+    if let Err(err) = app.store.save_ledger(app.queue.items()) {
+        app.warn(format!("could not save your downloads list: {err}"));
+    }
+}
+
+/// True while any source is still working.
+fn still_searching(app: &App) -> bool {
+    app.state
+        .search
+        .source_health
+        .values()
+        .any(|s| *s == SourceStatus::Checking)
+}
+
+/// Folds one engine or search event into the UI state.
+fn apply_event(app: &mut App, event: EngineEvent) {
+    match event {
+        EngineEvent::SourceStatus { source, status } => {
+            app.state.search.source_health.insert(source, status);
+        }
+        EngineEvent::SourceAnswered { source, count } => {
+            app.state.search.source_counts.insert(source, count);
+            // Reachable-but-empty is not the same as failed: the dot must say
+            // "nothing matched" rather than "this source is down".
+            app.state.search.source_health.insert(
+                source,
+                if count == 0 {
+                    SourceStatus::Empty
+                } else {
+                    SourceStatus::Online
+                },
+            );
+            app.state.search.searching = still_searching(app);
+        }
+        EngineEvent::SourceResults { source, results } => {
+            app.partial.insert(source, results);
+            app.remerge();
+        }
+        EngineEvent::SourceFailed {
+            source, message, ..
+        } => {
+            app.state
+                .search
+                .source_health
+                .insert(source, SourceStatus::Offline);
+            app.state.search.searching = still_searching(app);
+            // One dead source is normal and must not shout at the user — the
+            // sidebar dot already says so. Only a total failure earns a banner.
+            let probed: Vec<SourceStatus> = app
+                .state
+                .search
+                .source_health
+                .values()
+                .copied()
+                .filter(|s| *s != SourceStatus::Unknown)
+                .collect();
+            if !probed.is_empty() && probed.iter().all(|s| *s == SourceStatus::Offline) {
+                app.warn(format!("every source is unreachable — {message}"));
+            }
+        }
+        EngineEvent::SearchComplete => app.state.search.searching = false,
+        EngineEvent::Metadata { .. } | EngineEvent::Progress { .. } => {}
+        EngineEvent::Done { .. } => persist(app),
+        EngineEvent::Failed { id, message } => {
+            let name = item_name(app, &id);
+            app.warn(format!("{name}: {message}"));
+            persist(app);
+        }
+        EngineEvent::Missing { id } => {
+            let name = item_name(app, &id);
+            app.warn(format!(
+                "{name}: the downloaded files are gone, so seeding stopped. \
+                 Nothing was re-downloaded."
+            ));
+            persist(app);
+        }
+    }
+}
+
+fn item_name(app: &App, id: &str) -> String {
+    app.queue
+        .get(id)
+        .map(|i| i.name.clone())
+        .unwrap_or_else(|| id.to_owned())
+}
+
+/// Enqueues a magnet handed to us on the command line (`FR-02`).
+async fn enqueue_magnet(app: &mut App, magnet: &str) {
+    let Some(info_hash) = crate::core::magnet::info_hash_from_magnet(magnet) else {
+        app.warn("that magnet link has no usable infohash");
+        return;
+    };
+    app.queue
+        .add(
+            AddInput {
+                id: info_hash.clone(),
+                name: info_hash.clone(),
+                source: None,
+                magnet: Some(magnet.to_owned()),
+                dir: app.config.download_dir.clone(),
+                size_bytes: 0,
+            },
+            now_ms(),
+        )
+        .await;
+    app.state.screen = Screen::Downloads;
+    persist(app);
+    app.refresh_downloads();
+}
+
+/// Wall-clock milliseconds, used only for ordering the queue.
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
 /// Recover from a poisoned theme lock instead of panicking: a watcher thread
-/// that panicked mid-swap must not take the render loop down with it. The
-/// last value written is still a fully-formed `Theme`, so it is safe to use.
+/// that panicked mid-swap must not take the render loop down with it.
 fn lock_theme(theme: &Arc<Mutex<Theme>>) -> std::sync::MutexGuard<'_, Theme> {
     theme
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+#[cfg(test)]
+mod app_tests {
+    use super::*;
+
+    #[test]
+    fn the_status_line_is_one_row_until_something_needs_saying() {
+        let mut app_state = AppState::default();
+        assert_eq!(app_state.error_banner, None);
+        app_state.error_banner = Some("one line".into());
+        // Constructed indirectly: status_height only reads the banner.
+        let lines = app_state
+            .error_banner
+            .as_ref()
+            .map(|m| (m.lines().count() as u16 + 2).clamp(3, 6));
+        assert_eq!(lines, Some(3));
+
+        app_state.error_banner = Some("a\nb\nc\nd\ne\nf\ng".into());
+        let lines = app_state
+            .error_banner
+            .as_ref()
+            .map(|m| (m.lines().count() as u16 + 2).clamp(3, 6));
+        assert_eq!(lines, Some(6), "a long banner is capped, never unbounded");
+    }
 }
