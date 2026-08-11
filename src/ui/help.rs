@@ -29,10 +29,18 @@ const ROWS: &[(&str, &str)] = &[
     ("q / ctrl+c", "quit"),
 ];
 
-/// Draws the help modal centered over the current view.
+/// Draws the help modal centered over the current view, with the underlying
+/// view dimmed so the modal reads as an overlay (omp-style) instead of text
+/// soup floating over a busy screen.
 pub fn draw(frame: &mut Frame, area: Rect, theme: &Theme) {
     let colors = &theme.colors;
     let accent = colors.accent().to_ratatui();
+
+    // Dim the whole screen first; the modal then sits on a quiet backdrop.
+    frame.render_widget(
+        Block::default().style(Style::default().bg(colors.selected_bg().to_ratatui())),
+        area,
+    );
 
     // Key column width = longest key + padding; the modal wraps the table.
     let key_w = ROWS
@@ -67,7 +75,7 @@ pub fn draw(frame: &mut Frame, area: Rect, theme: &Theme) {
         .border_set(border)
         .border_style(Style::default().fg(colors.border().to_ratatui()))
         .title(Span::styled(" keybinds ", Style::default().fg(accent)))
-        .style(Style::default().bg(colors.selected_bg().to_ratatui()));
+        .style(Style::default().bg(colors.bg().to_ratatui()));
 
     let inner = block.inner(Rect::new(x, y, modal_w, modal_h));
     let chunks =
@@ -85,17 +93,17 @@ pub fn draw(frame: &mut Frame, area: Rect, theme: &Theme) {
         )));
     }
     frame.render_widget(
-        Paragraph::new(keys).style(Style::default().bg(colors.selected_bg().to_ratatui())),
+        Paragraph::new(keys).style(Style::default().bg(colors.bg().to_ratatui())),
         chunks[0],
     );
     frame.render_widget(
-        Paragraph::new(actions).style(Style::default().bg(colors.selected_bg().to_ratatui())),
+        Paragraph::new(actions).style(Style::default().bg(colors.bg().to_ratatui())),
         chunks[1],
     );
     frame.render_widget(
         Paragraph::new(Line::default())
             .block(block)
-            .style(Style::default().bg(colors.selected_bg().to_ratatui())),
+            .style(Style::default().bg(colors.bg().to_ratatui())),
         Rect::new(x, y, modal_w, modal_h),
     );
 }

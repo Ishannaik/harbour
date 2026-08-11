@@ -9,6 +9,7 @@
 
 pub mod downloads;
 pub mod help;
+pub mod now_playing;
 pub mod search;
 pub mod status;
 

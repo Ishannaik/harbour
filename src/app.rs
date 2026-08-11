@@ -39,9 +39,13 @@ use ratatui::{Frame, Terminal};
 
 use crate::anim::{self, Spinner, Ticker};
 use crate::fake;
+use crate::queue_store;
 use crate::theme::{Color, Theme};
-use crate::types::{AppState, QueueItem, QueueStatus, Screen, SourceStatus, TorrentResult};
+use crate::types::{
+    AppState, NowPlaying, QueueItem, QueueStatus, Screen, SourceStatus, TorrentResult,
+};
 use crate::ui;
+use crate::watch;
 
 /// Base render cadence (docs/design.md §Animation): the loop redraws at most
 /// once per tick; a burst of input within one tick coalesces into one frame.
@@ -504,27 +508,50 @@ struct App {
     /// The screen underneath the help overlay; restored when it closes.
     help_base: Screen,
     state: AppState,
+    /// Where the queue ledger lives — every mutation saves here (FR-48).
+    queue_path: std::path::PathBuf,
     /// When a fake search resolves (`pump_search`), if one is in flight.
     search_deadline: Option<Instant>,
+    /// The active watch session (FR-57), if any — server + player child.
+    watch: Option<watch::WatchSession>,
+    /// Screen to return to when the player exits.
+    watch_base: Screen,
     splash: SplashState,
     status_spinner: Spinner,
 }
 
 impl App {
-    /// Boots on the splash with the fake queue/history preloaded, so the
-    /// downloads view has render branches to show on first visit.
-    fn new(theme: &Theme) -> Self {
+    /// Boots on the splash. The queue is loaded from the ledger at
+    /// `state_dir/downloads.json` when present; first run seeds the fake
+    /// queue and persists it, so pause/enqueue state survives restarts.
+    fn new(theme: &Theme, state_dir: &std::path::Path) -> Self {
+        let queue_path = state_dir.join("downloads.json");
         let mut state = AppState::default();
-        state.downloads.items = fake::fake_queue();
+        state.downloads.items = match queue_store::load(&queue_path) {
+            queue_store::Load::Ok(items) => items,
+            _ => {
+                let items = fake::fake_queue();
+                queue_store::save(&queue_path, &items);
+                items
+            }
+        };
         state.downloads.history = fake::fake_history();
         Self {
             screen: Screen::Splash,
             help_base: Screen::Search,
             state,
+            queue_path,
             search_deadline: None,
+            watch: None,
+            watch_base: Screen::Downloads,
             splash: SplashState::new(theme),
             status_spinner: Spinner::new(theme.symbols.spinner_frames.clone()),
         }
+    }
+
+    /// Persists the queue after any mutation (FR-48: write on status change).
+    fn save_queue(&self) {
+        queue_store::save(&self.queue_path, &self.state.downloads.items);
     }
 
     /// Handles one key event; returns true when the app should quit.
@@ -545,6 +572,12 @@ impl App {
             return false;
         }
         match self.screen {
+            // Watch mode: q/Esc stop the session and return to the TUI
+            // (FR-59) — they never quit the app.
+            Screen::NowPlaying => {
+                self.end_watch();
+                false
+            }
             Screen::Help => {
                 // `q`/Ctrl+C quit even with help open; Esc or any other key
                 // closes the overlay (docs/design.md §Keybinds).
@@ -565,7 +598,7 @@ impl App {
                     Screen::Splash => self.screen = Screen::Search,
                     Screen::Search => self.search_key(key),
                     Screen::Downloads => self.downloads_key(key),
-                    Screen::Help => unreachable!("handled above"),
+                    Screen::Help | Screen::NowPlaying => unreachable!("handled above"),
                 }
                 false
             }
@@ -613,6 +646,9 @@ impl App {
             KeyCode::Up => self.downloads_move(-1),
             KeyCode::Down => self.downloads_move(1),
             KeyCode::Char('p') => self.toggle_pause(),
+            // `w` watches the selected item (FR-57): stream its primary
+            // media file to an external player (mpv/VLC).
+            KeyCode::Char('w') => self.start_watch(),
             _ => {}
         }
     }
@@ -653,9 +689,10 @@ impl App {
         self.state.search.selected = i.rem_euclid(len as isize) as usize;
     }
 
-    /// `d` on the selected result enqueues a fake download (FR-29; real
-    /// enqueue is engine-track, phase 4). Duplicates are allowed for now —
-    /// FR-56's dedupe focuses the existing item, which needs the engine.
+    /// `d` on the selected result enqueues a download (FR-29; real enqueue is
+    /// engine-track, phase 4). FR-56 dedupe: an info_hash already in the
+    /// queue is *focused*, never copied — mashing `d` cannot pile up
+    /// duplicates. The focus is visible on the Downloads tab's selection.
     fn download_selected(&mut self) {
         let Some(result) = self
             .state
@@ -666,10 +703,19 @@ impl App {
         else {
             return;
         };
-        let item = queue_item_from_result(&result);
         let downloads = &mut self.state.downloads;
+        if let Some(pos) = downloads
+            .items
+            .iter()
+            .position(|it| it.id == result.info_hash)
+        {
+            downloads.selected = pos;
+            return;
+        }
+        let item = queue_item_from_result(&result);
         downloads.items.push(item);
         downloads.selected = downloads.items.len() - 1;
+        self.save_queue();
     }
 
     /// Moves the downloads selection within the *visible* tab's rows, so the
@@ -705,19 +751,79 @@ impl App {
         let Some(item) = downloads.items.get_mut(downloads.selected) else {
             return;
         };
+        let mut changed = false;
         match item.status {
             QueueStatus::Downloading | QueueStatus::Queued => {
                 item.status = QueueStatus::Paused;
                 item.speed_mib = 0.0;
+                changed = true;
             }
             QueueStatus::Paused if item.finished => item.status = QueueStatus::Seeding,
             QueueStatus::Paused => item.status = QueueStatus::Downloading,
             QueueStatus::Seeding => {
                 item.status = QueueStatus::Paused;
                 item.upload_speed_mib = 0.0;
+                changed = true;
             }
             QueueStatus::Failed | QueueStatus::Missing => {} // no-op: nothing to resume
         }
+        if changed {
+            self.save_queue();
+        }
+    }
+
+    /// `w` on the selected item: find its media file, find a player
+    /// (mpv → VLC), serve the file over loopback with Range support, and
+    /// launch the player (FR-57..FR-61). Every failure path is a loud error
+    /// banner — never a silent no-op. With fake data there are no files, so
+    /// this is exactly the honest error until the engine lands.
+    fn start_watch(&mut self) {
+        let Some(item) = self
+            .state
+            .downloads
+            .items
+            .get(self.state.downloads.selected)
+        else {
+            return;
+        };
+        let Some(player) = watch::find_player() else {
+            self.state.error_banner =
+                Some("watch: no player found — install mpv or VLC and add it to PATH".into());
+            return;
+        };
+        let Some(file) = watch::primary_media(&item.dir) else {
+            self.state.error_banner = Some(format!(
+                "watch: no media file for '{}' (fake data — engine lands in phase 4)",
+                item.name
+            ));
+            return;
+        };
+        match watch::WatchSession::start(&file, player) {
+            Ok(session) => {
+                self.watch_base = self.screen;
+                self.state.now_playing = Some(NowPlaying {
+                    id: item.id.clone(),
+                    name: item.name.clone(),
+                    stream_url: session.url.clone(),
+                    progress: item.progress,
+                });
+                self.watch = Some(session);
+                self.screen = Screen::NowPlaying;
+            }
+            Err(e) => {
+                self.state.error_banner = Some(format!("watch: cannot start player: {e}"));
+            }
+        }
+    }
+
+    /// Ends the session and returns to the previous screen (FR-59: player
+    /// exit or `q`/esc). Kills the player and stops the stream server.
+    fn end_watch(&mut self) {
+        if let Some(mut session) = self.watch.take() {
+            session.stop();
+        }
+        self.state.now_playing = None;
+        self.screen = self.watch_base;
     }
 
     /// Paints the current screen. The splash owns the full frame; every
@@ -758,6 +864,11 @@ impl App {
             Screen::Search => ui::search::draw(frame, view_area, &self.state.search, theme),
             Screen::Downloads => {
                 ui::downloads::draw(frame, view_area, &self.state.downloads, theme)
+            }
+            Screen::NowPlaying => {
+                if let Some(np) = &self.state.now_playing {
+                    ui::now_playing::draw(frame, view_area, np, theme);
+                }
             }
             Screen::Splash | Screen::Help => {} // base is never one of these
         }
@@ -825,7 +936,10 @@ fn queue_item_from_result(r: &TorrentResult) -> QueueItem {
 /// theme-watcher thread can swap themes underneath a running render loop
 /// (docs/theming.md §Custom themes). The lock is taken once per frame and
 /// released before the next `poll`, so a watcher swap never blocks input.
-pub fn run(theme: Arc<Mutex<Theme>>) -> Result<(), Box<dyn std::error::Error>> {
+pub fn run(
+    theme: Arc<Mutex<Theme>>,
+    state_dir: &std::path::Path,
+) -> Result<(), Box<dyn std::error::Error>> {
     let _guard = TerminalGuard::enter()?;
 
     let mut terminal = Terminal::new(CrosstermBackend::new(io::stdout()))?;
@@ -835,7 +949,7 @@ pub fn run(theme: Arc<Mutex<Theme>>) -> Result<(), Box<dyn std::error::Error>> {
     // spinner glyphs are re-synced below).
     let mut app = {
         let active = lock_theme(&theme);
-        App::new(&active)
+        App::new(&active, state_dir)
     };
 
     loop {
@@ -863,6 +977,16 @@ pub fn run(theme: Arc<Mutex<Theme>>) -> Result<(), Box<dyn std::error::Error>> {
         }
         // Each frame is one synchronized write — no flicker/tearing between
         // the border, logo, and status line (docs/design.md §2).
+        // FR-59: when the player exits, the watch session ends and the TUI
+        // returns to the previous screen.
+        if app.screen == Screen::NowPlaying
+            && app
+                .watch
+                .as_mut()
+                .is_some_and(|session| session.player_exited())
+        {
+            app.end_watch();
+        }
         anim::with_sync_output(|| {
             terminal.draw(|frame| app.draw(frame, &active, now))?;
             Ok(())
@@ -893,8 +1017,86 @@ mod tests {
         KeyEvent::new(code, KeyModifiers::NONE)
     }
 
+    /// A unique temp state dir per call — every `app()` boots with its own
+    /// ledger, so tests never share (or clobber) queue state.
+    fn temp_state_dir() -> std::path::PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("harbour-app-test-{nanos}"))
+    }
+
     fn app() -> App {
-        App::new(&Theme::titanium())
+        App::new(&Theme::titanium(), &temp_state_dir())
+    }
+
+    #[test]
+    fn pause_survives_restart() {
+        // First session: pause the seeding item, then "restart" by building
+        // a fresh App against the same state dir.
+        let dir = temp_state_dir();
+        let mut a = App::new(&Theme::titanium(), &dir);
+        a.screen = Screen::Downloads;
+        a.state.downloads.selected = 2; // the Seeding item
+        tap(&mut a, KeyCode::Char('p'));
+        assert_eq!(a.state.downloads.items[2].status, QueueStatus::Paused);
+
+        let b = App::new(&Theme::titanium(), &dir);
+        assert_eq!(
+            b.state.downloads.items[2].status,
+            QueueStatus::Paused,
+            "paused seed must stay paused across restart"
+        );
+        assert!(b.state.downloads.items[2].finished);
+    }
+
+    #[test]
+    fn enqueued_download_survives_restart() {
+        let dir = temp_state_dir();
+        let mut a = App::new(&Theme::titanium(), &dir);
+        a.screen = Screen::Search;
+        apply_results(&mut a.state.search, "dune");
+        tap(&mut a, KeyCode::Char('d'));
+        let added = a.state.downloads.items.last().unwrap().clone();
+
+        let b = App::new(&Theme::titanium(), &dir);
+        assert!(
+            b.state.downloads.items.iter().any(|it| it.id == added.id),
+            "enqueued download must survive restart"
+        );
+    }
+
+    // --- watch mode ---
+
+    #[test]
+    fn w_with_fake_data_errors_loudly_not_silently() {
+        let mut a = app();
+        a.screen = Screen::Downloads;
+        a.state.downloads.selected = 2; // the Seeding item (fake dir)
+        tap(&mut a, KeyCode::Char('w'));
+        if a.state.error_banner.is_none() {
+            // A real player might be installed; the fake item still has no
+            // media file, so the banner must be set either way.
+            assert!(
+                a.state.error_banner.is_some(),
+                "w on fake data must surface an error banner"
+            );
+        }
+        assert_eq!(a.screen, Screen::Downloads, "no session started");
+        assert!(a.watch.is_none());
+    }
+
+    #[test]
+    fn q_on_now_playing_returns_not_quits() {
+        // No real session here — just pin the contract: q on the watch
+        // screen calls end_watch (returns false, never quits the app).
+        let mut a = app();
+        a.screen = Screen::NowPlaying;
+        a.watch_base = Screen::Downloads;
+        assert!(!a.handle_key(&key(KeyCode::Char('q'))));
+        assert_eq!(a.screen, Screen::Downloads);
+        assert!(a.state.now_playing.is_none());
     }
 
     /// Shorthand for "handle a key and assert we didn't quit".
@@ -1059,6 +1261,53 @@ mod tests {
         assert_eq!(added.name, a.state.search.results[0].name);
         assert_eq!(added.id, a.state.search.results[0].info_hash);
         assert_eq!(a.state.downloads.selected, items.len() - 1);
+    }
+
+    #[test]
+    fn d_dedupes_on_info_hash_fr56() {
+        let mut a = app();
+        a.screen = Screen::Search;
+        apply_results(&mut a.state.search, "dune");
+        let before = a.state.downloads.items.len();
+        let first = a.state.search.results[0].info_hash.clone();
+
+        // Two `d` presses on the same row: one item, never a duplicate.
+        tap(&mut a, KeyCode::Char('d'));
+        tap(&mut a, KeyCode::Char('d'));
+        let items = &a.state.downloads.items;
+        assert_eq!(items.len(), before + 1, "FR-56: no duplicate enqueue");
+        assert_eq!(
+            items.iter().filter(|it| it.id == first).count(),
+            1,
+            "exactly one queue item for the hash"
+        );
+        // The second press focused the existing item instead.
+        let pos = items.iter().position(|it| it.id == first).unwrap();
+        assert_eq!(a.state.downloads.selected, pos);
+
+        // A different row still enqueues a new item.
+        a.state.search.selected = 1;
+        tap(&mut a, KeyCode::Char('d'));
+        assert_eq!(a.state.downloads.items.len(), before + 2);
+    }
+
+    #[test]
+    fn d_release_does_not_enqueue() {
+        let mut a = app();
+        a.screen = Screen::Search;
+        apply_results(&mut a.state.search, "dune");
+        let before = a.state.downloads.items.len();
+        let release = KeyEvent::new_with_kind(
+            KeyCode::Char('d'),
+            KeyModifiers::NONE,
+            KeyEventKind::Release,
+        );
+        assert!(!a.handle_key(&release));
+        assert_eq!(
+            a.state.downloads.items.len(),
+            before,
+            "release half of a d tap must not download"
+        );
     }
 
     #[test]

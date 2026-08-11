@@ -256,4 +256,6 @@ pub enum Screen {
     Search,
     Downloads,
     Help,
+    /// Watch mode (FR-57): an external player owns the screen until it exits.
+    NowPlaying,
 }
