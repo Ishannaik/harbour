@@ -45,7 +45,9 @@ cargo clippy -- -D warnings
 
 ## Shared vocabulary (normative)
 
-- Queue statuses: `queued`, `downloading`, `failed`, `seeding`, `missing`.
+- Queue statuses: `queued`, `downloading`, `paused`, `failed`, `seeding`, `missing`.
+  One `paused` covers a paused download and a paused seed; `QueueItem.finished`
+  tells them apart.
 - Env vars: `HARBOUR_MAX_DOWNLOADS`, `HARBOUR_TEST_NET`, `HARBOUR_STATE_DIR` (relocates all state for testing).
 - Config dir: `~/.harbour/` (Windows: `%USERPROFILE%\.harbour`).
-- Crate `harbour-tui`, binary `harbour`. Repo: github.com/Ishannaik/harbour.
+- Crate `harbour`, binary `harbour`. Repo: github.com/Ishannaik/harbour.
