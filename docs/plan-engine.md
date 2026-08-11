@@ -473,3 +473,42 @@ single most consequential thing in this document.
 missing-file signalling, Windows delete-with-open-handle) and every performance
 number. Those are E1's gate. Nothing here is presented as measured unless it is in
 the spike doc's evidence table.
+
+---
+
+## 10. Decision record
+
+Decisions taken on this track rather than escalated. Each is recorded with its
+reasoning and its reversal cost, so anyone can see why it went this way and how
+much it costs to change their mind later. **None of these needs an answer from
+anyone to start work.** Disagree by replying on the PR or opening an issue; nothing
+here is expensive to undo except where noted.
+
+| # | Decision | Why | Cost to reverse |
+| --- | --- | --- | --- |
+| **D1** | **The engine owns fan-out *and* dedupe.** UI receives one merged, deduped, seeder-sorted list plus per-source status events. | The cache, per-source deadlines, the negative-TTL marker, the sticky-host hint and cancellation all have to live where the fan-out lives. Putting the merge somewhere else means one invariant spread across two layers. `docs/architecture.md` §3(a) already draws it this way. Ishan's staggered tags and pending dots still work — they're driven by `SourceAnswered`/`SourceFailed` events, not by owning the merge. | Low. The engine emits per-source batches alongside the merged view; the UI merges instead. One extra `EngineEvent` variant, ~half a day. |
+| **D2** | **`EngineEvent::Error` maps to `failed`, never `missing`.** | Contradicts `src/types.rs:206` on purpose. A transient tracker or network error on a seed would otherwise tell the user their files are gone. `missing` is reachable only from the file-gone detector, because FR-45 exists to never guess wrong in that direction — the wrong guess re-downloads 50 GB or hides a real loss. | Trivial — one match arm. But do it knowingly. |
+| **D3** | **`Initializing` splits on `finished`.** `Initializing && finished → seeding (verifying)`. | After a restart a complete seed passes through `Initializing` with `finished == true`. Mapping it unconditionally to `downloading` shows every restored seed as an active download on launch, contradicting FR-47. | Trivial — one match arm. |
+| **D4** | **Boxed futures at the `Source` boundary, not `#[async_trait]`.** | Both are correct; `Box::pin` is exactly what the macro generates. `AGENTS.md` rule 8 says justify every crate, and this one buys syntax only. | Trivial — add the crate, delete the wrappers. If Dhruv finds the boilerplate annoying across ten adapters, the macro is a fair trade and his call. |
+| **D5** | **Health/negative-TTL marker lives in `cache/health/<source_id>.json`, not in the search-cache file.** Shape below. | Dhruv's own guardrail was "per *host*, not per source" — and the search cache is keyed `(source, query)`, so a host-level fact has no correct home there. A separate small file keeps the search cache's schema untouched and makes the marker readable on its own. | Low — it's an implementation detail behind the cache API. |
+| **D6** | **E3 (search orchestration) is accepted into this track.** | Both replies assigned it here and D1 makes it coherent. It is roughly a week that was not in the original track scope. | N/A — a scope call, not a technical one. |
+| **D7** | **All 18 amendments land as one commit in E0**, not as a separate review round. | They are corrections to documents that already contradict each other and the merged code. Spreading them over three PRs means three windows where SPEC, AGENTS and the tree disagree in different ways. | N/A. |
+| **D8** | **The freeze proceeds without the unpushed `sources/*` code.** | It cannot be reconciled against code that is not on a branch, and blocking E0 on it blocks two tracks. §2.1 means that code needs migrating regardless of what it currently looks like. | N/A — I own the migration diff when the branch appears. |
+
+**D5, the marker shape** — this is the default; if Dhruv publishes a different shape
+in `docs/sources.md` §7 first, his wins and I adapt:
+
+```json
+{
+  "hosts": {
+    "yts.mx":  { "failed_at": 1786000000, "class": "network" },
+    "1337x.to": { "failed_at": 1786000042, "class": "blocked" }
+  }
+}
+```
+
+`class` is the `SourceError` variant (`network | parse | blocked | timeout`).
+Entries older than the negative TTL (~60s) are ignored on read and pruned on write.
+Only hard failures are recorded — a clean "no results" is a *success* and is already
+negative-cached at the normal TTL in the search-cache file. Deleting `cache/` stays
+safe at all times.
