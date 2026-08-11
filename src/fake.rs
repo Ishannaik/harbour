@@ -8,7 +8,7 @@
 
 use std::path::PathBuf;
 
-use crate::types::{HistoryItem, QueueItem, QueueStatus, SourceId, TorrentResult};
+use crate::types::{HistoryItem, QueueItem, QueueStatus, SourceGroup, SourceId, TorrentResult};
 
 /// Sidebar source matrix (docs/sources.md §2): id, chip label, name suffix,
 /// and the size band in bytes that source plausibly produces — all bands
@@ -122,22 +122,100 @@ fn magnet(hash: &str, name: &str) -> String {
     format!("magnet:?xt=urn:btih:{hash}&dn={}", name.replace(' ', "+"))
 }
 
-/// Deterministic fake search results for `query`: 8–12 hits across the
-/// sidebar sources (fitgirl, yts, tpb-movies, x1337-movies, eztv, tpb-tv,
-/// nyaa, subsplease, bittorrented), seeded by the query so re-searching the
-/// same term shows the same list (smoke tests can depend on it). Names look
-/// like "{query} (2026) [1080p] [WEBRip]"; sizes span 700 MiB–60 GiB;
-/// seeders 3–9000; leechers 1–300; each magnet is built from a local
-/// 40-hex hash derived from the same seed.
+/// Demo-only query → category heuristic (FR-25's grouped layout). The REAL
+/// per-source relevance comes from Dhruv's scrapers (FR-14/15: each source
+/// searches and returns only what it actually carries); until then this tiny
+/// lexicon decides which sources *participate* so a demo search for an anime
+/// doesn't show a 55 GB FitGirl repack on top. Honest scope: it routes the
+/// group, it never invents rows a source wouldn't plausibly carry.
+fn query_category(query: &str) -> SourceGroup {
+    let q = query.to_ascii_lowercase();
+    if GAME_WORDS.iter().any(|w| q.contains(w)) {
+        SourceGroup::Games
+    } else if TV_WORDS.iter().any(|w| q.contains(w)) {
+        SourceGroup::Tv
+    } else if ANIME_WORDS.iter().any(|w| q.contains(w)) {
+        SourceGroup::Anime
+    } else {
+        SourceGroup::Movies
+    }
+}
+
+/// Words that route a query to the Games group (FitGirl repacks).
+const GAME_WORDS: &[&str] = &[
+    "repack",
+    "game",
+    "crack",
+    "iso",
+    "elden",
+    "zelda",
+    "witcher",
+    "gta",
+    "fifa",
+    "sims",
+    "skyrim",
+    "cyberpunk",
+];
+
+/// Episode markers are TV-first (most shows); anime-only terms live in
+/// [`ANIME_WORDS`], so "slime s01e01" routes to TV but "slime" routes to
+/// Anime. Honest demo heuristic — real relevance is the scrapers' job.
+const TV_WORDS: &[&str] = &[
+    "show", "series", "sitcom", "episode", "s01e", "s1e", "season",
+];
+
+/// Words that route a query to the Anime group (nyaa/subsplease).
+const ANIME_WORDS: &[&str] = &[
+    "anime",
+    "sub",
+    "dub",
+    "ova",
+    "manga",
+    "slime",
+    "tensura",
+    "one piece",
+    "naruto",
+    "jujutsu",
+    "demon slayer",
+    "frieren",
+    "shogun",
+];
+
+/// Which sources answer for a category. Browse mode (empty query) skips this
+/// and uses the whole matrix — a curated library is cross-source by design.
+fn category_sources(category: SourceGroup) -> &'static [&'static str] {
+    match category {
+        SourceGroup::Games => &["fitgirl"],
+        SourceGroup::Movies => &["yts", "tpb-movies", "x1337-movies", "bittorrented"],
+        SourceGroup::Tv => &["eztv", "tpb-tv", "x1337-tv"],
+        SourceGroup::Anime => &["nyaa", "subsplease"],
+    }
+}
+
+/// Deterministic fake search results for `query`: 8–12 hits, seeded by the
+/// query so re-searching the same term shows the same list (smoke tests can
+/// depend on it). Sources are routed by [`query_category`]: an anime query
+/// answers from nyaa/subsplease only, a game query from FitGirl — the
+/// sidebar stagger then lights exactly the group that answered. Browse mode
+/// (empty query, FR-20) spans the whole source matrix. Names look like
+/// "{query} {suffix}"; sizes span 700 MiB–60 GiB; seeders 3–9000; leechers
+/// 1–300; each magnet is built from a local 40-hex hash from the seed.
 pub fn fake_results(query: &str) -> Vec<TorrentResult> {
     let seed = seed_from(query);
     let mut rng = Rng(seed);
-    // Hit count is part of the seeded output: 8..=12, cycling the source
-    // matrix so larger counts give the leading sources a second hit.
+    // Hit count is part of the seeded output: 8..=12.
     let count = 8 + (seed % 5) as usize;
+    // Which sources answer this query; browse spans the whole matrix.
+    let sources: &[&str] = if query.is_empty() {
+        &SOURCES.iter().map(|(id, ..)| *id).collect::<Vec<&str>>()
+    } else {
+        category_sources(query_category(query))
+    };
     (0..count)
         .map(|i| {
-            let (id, _label, suffix, min_size, max_size) = SOURCES[i % SOURCES.len()];
+            let id = sources[i % sources.len()];
+            let (_id, _label, suffix, min_size, max_size) =
+                *SOURCES.iter().find(|(sid, ..)| *sid == id).unwrap();
             // Unique infohash per hit: golden-ratio mix of the seed and the
             // index spreads hits apart without consuming RNG state.
             let info_hash = hash40(seed ^ (i as u64 + 1).wrapping_mul(0x9e37_79b9_7f4a_7c15));
@@ -276,4 +354,63 @@ pub fn fake_history() -> Vec<HistoryItem> {
         source: Some("x1337-movies".to_owned()),
         completed_at_epoch_ms: 1_785_950_000_000,
     }]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::SourceGroup;
+
+    #[test]
+    fn anime_query_answers_only_anime_sources() {
+        let results = fake_results("tensura slime");
+        assert!(!results.is_empty());
+        for r in &results {
+            assert!(
+                r.source == "nyaa" || r.source == "subsplease",
+                "anime query leaked source {}",
+                r.source
+            );
+        }
+    }
+
+    #[test]
+    fn game_query_answers_only_fitgirl() {
+        let results = fake_results("elden ring repack");
+        assert!(!results.is_empty());
+        for r in &results {
+            assert_eq!(r.source, "fitgirl", "game query leaked source {}", r.source);
+        }
+    }
+
+    #[test]
+    fn default_query_routes_to_movies() {
+        assert_eq!(query_category("interstellar"), SourceGroup::Movies);
+        assert_eq!(query_category("dune"), SourceGroup::Movies);
+        let results = fake_results("interstellar");
+        for r in &results {
+            assert!(
+                r.source != "fitgirl" && r.source != "nyaa",
+                "movie query leaked source {}",
+                r.source
+            );
+        }
+    }
+
+    #[test]
+    fn tv_and_anime_lexicon_routes() {
+        assert_eq!(query_category("the boys s01e05"), SourceGroup::Tv);
+        assert_eq!(query_category("frieren season 1"), SourceGroup::Tv);
+        assert_eq!(query_category("frieren"), SourceGroup::Anime);
+        assert_eq!(query_category("tensura slime"), SourceGroup::Anime);
+    }
+
+    #[test]
+    fn browse_mode_spans_the_whole_matrix() {
+        let results = fake_results("");
+        let mut seen: Vec<&str> = results.iter().map(|r| r.source).collect();
+        seen.sort();
+        seen.dedup();
+        assert!(seen.len() > 3, "browse should span groups, got {seen:?}");
+    }
 }
