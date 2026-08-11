@@ -192,3 +192,106 @@ decide now than after the results list is built.
 | 5 | `NFR-03` → 100ms, and add the two footprint NFRs (C1, C2) | Nothing — but decide before we claim it |
 | 6 | Crate name, context file, OQ-1, `HARBOUR_STATE_DIR` (D) | Nothing, just tidy |
 | 7 | `FR-25` grouped-with-duplicates: intended? (E) | Your results list |
+
+---
+---
+
+# Round 2 — from Sarthak, after the freeze decisions
+
+> Thanks for the reply — you agreed to everything and unblocked both tracks by
+> writing a working `types.rs`, which was the right call. The freeze is now written
+> up in [`plan-engine.md`](plan-engine.md) §3. This is what changes for the UI, plus
+> one genuine open question and two places where I'm departing from your working copy
+> on purpose.
+
+## 1. Decision taken: the engine owns fan-out and dedupe
+
+Your #7 put dedupe "at the aggregation layer (UI-track wiring, app state)", and
+`docs/architecture.md` §3(a) draws it in the engine. Rather than send that back and
+forth, **I've decided it: the engine owns both** (plan §5 E3, recorded as D1).
+
+The reasoning: the cache, the per-source deadlines, the negative-TTL marker, the
+sticky-host hint and cancellation all have to live where the fan-out lives. Putting
+the merge somewhere else spreads one invariant across two layers, and the merge would
+be reading state it doesn't own.
+
+**What you get:** one already-merged, already-deduped, seeder-sorted list, plus
+`SourceAnswered` / `SourceFailed` events. Your staggered source tags and the 3s
+pending dot still work exactly as you described — they're driven by those events, not
+by owning the merge. It's less state in the UI, not less control over presentation.
+
+**If you'd rather have it:** it's about half a day to reverse. The engine emits
+per-source batches alongside the merged view and app state merges instead. Say so on
+the PR and I'll do it — I just didn't want to block E0 on a round trip.
+
+## 2. Two decisions that depart from your `types.rs`
+
+Taken, not asked (D2 and D3 in the plan's decision record). Both are one match arm
+to reverse, so they're cheap to overturn — but here's why I think they should stand.
+
+**`EngineEvent::Error` maps to `failed`, never `missing`.** Your comment at
+`src/types.rs:206` says "item → Failed; seed → Missing". I think that's wrong and
+slightly dangerous: a transient tracker or network error on a seed would then mark
+the user's files missing. `missing` should be reachable *only* from the file-gone
+detector, because FR-45's whole purpose is that we never guess wrong in the
+direction of "your data is gone" — or worse, re-download 50 GB.
+
+**`Initializing` splits on `finished`.** After a restart a *complete* seed passes
+through librqbit's `Initializing` state with `finished == true`. Mapping that state
+unconditionally to `downloading` would show every restored seed as an active
+download the moment the app opens, which contradicts FR-47. So
+`Initializing && finished → seeding (verifying)`. You may want a distinct style for
+that verifying moment.
+
+## 3. What changes in the views, and how it lands
+
+**The stats split (plan §3 T7/T8/T9).** `QueueItem` becomes durable-only; volatile
+stats move to `EngineStats`; the views render an `ItemView` (`QueueItem` +
+`Option<EngineStats>`). This is F-7/A-6 — right now the ledger persists `progress`,
+`speed_mib`, `peers` and `eta_secs` to `downloads.json`, which is stale between
+status changes and useless because FR-50 says resume comes from librqbit anyway.
+
+It touches `src/ui/downloads.rs` at `:233-234`, `:237`, `:240`, `:307`. **It ships as
+one PR touching both files, reviewed with you — `main` is never red.** If that PR
+isn't ready when the freeze lands, `QueueItem` keeps the fields as deprecated
+pass-throughs for a cycle. I'm not landing a break and leaving you to fix it.
+
+**Two smaller ones in the same PR:**
+
+- `eta_secs: Option<u64>` → `eta: Option<Duration>`. Your reply said `Option<Duration>`
+  was implemented, but the file has `eta_secs: Option<u64>` on `QueueItem` and
+  `time_remaining: Option<Duration>` on `EngineStats` — so "one unit, converted once"
+  was already broken inside the freeze candidate. One unit wins.
+- `SourceStatus` gains `Unknown` and `Checking`. **Your 3s pending dot is currently
+  unimplementable** — `Online | Empty | Offline` has no way to say "hasn't answered
+  yet", so `search.rs:155` renders every unprobed source as `·` forever, and FR-18's
+  `checking` state has nowhere to live.
+
+**`HistoryItem`.** FR-49's `history.json` is *search queries*, cap 500; your
+`HistoryItem` models completed downloads and cites FR-53, which is bootguard. I'm
+making recently-downloaded derive from the ledger (`finished == true`) so there's no
+second file, and `history.json` stays search queries. `DownloadsState.history` gets
+retyped in the same PR.
+
+## 4. The tidy batch — two items didn't actually land
+
+Not a gotcha, just so you're not surprised when I touch them: `notes-reply-ishan.md`
+§6 reports the crate name and the context citations as fixed, but `harbour-tui` is
+still at `AGENTS.md:51`, `docs/roadmap.md:32` and `docs/design.md:3`, and
+`docs/roadmap.md:5` and `docs/design.md:5` still cite the uncommitted
+`harbour-context.md`. `HARBOUR_STATE_DIR` and `docs/context.md` did land.
+
+**I'm taking all of it.** The amendment list is up to 18 (FR-25 dedupe, FR-14
+optional magnet, FR-18 `checking`, FR-49 history semantics are new) and I'll land
+them in E0 rather than leaving them in your queue — including the FR-43 clause
+removal you asked me for.
+
+## 5. Nothing here needs an answer
+
+Everything from your reply is agreed and scheduled, and the open items above are
+decided rather than pending — E0 starts now. Every decision on this track, with its
+reasoning and its reversal cost, is in [`plan-engine.md`](plan-engine.md) §10; that's
+the place to look if something in the engine surprises you later.
+
+The only thing that will land in your files is the stats-split PR in §3, and it comes
+with the `downloads.rs` changes already made and reviewed with you.
