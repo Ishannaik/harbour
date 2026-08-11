@@ -1,0 +1,93 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:nyaa="https://nyaa.si/xmlns/nyaa">
+  <channel>
+    <title>Nyaa - Home - Torrent File RSS</title>
+    <description>RSS Feed for Home</description>
+    <link>https://nyaa.si/</link>
+
+    <!-- A complete item, as nyaa.si serves it. -->
+    <item>
+      <title>[HarbourSubs] Example Anime - 01 (1080p) [1A2B3C4D].mkv</title>
+      <link>https://nyaa.si/download/1900001.torrent</link>
+      <guid isPermaLink="true">https://nyaa.si/view/1900001</guid>
+      <pubDate>Sat, 08 Aug 2026 14:30:00 -0000</pubDate>
+      <nyaa:seeders>1204</nyaa:seeders>
+      <nyaa:leechers>85</nyaa:leechers>
+      <nyaa:downloads>4312</nyaa:downloads>
+      <nyaa:infoHash>a1b2c3d4e5f60718293a4b5c6d7e8f9012345678</nyaa:infoHash>
+      <nyaa:categoryId>1_2</nyaa:categoryId>
+      <nyaa:category>Anime - English-translated</nyaa:category>
+      <nyaa:size>1.4 GiB</nyaa:size>
+      <nyaa:comments>3</nyaa:comments>
+      <nyaa:trusted>Yes</nyaa:trusted>
+      <nyaa:remake>No</nyaa:remake>
+      <description><![CDATA[<a href="https://nyaa.si/view/1900001">#1900001 | [HarbourSubs] Example Anime - 01 (1080p)</a> | 1.4 GiB | Anime - English-translated | a1b2c3d4e5f60718293a4b5c6d7e8f9012345678]]></description>
+    </item>
+
+    <!-- A non-ASCII title and an uppercase infohash. -->
+    <item>
+      <title>[HarbourSubs] 進撃の巨人 &amp; Friends - 12 (720p) [E5F60718].mkv</title>
+      <link>https://nyaa.si/download/1900002.torrent</link>
+      <guid isPermaLink="true">https://nyaa.si/view/1900002</guid>
+      <pubDate>Fri, 07 Aug 2026 09:05:42 -0000</pubDate>
+      <nyaa:seeders>77</nyaa:seeders>
+      <nyaa:leechers>9</nyaa:leechers>
+      <nyaa:downloads>210</nyaa:downloads>
+      <nyaa:infoHash>B1B2B3B4B5B6B7B8B9BABBBCBDBEBFB0B1B2B3B4</nyaa:infoHash>
+      <nyaa:categoryId>1_2</nyaa:categoryId>
+      <nyaa:category>Anime - English-translated</nyaa:category>
+      <nyaa:size>700.0 MiB</nyaa:size>
+      <nyaa:comments>0</nyaa:comments>
+      <nyaa:trusted>No</nyaa:trusted>
+      <nyaa:remake>No</nyaa:remake>
+      <description><![CDATA[<a href="https://nyaa.si/view/1900002">#1900002</a> | 700.0 MiB]]></description>
+    </item>
+
+    <!-- No nyaa:infoHash element: the hash has to come out of the magnet the
+         uploader pasted into the description. -->
+    <item>
+      <title>[HarbourSubs] Long Running Series - Batch 01-24 (1080p)</title>
+      <link>https://nyaa.si/download/1900003.torrent</link>
+      <guid isPermaLink="true">https://nyaa.si/view/1900003</guid>
+      <pubDate>Wed, 05 Aug 2026 18:20:00 -0000</pubDate>
+      <nyaa:seeders>340</nyaa:seeders>
+      <nyaa:leechers>52</nyaa:leechers>
+      <nyaa:categoryId>1_2</nyaa:categoryId>
+      <nyaa:category>Anime - English-translated</nyaa:category>
+      <nyaa:size>12.3 GiB</nyaa:size>
+      <description><![CDATA[<a href="https://nyaa.si/view/1900003">#1900003</a> | mirror: magnet:?xt=urn:btih:c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00&amp;dn=Long.Running.Series]]></description>
+    </item>
+
+    <!-- Garbage hash and no magnet: unusable, must be dropped. -->
+    <item>
+      <title>[HarbourSubs] Corrupt Entry - 05 (1080p)</title>
+      <link>https://nyaa.si/download/1900004.torrent</link>
+      <pubDate>Wed, 05 Aug 2026 11:00:00 -0000</pubDate>
+      <nyaa:seeders>2</nyaa:seeders>
+      <nyaa:leechers>1</nyaa:leechers>
+      <nyaa:infoHash>not-a-real-info-hash</nyaa:infoHash>
+      <nyaa:size>1.0 GiB</nyaa:size>
+    </item>
+
+    <!-- Downloadable but unnameable: also dropped. -->
+    <item>
+      <title></title>
+      <link>https://nyaa.si/download/1900005.torrent</link>
+      <pubDate>Wed, 05 Aug 2026 10:00:00 -0000</pubDate>
+      <nyaa:seeders>11</nyaa:seeders>
+      <nyaa:leechers>3</nyaa:leechers>
+      <nyaa:infoHash>d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0</nyaa:infoHash>
+      <nyaa:size>350.0 MiB</nyaa:size>
+    </item>
+
+    <!-- No size and no leechers reported: both degrade to 0 rather than
+         dropping an otherwise fine row. -->
+    <item>
+      <title>[HarbourSubs] Sizeless Release - 03 (480p)</title>
+      <link>https://nyaa.si/download/1900006.torrent</link>
+      <pubDate>Wed, 05 Aug 2026 08:45:00 -0000</pubDate>
+      <nyaa:seeders>6</nyaa:seeders>
+      <nyaa:infoHash>e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5</nyaa:infoHash>
+    </item>
+  </channel>
+</rss>
