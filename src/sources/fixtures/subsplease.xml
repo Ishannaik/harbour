@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom">
+  <channel>
+    <title>SubsPlease RSS</title>
+    <link>https://subsplease.org</link>
+    <description>SubsPlease release feed</description>
+    <language>en-us</language>
+    <atom:link href="https://subsplease.org/rss/" rel="self" type="application/rss+xml"/>
+
+    <!-- The normal shape: the magnet is the item link, and there is no size or
+         swarm information anywhere in the feed. -->
+    <item>
+      <title>[SubsPlease] Example Anime - 12 (1080p) [ABCD1234].mkv</title>
+      <link>magnet:?xt=urn:btih:f00dcafef00dcafef00dcafef00dcafef00dcafe&amp;dn=%5BSubsPlease%5D%20Example%20Anime%20-%2012%20(1080p)&amp;tr=http%3A%2F%2Fnyaa.tracker.wf%3A7777%2Fannounce</link>
+      <guid isPermaLink="false">[SubsPlease] Example Anime - 12 (1080p) [ABCD1234].mkv</guid>
+      <pubDate>Sat, 08 Aug 2026 16:00:00 +0000</pubDate>
+      <category>1080p</category>
+    </item>
+
+    <!-- Uppercase hash, and a non-ASCII title. -->
+    <item>
+      <title>[SubsPlease] 進撃の巨人 - 07 (720p) [9A9B9C9D].mkv</title>
+      <link>magnet:?xt=urn:btih:9A9B9C9D9E9F90919293949596979899A0A1A2A3&amp;dn=%5BSubsPlease%5D&amp;tr=http%3A%2F%2Fnyaa.tracker.wf%3A7777%2Fannounce</link>
+      <guid isPermaLink="false">[SubsPlease] 進撃の巨人 - 07 (720p) [9A9B9C9D].mkv</guid>
+      <pubDate>Fri, 07 Aug 2026 15:30:00 +0000</pubDate>
+      <category>720p</category>
+    </item>
+
+    <!-- A show page rather than a magnet: nothing downloadable, must be dropped. -->
+    <item>
+      <title>[SubsPlease] Announcement Post - no torrent</title>
+      <link>https://subsplease.org/shows/example-anime/</link>
+      <guid isPermaLink="true">https://subsplease.org/shows/example-anime/</guid>
+      <pubDate>Thu, 06 Aug 2026 14:00:00 +0000</pubDate>
+      <category>news</category>
+    </item>
+
+    <!-- Downloadable but unnameable: also dropped. -->
+    <item>
+      <title></title>
+      <link>magnet:?xt=urn:btih:7777777777777777777777777777777777777777&amp;tr=http%3A%2F%2Fnyaa.tracker.wf%3A7777%2Fannounce</link>
+      <guid isPermaLink="false">7777777777777777777777777777777777777777</guid>
+      <pubDate>Wed, 05 Aug 2026 13:00:00 +0000</pubDate>
+      <category>1080p</category>
+    </item>
+
+    <!-- An entity in the title, and no pubDate at all. -->
+    <item>
+      <title>[SubsPlease] Tom &amp; Jerry Anime - 04 (480p) [88888888].mkv</title>
+      <link>magnet:?xt=urn:btih:8888888888888888888888888888888888888888&amp;dn=%5BSubsPlease%5D%20Tom%20%26%20Jerry&amp;tr=http%3A%2F%2Fnyaa.tracker.wf%3A7777%2Fannounce</link>
+      <guid isPermaLink="false">[SubsPlease] Tom &amp; Jerry Anime - 04 (480p) [88888888].mkv</guid>
+      <category>480p</category>
+    </item>
+  </channel>
+</rss>

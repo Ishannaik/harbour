@@ -14,11 +14,15 @@
 // let the compiler point at anything genuinely unused.
 #![allow(dead_code)]
 
+pub mod bittorrented;
 pub mod cache;
 pub mod eztv;
+pub mod fitgirl;
 pub mod net;
 pub mod nyaa;
 pub mod subsplease;
+pub mod tpb;
+pub mod x1337;
 pub mod yts;
 
 use std::sync::Arc;
@@ -26,8 +30,22 @@ use std::sync::Arc;
 use crate::core::types::ArcSource;
 
 /// Every source, in sidebar order.
+///
+/// Adding a source is one line here plus its module. The order matters only for
+/// the sidebar; the fan-out starts them all at once.
 pub fn registry() -> Vec<ArcSource> {
-    vec![Arc::new(yts::Yts::new())]
+    vec![
+        Arc::new(fitgirl::FitGirl::new()),
+        Arc::new(yts::Yts::new()),
+        Arc::new(tpb::TpbMovies::new()),
+        Arc::new(x1337::X1337Movies::new()),
+        Arc::new(bittorrented::Bittorrented::new()),
+        Arc::new(eztv::Eztv::new()),
+        Arc::new(tpb::TpbTv::new()),
+        Arc::new(x1337::X1337Tv::new()),
+        Arc::new(nyaa::Nyaa::new()),
+        Arc::new(subsplease::SubsPlease::new()),
+    ]
 }
 
 #[cfg(test)]
@@ -46,6 +64,17 @@ mod tests {
         for source in &sources {
             assert!(!source.def().label.is_empty());
         }
+    }
+
+    #[test]
+    fn the_registry_covers_every_source_in_the_matrix() {
+        // A source that exists but is not registered is invisible to the user,
+        // and nothing else would catch it.
+        let registered: Vec<SourceId> = registry().iter().map(|s| s.def().id).collect();
+        for id in SourceId::ALL {
+            assert!(registered.contains(&id), "{id} is not in the registry");
+        }
+        assert_eq!(registered.len(), SourceId::ALL.len());
     }
 
     #[test]
