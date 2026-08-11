@@ -6,6 +6,13 @@
 //! curated subset (bg, text, accent, border, success, error, warning, muted,
 //! dim, selected_bg).
 
+//! `dead_code` is allowed for this subtree until `app.rs` dispatches to
+//! these views (integration is in flight); mirrors `theme.rs`'s staged-API
+//! allow. The lint scope covers the child view modules too, so it lives
+//! here rather than being repeated in each. Remove it as the wiring lands.
+
+#![allow(dead_code)]
+
 pub mod downloads;
 pub mod search;
 pub mod status;

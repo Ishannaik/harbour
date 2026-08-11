@@ -5,6 +5,13 @@
 //! (Sarthak, phase 1A). This file implements his contract so the UI and
 //! sources tracks can build now; when his `types.rs` lands, keep his.
 
+//! `dead_code` is allowed module-wide: this is the shared contract, so it
+//! is defined ahead of its consumers by design (engine, queue and
+//! persistence land in phase 1A/4/5). Mirrors `theme.rs`'s staged-API
+//! allow; remove it once the engine and queue modules land.
+
+#![allow(dead_code)]
+
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -95,7 +102,12 @@ pub struct SourceDef {
 
 /// Queue lifecycle — the six statuses (Sarthak's A3): one `Paused` for both
 /// paused downloads and paused seeds, disambiguated by `QueueItem::finished`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+// Serialize/Deserialize are not optional here: `QueueItem` derives both and
+// embeds this, so without them the ledger cannot round-trip. `rename_all`
+// keeps the on-disk spelling identical to `label()` and to the normative
+// vocabulary in AGENTS.md, so a ledger file stays readable by eye.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum QueueStatus {
     Queued,
     Downloading,
@@ -129,7 +141,10 @@ impl QueueStatus {
 pub struct QueueItem {
     pub id: InfoHash,
     pub name: String,
-    pub source: Option<SourceId>,
+    /// Owned, not `SourceId`: `SourceId` is `&'static str` for the registry's
+    /// benefit, and `&'static str` cannot implement `Deserialize` — data read
+    /// back off disk is owned by definition. Convert at the boundary.
+    pub source: Option<String>,
     pub magnet: String,
     pub dir: PathBuf,
     pub status: QueueStatus,
@@ -154,7 +169,8 @@ pub struct HistoryItem {
     pub id: InfoHash,
     pub name: String,
     pub size_bytes: u64,
-    pub source: Option<SourceId>,
+    /// Owned for the same reason as [`QueueItem::source`].
+    pub source: Option<String>,
     pub completed_at_epoch_ms: i64,
 }
 
@@ -231,16 +247,13 @@ pub struct AppState {
 }
 
 /// Screen the TUI is showing.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Screen {
     Splash,
+    // Search is the landing screen (FR-01), so it is the default. The splash
+    // is a timed intro the app leaves, not a resting state.
+    #[default]
     Search,
     Downloads,
     Help,
-}
-
-impl Default for Screen {
-    fn default() -> Self {
-        Screen::Search
-    }
 }
