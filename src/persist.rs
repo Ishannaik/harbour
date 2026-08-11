@@ -501,7 +501,16 @@ mod tests {
     #[test]
     fn a_missing_config_is_a_first_run() {
         let store = temp_store("noconfig");
-        assert_eq!(store.load_config(), Loaded::Ok(Config::default()));
+        let loaded = store.load_config();
+        assert!(loaded.warning().is_none(), "a first run is not an error");
+        let cfg = loaded.value();
+        // Asserted field-wise rather than against `Config::default()` as a
+        // whole: the default download directory is derived from the
+        // environment, and comparing two separately-computed copies of it
+        // couples this test to process-global state.
+        assert_eq!(cfg.theme, "titanium");
+        assert!(cfg.seed_by_default);
+        assert!(cfg.trackers.is_empty());
     }
 
     #[test]
