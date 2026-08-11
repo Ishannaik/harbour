@@ -1,0 +1,55 @@
+{
+  "status": "ok",
+  "data": {
+    "movie_count": 2,
+    "movies": [
+      {
+        "id": 1,
+        "title": "Example Movie",
+        "title_long": "Example Movie (2026)",
+        "date_uploaded_unix": 1786000000,
+        "torrents": [
+          {
+            "hash": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA1",
+            "quality": "1080p",
+            "type": "bluray",
+            "size_bytes": 2147483648,
+            "seeds": 512,
+            "peers": 24
+          },
+          {
+            "hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb2",
+            "quality": "2160p",
+            "type": "web",
+            "size_bytes": 8589934592,
+            "seeds": 96,
+            "peers": 8
+          }
+        ]
+      },
+      {
+        "id": 2,
+        "title": "Second Film",
+        "title_long": "Second Film (2025)",
+        "date_uploaded_unix": 1785000000,
+        "torrents": [
+          {
+            "hash": "not-a-real-hash",
+            "quality": "720p",
+            "size_bytes": 1073741824,
+            "seeds": 3,
+            "peers": 1
+          },
+          {
+            "hash": "ccccccccccccccccccccccccccccccccccccccc3",
+            "quality": "720p",
+            "type": "bluray",
+            "size_bytes": 1073741824,
+            "seeds": 40,
+            "peers": 5
+          }
+        ]
+      }
+    ]
+  }
+}
