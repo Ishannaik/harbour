@@ -82,6 +82,12 @@ impl SearchEngine {
         }
     }
 
+    /// The registry, so a caller can ask the owning source to resolve a magnet
+    /// it did not supply at search time.
+    #[allow(
+        dead_code,
+        reason = "used by app.rs; the network test includes this module standalone"
+    )]
     pub fn sources(&self) -> &[ArcSource] {
         &self.sources
     }
@@ -344,6 +350,42 @@ mod tests {
         out
     }
 
+    /// Waits for a condition instead of sleeping a fixed amount.
+    ///
+    /// A fixed sleep is a bet that a spawned task finishes within it, and that
+    /// bet loses on a loaded CI runner — which is how a suite acquires the
+    /// intermittent failures nobody can reproduce. Polling to a generous
+    /// deadline is both faster in the common case and cannot flake.
+    async fn until(deadline: Duration, mut done: impl FnMut() -> bool) -> bool {
+        let end = tokio::time::Instant::now() + deadline;
+        while tokio::time::Instant::now() < end {
+            if done() {
+                return true;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        done()
+    }
+
+    /// Drains events until `want` of them have arrived, or the deadline passes.
+    async fn drain_until(
+        rx: &mut tokio::sync::mpsc::UnboundedReceiver<EngineEvent>,
+        want: usize,
+        deadline: Duration,
+    ) -> Vec<EngineEvent> {
+        let mut out = Vec::new();
+        let end = tokio::time::Instant::now() + deadline;
+        while out.len() < want && tokio::time::Instant::now() < end {
+            match tokio::time::timeout(Duration::from_millis(50), rx.recv()).await {
+                Ok(Some(e)) => out.push(e),
+                Ok(None) => break,
+                Err(_) => {}
+            }
+        }
+        out.extend(collect(rx));
+        out
+    }
+
     #[tokio::test]
     async fn one_failing_source_never_stops_the_others() {
         let good = Arc::new(ScriptedSource {
@@ -364,9 +406,8 @@ mod tests {
         let engine = SearchEngine::new(vec![good, bad], temp_cache("resilient"));
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         engine.start(String::new(), SearchCtx::default(), tx);
-        tokio::time::sleep(Duration::from_millis(150)).await;
-
-        let events = collect(&mut rx);
+        // Two Checking, one SourceAnswered + SourceResults, one SourceFailed.
+        let events = drain_until(&mut rx, 5, Duration::from_secs(5)).await;
         assert!(
             events.iter().any(
                 |e| matches!(e, EngineEvent::SourceResults { source, results }
@@ -422,10 +463,11 @@ mod tests {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let cancel = engine.start(String::new(), SearchCtx::default(), tx);
 
-        tokio::time::sleep(Duration::from_millis(50)).await;
-        let _ = collect(&mut rx); // drain the Checking event
+        let _ = drain_until(&mut rx, 1, Duration::from_secs(5)).await; // the Checking event
         cancel.cancel();
-        tokio::time::sleep(Duration::from_millis(400)).await;
+        // Well past the scripted source's 300ms delay, so a leaked result would
+        // have had every chance to arrive.
+        tokio::time::sleep(Duration::from_millis(600)).await;
 
         let after = collect(&mut rx);
         assert!(
@@ -449,9 +491,11 @@ mod tests {
         let engine = SearchEngine::new(vec![source], temp_cache("cachehit"));
 
         for _ in 0..2 {
-            let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
             engine.start("dune".into(), SearchCtx::default(), tx);
-            tokio::time::sleep(Duration::from_millis(120)).await;
+            // Wait for the source to actually settle before searching again,
+            // or the second search races the first one's cache write.
+            drain_until(&mut rx, 3, Duration::from_secs(5)).await;
         }
         assert_eq!(
             calls.load(Ordering::SeqCst),
@@ -472,9 +516,9 @@ mod tests {
         });
         let engine = SearchEngine::new(vec![source], temp_cache("emptycache"));
         for _ in 0..2 {
-            let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
             engine.start("nothing".into(), SearchCtx::default(), tx);
-            tokio::time::sleep(Duration::from_millis(120)).await;
+            drain_until(&mut rx, 3, Duration::from_secs(5)).await;
         }
         assert_eq!(
             calls.load(Ordering::SeqCst),
@@ -495,9 +539,11 @@ mod tests {
         });
         let engine = SearchEngine::new(vec![source], temp_cache("nocachefail"));
         for _ in 0..2 {
-            let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
             engine.start("dune".into(), SearchCtx::default(), tx);
-            tokio::time::sleep(Duration::from_millis(120)).await;
+            drain_until(&mut rx, 2, Duration::from_secs(5)).await;
+            // The call counter is what this asserts on, so wait on it directly.
+            until(Duration::from_secs(5), || calls.load(Ordering::SeqCst) > 0).await;
         }
         assert_eq!(
             calls.load(Ordering::SeqCst),
