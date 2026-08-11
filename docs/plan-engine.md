@@ -495,6 +495,16 @@ here is expensive to undo except where noted.
 | **D7** | **All 18 amendments land as one commit in E0**, not as a separate review round. | They are corrections to documents that already contradict each other and the merged code. Spreading them over three PRs means three windows where SPEC, AGENTS and the tree disagree in different ways. | N/A. |
 | **D8** | **The freeze proceeds without the unpushed `sources/*` code.** | It cannot be reconciled against code that is not on a branch, and blocking E0 on it blocks two tracks. §2.1 means that code needs migrating regardless of what it currently looks like. | N/A — I own the migration diff when the branch appears. |
 
+### Decisions taken during implementation
+
+| # | Decision | Why | Cost to reverse |
+| --- | --- | --- | --- |
+| **D9** | **native-tls, not rustls.** | librqbit's `rust-tls` feature pulls `aws-lc-sys`, which **requires NASM to build on Windows** — the exact native-toolchain install pain this project exists to escape, on the platform `NFR-08` names as primary. native-tls uses SChannel on Windows, Security.framework on macOS, OpenSSL on Linux, and needs no extra toolchain on any of them. | Low, but re-check the Windows build first. |
+| **D10** | **The queue re-keys a lazily-resolved download on the magnet's infohash.** | The three detail-page sources carry the site's numeric id in `info_hash` as a placeholder until `resolve_magnet` runs. Enqueuing under the placeholder files the item under an id the engine never reports back — librqbit keys by the real hash — so the row would sit at 0% for ever while the download actually ran. The magnet is authoritative. | Trivial, but do not: this is a correctness fix, not a preference. |
+| **D11** | **An unresolved detail-page row does not take part in cross-source dedupe.** | Its placeholder hash is not the real one, so it cannot match another source's copy. Resolving every row to fix it would reintroduce the per-row detail fetch that lazy magnets exist to avoid. | N/A — a documented consequence, revisit if dedupe quality disappoints. |
+| **D12** | **`.torrent`-on-launch is parsed and refused with an explanation**, not half-implemented. | Reading one means bencode plus hashing its info dict for the id. An honest "paste the magnet instead" beats a path that half-works on launch. | Small follow-up, not a redesign. |
+| **D13** | **The engine is constructed before the first frame.** | Simplest correct ordering: the queue restores against a live engine. But it is the thing most likely to blow `NFR-03`'s 100 ms budget, and that budget is now unmeasured. Flagged rather than quietly left to rot — moving construction after first paint is the fix if measurement says so. | Medium: the queue restore has to become async-after-paint. |
+
 **D5, the marker shape** — this is the default; if Dhruv publishes a different shape
 in `docs/sources.md` §7 first, his wins and I adapt:
 

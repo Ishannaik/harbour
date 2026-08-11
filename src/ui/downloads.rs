@@ -2,7 +2,7 @@
 //! recently-downloaded section, and the Seeding tab (docs/design.md §2.3).
 //!
 //! Pure paint: `draw` renders `DownloadsState` + `Theme`; the app loop owns
-//! input and the 30fps tick. `QueueItem::progress` is already the eased
+//! input and the 30fps tick. `ItemView::progress` is already the eased
 //! *display* value (queue layer, tau = 200ms), so the view never animates —
 //! an unchanged queue repaints byte-identical frames. All colors come from
 //! the theme subset (docs/theming.md), so custom themes work unchanged.
@@ -14,8 +14,9 @@ use ratatui::symbols::border::Set as BorderSet;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 
+use crate::core::types::{CompletedItem, ItemView, QueueStatus};
 use crate::theme::{Theme, ThemeColors};
-use crate::types::{DownloadsState, HistoryItem, QueueItem, QueueStatus};
+use crate::ui::DownloadsState;
 
 /// Panel title — same framing as the splash and search panels.
 const TITLE: &str = " harbour — downloads ";
@@ -124,11 +125,11 @@ fn draw_active(frame: &mut Frame, area: Rect, state: &DownloadsState, theme: &Th
     // vanishes; the section is capped at HISTORY_ROWS.
     let recent_h = (1 + state.history.len().min(HISTORY_ROWS)) as u16;
     let chunks = Layout::vertical([Constraint::Min(0), Constraint::Length(recent_h)]).split(area);
-    let active: Vec<(usize, &QueueItem)> = state
+    let active: Vec<(usize, &ItemView)> = state
         .items
         .iter()
         .enumerate()
-        .filter(|(_, it)| !matches!(it.status, QueueStatus::Seeding | QueueStatus::Missing))
+        .filter(|(_, it)| !matches!(it.item.status, QueueStatus::Seeding | QueueStatus::Missing))
         .collect();
 
     let mut lines: Vec<Line> = Vec::new();
@@ -168,11 +169,11 @@ fn draw_active(frame: &mut Frame, area: Rect, state: &DownloadsState, theme: &Th
 
 /// Seeding tab body: one row per seeding/missing item.
 fn draw_seeding(frame: &mut Frame, area: Rect, state: &DownloadsState, theme: &Theme) {
-    let seeding: Vec<(usize, &QueueItem)> = state
+    let seeding: Vec<(usize, &ItemView)> = state
         .items
         .iter()
         .enumerate()
-        .filter(|(_, it)| matches!(it.status, QueueStatus::Seeding | QueueStatus::Missing))
+        .filter(|(_, it)| matches!(it.item.status, QueueStatus::Seeding | QueueStatus::Missing))
         .collect();
     let mut lines: Vec<Line> = Vec::new();
     if seeding.is_empty() {
@@ -193,7 +194,7 @@ fn draw_seeding(frame: &mut Frame, area: Rect, state: &DownloadsState, theme: &T
 
 /// Window start for a list of `(original_index, item)` pairs so the selected
 /// row stays visible; 0 when everything fits.
-fn scroll_start(list: &[(usize, &QueueItem)], selected: usize, vis: usize) -> usize {
+fn scroll_start(list: &[(usize, &ItemView)], selected: usize, vis: usize) -> usize {
     match list.iter().position(|(i, _)| *i == selected) {
         Some(p) if vis > 0 && p >= vis => p - vis + 1,
         _ => 0,
@@ -201,21 +202,21 @@ fn scroll_start(list: &[(usize, &QueueItem)], selected: usize, vis: usize) -> us
 }
 
 /// Queue item's first row: name, status chip, right-aligned downloaded/total.
-fn name_line(item: &QueueItem, width: usize, selected: bool, theme: &Theme) -> Line<'static> {
+fn name_line(item: &ItemView, width: usize, selected: bool, theme: &Theme) -> Line<'static> {
     let colors = &theme.colors;
-    let chip = format!("[{}]", item.status.label());
+    let chip = format!("[{}]", item.item.status.label());
     let size = format!(
         "{} / {}",
-        human_bytes(item.downloaded_bytes),
-        human_bytes(item.total_bytes)
+        human_bytes(item.downloaded_bytes()),
+        human_bytes(item.total_bytes())
     );
     let fixed = 1 + chip.chars().count() + size.chars().count(); // space + chip + size
-    let name = truncate(&item.name, width.saturating_sub(fixed + 1));
+    let name = truncate(&item.item.name, width.saturating_sub(fixed + 1));
     let pad = width.saturating_sub(name.chars().count() + fixed);
     let spans = vec![
         suffix_span(name, colors.text().to_ratatui()),
         Span::raw(" "),
-        Span::styled(chip, status_chip_style(item.status, colors)),
+        Span::styled(chip, status_chip_style(item.item.status, colors)),
         Span::raw(" ".repeat(pad)),
         suffix_span(size, colors.muted().to_ratatui()),
     ];
@@ -225,19 +226,22 @@ fn name_line(item: &QueueItem, width: usize, selected: bool, theme: &Theme) -> L
 /// Queue item's second row: the eased progress bar, then right-aligned
 /// percent / speed / peers / ETA. `peers`/`eta` are `Option` per contract B1
 /// (librqbit cannot report them while paused) — `None` renders '—', never 0.
-fn bar_line(item: &QueueItem, width: usize, selected: bool, theme: &Theme) -> Line<'static> {
+fn bar_line(item: &ItemView, width: usize, selected: bool, theme: &Theme) -> Line<'static> {
     let colors = &theme.colors;
     let accent = colors.accent().to_ratatui();
     let muted = colors.muted().to_ratatui();
-    let pct = (item.progress.clamp(0.0, 1.0) * 100.0).round() as u32;
+    let pct = (item.progress() * 100.0).round() as u32;
     let peers = item
-        .peers
+        .peers()
         .map(|p| p.to_string())
         .unwrap_or_else(|| "—".into());
-    let eta = item.eta_secs.map(fmt_eta).unwrap_or_else(|| "—".into());
+    let eta = item
+        .eta()
+        .map(|d| fmt_eta(d.as_secs()))
+        .unwrap_or_else(|| "—".into());
     let suffix = vec![
         suffix_span(format!("{pct:>3}%"), accent),
-        suffix_span(format!("  {:.1} MiB/s", item.speed_mib), accent),
+        suffix_span(format!("  {:.1} MiB/s", item.speed_mib()), accent),
         suffix_span(format!("  peers {peers}"), muted),
         suffix_span(format!("  eta {eta}"), muted),
     ];
@@ -257,14 +261,14 @@ fn bar_line(item: &QueueItem, width: usize, selected: bool, theme: &Theme) -> Li
 /// Progress bar glyphs: `fill` cells, a `half` cell past the fractional
 /// midpoint, then `empty` cells. `progress` is already eased (module docs),
 /// so this is a pure render of the smoothed display value.
-fn bar_spans(item: &QueueItem, width: usize, theme: &Theme) -> Vec<Span<'static>> {
+fn bar_spans(item: &ItemView, width: usize, theme: &Theme) -> Vec<Span<'static>> {
     if width == 0 {
         return Vec::new();
     }
     let colors = &theme.colors;
     let accent = colors.accent().to_ratatui();
     let dim = colors.dim().to_ratatui();
-    let scaled = item.progress.clamp(0.0, 1.0) * width as f64;
+    let scaled = item.progress() * width as f64;
     let mut full = scaled.floor() as usize;
     let frac = scaled - full as f64;
     let mut out = Vec::new();
@@ -294,28 +298,31 @@ fn bar_spans(item: &QueueItem, width: usize, theme: &Theme) -> Vec<Span<'static>
 
 /// One Seeding-tab row: name, upload speed (accent — the one live number),
 /// uploaded total, peers, status chip.
-fn seed_row(item: &QueueItem, selected: bool, width: usize, theme: &Theme) -> Line<'static> {
+fn seed_row(item: &ItemView, selected: bool, width: usize, theme: &Theme) -> Line<'static> {
     let colors = &theme.colors;
-    let chip = format!("[{}]", item.status.label());
-    let uploaded = human_bytes(item.uploaded_bytes);
+    let chip = format!("[{}]", item.item.status.label());
+    let uploaded = human_bytes(item.stats.map_or(0, |s| s.uploaded_bytes));
     let peers = item
-        .peers
+        .peers()
         .map(|p| p.to_string())
         .unwrap_or_else(|| "—".into());
     let suffix = vec![
         suffix_span(
-            format!("  {:.1} MiB/s", item.upload_speed_mib),
+            format!("  {:.1} MiB/s", item.upload_speed_mib()),
             colors.accent().to_ratatui(),
         ),
         suffix_span(format!("  up {uploaded}"), colors.muted().to_ratatui()),
         suffix_span(format!("  peers {peers}"), colors.muted().to_ratatui()),
-        Span::styled(format!("  {chip}"), status_chip_style(item.status, colors)),
+        Span::styled(
+            format!("  {chip}"),
+            status_chip_style(item.item.status, colors),
+        ),
     ];
     let suffix_w = suffix
         .iter()
         .map(|s| s.content.chars().count())
         .sum::<usize>();
-    let name = truncate(&item.name, width.saturating_sub(suffix_w + 1));
+    let name = truncate(&item.item.name, width.saturating_sub(suffix_w + 1));
     let pad = width.saturating_sub(name.chars().count() + suffix_w);
     let mut spans = vec![
         suffix_span(name, colors.text().to_ratatui()),
@@ -326,7 +333,7 @@ fn seed_row(item: &QueueItem, selected: bool, width: usize, theme: &Theme) -> Li
 }
 
 /// One recently-downloaded row: name, right-aligned size + success chip.
-fn history_line(h: &HistoryItem, width: usize, theme: &Theme) -> Line<'static> {
+fn history_line(h: &CompletedItem, width: usize, theme: &Theme) -> Line<'static> {
     let colors = &theme.colors;
     let size = human_bytes(h.size_bytes);
     let chip = "  [completed]";
