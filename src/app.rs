@@ -24,7 +24,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crossterm::cursor::{Hide, Show};
-use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use crossterm::execute;
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
@@ -529,11 +529,21 @@ impl App {
 
     /// Handles one key event; returns true when the app should quit.
     ///
+    /// Only key *presses* (and OS repeats) are actions. On Windows the
+    /// console reports both halves of a tap — Press and Release — and
+    /// crossterm's parser emits `KeyEventKind::Release` for most keys
+    /// (modifier keys aside), so handling it too would register every key
+    /// twice. Repeat is kept so held keys still repeat when keyboard
+    /// enhancement is enabled.
+    ///
     /// Dispatch order: the help overlay eats every key while open (`?`
     /// toggles, Esc closes, `q`/Ctrl+C still quit), then global quit keys,
     /// then the per-screen handlers. The splash is the exception: any key
     /// (other than quit) skips the intro.
     fn handle_key(&mut self, key: &KeyEvent) -> bool {
+        if !matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
+            return false;
+        }
         match self.screen {
             Screen::Help => {
                 // `q`/Ctrl+C quit even with help open; Esc or any other key
@@ -934,6 +944,38 @@ mod tests {
         assert_eq!(a.state.search.query, "dun");
         tap(&mut a, KeyCode::Backspace);
         assert_eq!(a.state.search.query, "du");
+    }
+
+    #[test]
+    fn key_release_events_are_ignored() {
+        // A physical tap on Windows is Press then Release; handling the
+        // Release would double every keystroke (crossterm emits
+        // KeyEventKind::Release for most keys on the Windows console).
+        let mut a = app();
+        a.screen = Screen::Search;
+        tap(&mut a, KeyCode::Char('x'));
+        assert_eq!(a.state.search.query, "x");
+        let release = KeyEvent::new_with_kind(
+            KeyCode::Char('x'),
+            KeyModifiers::NONE,
+            KeyEventKind::Release,
+        );
+        assert!(!a.handle_key(&release));
+        assert_eq!(a.state.search.query, "x", "release must not re-register");
+
+        // Releases must not navigate or quit either.
+        let mut a = app();
+        a.screen = Screen::Search;
+        let down =
+            KeyEvent::new_with_kind(KeyCode::Down, KeyModifiers::NONE, KeyEventKind::Release);
+        assert!(!a.handle_key(&down));
+        assert_eq!(a.state.search.selected, 0);
+        let quit = KeyEvent::new_with_kind(
+            KeyCode::Char('q'),
+            KeyModifiers::NONE,
+            KeyEventKind::Release,
+        );
+        assert!(!a.handle_key(&quit), "q release must not quit");
     }
 
     #[test]
