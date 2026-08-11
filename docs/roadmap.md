@@ -1,8 +1,9 @@
 # harbour — roadmap
 
-Status: planning. Repo has no code yet; phases describe the intended build order.
+Status: in progress. Phase 1 (foundation, terminal, theme, animation), the phase-2 views,
+and the shared contract in `src/core` have landed; phases below describe what remains.
 Scope: v1 = feature parity with torlink's interactive app, then watch mode, then
-deferred spikes. Phase list is normative (see `harbour-context.md`); every task
+deferred spikes. Phase list is normative (see `docs/context.md`); every task
 below traces to a named requirement in `SPEC.md`.
 
 ## 1. Milestone overview
@@ -29,7 +30,7 @@ loop are production-grade before any product code lands on top.
 
 Tasks:
 
-- Scaffold crate `harbour-tui` (binary `harbour`, edition 2024, tokio runtime, clap CLI with `--help`/`--version` and a positional `magnet|infohash|.torrent` argument).
+- Scaffold crate `harbour` (binary `harbour`, edition 2024, tokio runtime, clap CLI with `--help`/`--version` and a positional `magnet|infohash|.torrent` argument).
 - Port the omp theme JSON schema to Rust structs (`name`, `colors`, `vars`, `symbols`, optional `export`) with serde, validating required tokens.
 - Theme loader: `~/.harbour/themes/<name>.json` (Windows `%USERPROFILE%\.harbour`), live reload on file change, loud validation errors with fallback to defaults.
 - Ship the default theme **titanium** (Tokyo Night palette) embedded; truecolor detection via `COLORTERM=truecolor` or `WT_SESSION`, else 256-color.
@@ -54,7 +55,7 @@ engine — the UI contract is final before any real scraping or downloading exis
 
 Tasks:
 
-- Define the shared core types once, in one module: `TorrentResult { info_hash, name, size_bytes, seeders, leechers, num_files?, source, magnet, added? }`, source metadata, `QueueItem`, and the engine event enum (search results, status transitions) — the mpsc contract phase 4 implements against.
+- (Moved to the engine track and landed: the shared contract lives in `src/core/types.rs`. Everything below builds against it; changes to it are breaking for all three tracks, per `AGENTS.md` rule 4.)
 - Splash view: animated logo draw-in + gradient sweep.
 - Search view: sidebar with the 4 groups (Games/Movies/TV/Anime) and 10 source-health dots, gradient search bar with shimmer while results stream.
 - Results list: size and seeders colored, staggered source tags, arrow-key navigation, rounded borders `╭╮╰╯` + tee junctions.
@@ -67,7 +68,7 @@ Tasks:
 Definition of done:
 
 - Keyboard-driven search, streaming results, offline simulation, and all keybinds work end to end against fake data; `?` help lists the correct keybinds.
-- Buffer-snapshot tests pass for splash, search, downloads, and help views; shared types are stable (phase 4 can depend on them unmodified).
+- Buffer-snapshot tests pass for splash, search, downloads, and help views.
 
 Dependencies: Phase 1.
 
@@ -120,7 +121,7 @@ Definition of done:
 - A real tiny magnet (gated behind `HARBOUR_TEST_NET=1`) downloads to disk, seeds afterward, and pause/stop works; progress/speed/ETA update live at 30fps.
 - Concurrent downloads capped by `HARBOUR_MAX_DOWNLOADS`; queued items auto-promote oldest-first; engine failure surfaces as banner + `failed` status.
 
-Dependencies: Phase 1 (runtime/lifecycle), Phase 2 (shared types). Can run in parallel with Phase 3 — no scraper dependency.
+Dependencies: Phase 1 (runtime/lifecycle) and the shared contract in `src/core/types.rs`. Can run in parallel with Phase 3 — no scraper dependency.
 
 ### Phase 5 — Persistence + bootguard + resume
 
@@ -239,11 +240,11 @@ M0 ships when every item above holds in a live session — not when the code com
 
 ## 6. Suggested parallelization
 
-- **Phase 1 is serial** — everything hangs off it. One workstream, do not split.
+- **Phase 1 is serial** — everything hangs off it. One workstream, do not split. (Shipped.)
 - After phase 1, three parallel workstreams, each as its own subagent(s):
   - **UI track**: Phase 2 (one subagent), then Phase 3 merged in (scrapers can be one subagent per source family — HTML: gameshub/ReelIndex/torrent-hub; JSON: cinevault/vault-index; RSS: showport/tsukibase/fansubs — fan out up to 3, with the `Source` trait + registry as the shared contract).
   - **Engine track**: Phase 4 (one subagent), then Phase 5 (one subagent). Depends only on phases 1–2 shared types.
   - **Integration/verification**: joins after both tracks land; owns buffer snapshots, live smoke, and M0 acceptance run.
-- Phases 2 and 4 are the biggest true parallelism win: UI (fake data) and engine (headless-capable) touch no shared code beyond the event enum and `QueueItem`, which phase 2 pins down first.
+- Phases 2 and 4 are the biggest true parallelism win: UI (fake data) and engine (headless-capable) touch no shared code beyond the contract in `src/core/types.rs`, which the engine track owns and froze first.
 - Phase 6 starts only after 4 + 5 (streaming + ledger). Phase 7 spikes are independent of each other and can fan out in parallel once phases 3/4 patterns exist.
 - Contract note: the shared types module (phase 2) is the single coordination point between tracks — freeze it before fan-out, treat changes as breaking.

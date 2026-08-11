@@ -14,64 +14,75 @@
 
 use std::path::PathBuf;
 
-use crate::types::{HistoryItem, QueueItem, QueueStatus, SourceId, TorrentResult};
+use std::time::Duration;
+
+use crate::core::magnet::build_magnet;
+use crate::core::types::{
+    CompletedItem, EngineStats, ItemView, QueueItem, QueueStatus, SourceId, TorrentResult,
+};
 
 /// Sidebar source matrix (docs/sources.md §2): id, chip label, name suffix,
 /// and the size band in bytes that source plausibly produces — all bands
 /// inside the 700 MiB–60 GiB fake-data contract.
-const SOURCES: &[(&str, &str, &str, u64, u64)] = &[
+const SOURCES: &[(SourceId, &str, &str, u64, u64)] = &[
     (
-        "gameshub",
+        SourceId::GamesHub,
         "GamesHub",
         "(2026) [Repack] [Multi]",
         20 << 30,
         60 << 30,
     ),
-    ("cinevault", "CineVault", "(2026) [1080p] [WEBRip]", 1 << 30, 4 << 30),
     (
-        "vault-movies",
+        SourceId::CineVault,
+        "CineVault",
+        "(2026) [1080p] [WEBRip]",
+        1 << 30,
+        4 << 30,
+    ),
+    (
+        SourceId::VaultMovies,
         "VaultIndex",
         "(2026) [1080p] [BluRay]",
         734_003_200,
         4 << 30,
     ),
     (
-        "reel-movies",
+        SourceId::ReelSource,
         "ReelIndex",
         "(2026) [1080p] [BluRay]",
         2 << 30,
         8 << 30,
     ),
     (
-        "showport",
+        SourceId::ShowPort,
         "ShowPort",
         "S01E01 [1080p] [WEBRip]",
         734_003_200,
         3 << 30,
     ),
     (
-        "vault-tv",
+        SourceId::VaultTv,
         "VaultIndex",
         "S01E01 [1080p] [H.264]",
         734_003_200,
         3 << 30,
     ),
     (
-        "tsukibase",
+        SourceId::TsukiBase,
         "TsukiBase",
         "- 01 [1080p] [HEVC] [AAC]",
         734_003_200,
         2 << 30,
     ),
     (
-        "fansubs",
+        SourceId::FanSubs,
         "FanSubs",
         "- 01 [1080p] [HEVC]",
         734_003_200,
         (3 << 30) / 2,
     ),
     (
-        "torrent-hub",
+        SourceId::TorrentHub,
         "TorrentHub",
         "(2026) [1080p] [BluRay]",
         1 << 30,
@@ -122,10 +133,10 @@ fn hash40(seed: u64) -> String {
     out
 }
 
-/// `magnet:?` URI for a fake infohash; `dn` uses `+` for spaces like the
-/// real magnet builder, so a fake URL stays paste-able into any client.
+/// Fake data goes through the *real* magnet builder rather than formatting its
+/// own string, so the fixtures exercise the same encoding the product uses.
 fn magnet(hash: &str, name: &str) -> String {
-    format!("magnet:?xt=urn:btih:{hash}&dn={}", name.replace(' ', "+"))
+    build_magnet(hash, name)
 }
 
 /// Deterministic fake search results for `query`: 8–12 hits across the
@@ -157,7 +168,7 @@ pub fn fake_results(query: &str) -> Vec<TorrentResult> {
                 leechers: 1 + (rng.next_f64() * 300.0) as u32,
                 num_files: Some(1 + (rng.next_f64() * 49.0) as u32),
                 source: id,
-                magnet: magnet(&info_hash, &name),
+                magnet: Some(magnet(&info_hash, &name)),
                 // Unix seconds, staggered an hour per hit so ordering is
                 // visible in the list.
                 added: Some(1_786_000_000 + i as i64 * 3_600),
@@ -188,29 +199,38 @@ fn queue_item(
     peers: Option<u32>,
     eta_secs: Option<u64>,
     added_at_epoch_ms: i64,
-) -> QueueItem {
+) -> ItemView {
     let id = hash40(id_seed);
-    QueueItem {
-        id: id.clone(),
-        name: name.to_owned(),
-        // The helper takes a `SourceId` so callers stay terse; the ledger
-        // field is owned (see `QueueItem::source`), so convert at this boundary.
-        source: source.map(str::to_owned),
-        magnet: magnet(&id, name),
-        dir: PathBuf::from("~/harbour/downloads"),
-        status,
-        finished,
-        progress,
-        total_bytes,
-        downloaded_bytes: (total_bytes as f64 * progress) as u64,
-        speed_mib,
-        upload_speed_mib,
-        uploaded_bytes: if finished { total_bytes * 2 } else { 0 },
-        peers,
-        eta_secs,
-        error: None,
+    let mut item = QueueItem::new(
+        id.clone(),
+        name.to_owned(),
+        source,
+        Some(magnet(&id, name)),
+        PathBuf::from("~/harbour/downloads"),
         added_at_epoch_ms,
-    }
+    );
+    item.status = status;
+    item.finished = finished;
+    item.total_bytes = total_bytes;
+
+    // A queued item has never reached the engine, so it genuinely has no live
+    // statistics — `None` rather than a struct full of zeroes, which is what
+    // lets the view render "—" instead of inventing a peer count.
+    let stats = if status == QueueStatus::Queued {
+        None
+    } else {
+        Some(EngineStats {
+            progress,
+            downloaded_bytes: (total_bytes as f64 * progress) as u64,
+            total_bytes,
+            speed_mib,
+            upload_speed_mib,
+            uploaded_bytes: if finished { total_bytes * 2 } else { 0 },
+            peers,
+            eta: eta_secs.map(Duration::from_secs),
+        })
+    };
+    ItemView::new(item, stats)
 }
 
 /// Three seeded fake queue items exercising every render branch of the
@@ -219,12 +239,12 @@ fn queue_item(
 /// seeds, tests may key on the hashes. The Paused item reports `peers` and
 /// `eta_secs` as None: librqbit can't report either while paused, and the
 /// view renders the em-dash, never 0 (types.rs contract B1/B2).
-pub fn fake_queue() -> Vec<QueueItem> {
+pub fn fake_queue() -> Vec<ItemView> {
     vec![
         queue_item(
             0x1_01, // stable id seed
             "Oppenheimer (2023) [1080p] [WEBRip]",
-            Some("cinevault"),
+            Some(SourceId::CineVault),
             QueueStatus::Downloading,
             false,
             0.4213,  // ~42% — the eased display value the bar renders
@@ -238,7 +258,7 @@ pub fn fake_queue() -> Vec<QueueItem> {
         queue_item(
             0x2_02, // stable id seed
             "Shogun S01E01 [1080p] [WEBRip]",
-            Some("showport"),
+            Some(SourceId::ShowPort),
             QueueStatus::Paused,
             false,
             0.13,
@@ -252,7 +272,7 @@ pub fn fake_queue() -> Vec<QueueItem> {
         queue_item(
             0x3_03, // stable id seed
             "Frieren: Beyond Journey's End - 01 [1080p] [HEVC]",
-            Some("tsukibase"),
+            Some(SourceId::TsukiBase),
             QueueStatus::Seeding,
             true, // completed → seed tab row
             1.0,
@@ -267,13 +287,12 @@ pub fn fake_queue() -> Vec<QueueItem> {
 }
 
 /// One fake history entry for the recently-downloaded section.
-pub fn fake_history() -> Vec<HistoryItem> {
+pub fn fake_history() -> Vec<CompletedItem> {
     let id = hash40(0xfeed_face_cafe_beef);
-    vec![HistoryItem {
+    vec![CompletedItem {
         id,
         name: "Dune: Part Two (2024) [1080p] [BluRay]".to_owned(),
         size_bytes: 4 << 30,
-        source: Some("reel-movies".to_owned()),
-        completed_at_epoch_ms: 1_785_950_000_000,
+        source: Some(SourceId::ReelSource),
     }]
 }
