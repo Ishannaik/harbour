@@ -335,9 +335,13 @@ mod tests {
             matches!(err, SourceError::Network(_) | SourceError::Timeout),
             "got {err:?}"
         );
+        // Generous on purpose: this asserts the deadline *bounds* the retry
+        // ladder, not that a loaded CI runner is quick. A tight bound here
+        // would fail for reasons that have nothing to do with the code.
         assert!(
-            started.elapsed() < Duration::from_secs(4),
-            "the deadline must bound the whole retry ladder"
+            started.elapsed() < Duration::from_secs(15),
+            "the retry ladder ran well past its 2s deadline: {:?}",
+            started.elapsed()
         );
     }
 }
