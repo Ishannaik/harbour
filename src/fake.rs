@@ -6,6 +6,12 @@
 //! same order — so smoke tests can assert on concrete rows. No `std::time`,
 //! no global state: determinism is the contract.
 
+//! `dead_code` is allowed module-wide until `app.rs` wires the phase-2
+//! views to this generator; mirrors `theme_watch.rs`'s staged-API allow.
+//! Remove it as the wiring lands.
+
+#![allow(dead_code)]
+
 use std::path::PathBuf;
 
 use crate::types::{HistoryItem, QueueItem, QueueStatus, SourceId, TorrentResult};
@@ -14,15 +20,63 @@ use crate::types::{HistoryItem, QueueItem, QueueStatus, SourceId, TorrentResult}
 /// and the size band in bytes that source plausibly produces — all bands
 /// inside the 700 MiB–60 GiB fake-data contract.
 const SOURCES: &[(&str, &str, &str, u64, u64)] = &[
-    ("fitgirl", "FitGirl", "(2026) [Repack] [Multi]", 20 << 30, 60 << 30),
+    (
+        "fitgirl",
+        "FitGirl",
+        "(2026) [Repack] [Multi]",
+        20 << 30,
+        60 << 30,
+    ),
     ("yts", "YTS", "(2026) [1080p] [WEBRip]", 1 << 30, 4 << 30),
-    ("tpb-movies", "TPB", "(2026) [1080p] [BluRay]", 734_003_200, 4 << 30),
-    ("x1337-movies", "1337x", "(2026) [1080p] [BluRay]", 2 << 30, 8 << 30),
-    ("eztv", "EZTV", "S01E01 [1080p] [WEBRip]", 734_003_200, 3 << 30),
-    ("tpb-tv", "TPB", "S01E01 [1080p] [H.264]", 734_003_200, 3 << 30),
-    ("nyaa", "Nyaa", "- 01 [1080p] [HEVC] [AAC]", 734_003_200, 2 << 30),
-    ("subsplease", "SubsPlease", "- 01 [1080p] [HEVC]", 734_003_200, (3 << 30) / 2),
-    ("bittorrented", "BitTorrented", "(2026) [1080p] [BluRay]", 1 << 30, 6 << 30),
+    (
+        "tpb-movies",
+        "TPB",
+        "(2026) [1080p] [BluRay]",
+        734_003_200,
+        4 << 30,
+    ),
+    (
+        "x1337-movies",
+        "1337x",
+        "(2026) [1080p] [BluRay]",
+        2 << 30,
+        8 << 30,
+    ),
+    (
+        "eztv",
+        "EZTV",
+        "S01E01 [1080p] [WEBRip]",
+        734_003_200,
+        3 << 30,
+    ),
+    (
+        "tpb-tv",
+        "TPB",
+        "S01E01 [1080p] [H.264]",
+        734_003_200,
+        3 << 30,
+    ),
+    (
+        "nyaa",
+        "Nyaa",
+        "- 01 [1080p] [HEVC] [AAC]",
+        734_003_200,
+        2 << 30,
+    ),
+    (
+        "subsplease",
+        "SubsPlease",
+        "- 01 [1080p] [HEVC]",
+        734_003_200,
+        (3 << 30) / 2,
+    ),
+    (
+        "bittorrented",
+        "BitTorrented",
+        "(2026) [1080p] [BluRay]",
+        1 << 30,
+        6 << 30,
+    ),
 ];
 
 /// Tiny xorshift64* PRNG — the same pattern as app.rs's `Rng`, seeded per
@@ -115,6 +169,12 @@ pub fn fake_results(query: &str) -> Vec<TorrentResult> {
 /// Builds one queue item from a fixed id seed — ids and magnets derive from
 /// the seed, everything else is spelled out at the call site so each render
 /// branch reads as data.
+///
+/// The long argument list is the point: this is fixture data, and spelling
+/// every field at the call site is what makes each render branch readable as
+/// a table. A builder or params struct here would add indirection to test
+/// data that has exactly three call sites.
+#[allow(clippy::too_many_arguments)]
 fn queue_item(
     id_seed: u64,
     name: &str,
@@ -133,7 +193,9 @@ fn queue_item(
     QueueItem {
         id: id.clone(),
         name: name.to_owned(),
-        source,
+        // The helper takes a `SourceId` so callers stay terse; the ledger
+        // field is owned (see `QueueItem::source`), so convert at this boundary.
+        source: source.map(str::to_owned),
         magnet: magnet(&id, name),
         dir: PathBuf::from("~/harbour/downloads"),
         status,
@@ -165,7 +227,7 @@ pub fn fake_queue() -> Vec<QueueItem> {
             Some("yts"),
             QueueStatus::Downloading,
             false,
-            0.4213, // ~42% — the eased display value the bar renders
+            0.4213,  // ~42% — the eased display value the bar renders
             3 << 30, // 3 GiB
             8.4,     // MiB/s down
             0.0,
@@ -211,7 +273,7 @@ pub fn fake_history() -> Vec<HistoryItem> {
         id,
         name: "Dune: Part Two (2024) [1080p] [BluRay]".to_owned(),
         size_bytes: 4 << 30,
-        source: Some("x1337-movies"),
+        source: Some("x1337-movies".to_owned()),
         completed_at_epoch_ms: 1_785_950_000_000,
     }]
 }
