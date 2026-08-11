@@ -47,6 +47,9 @@ pub struct Config {
     pub seed_by_default: bool,
     /// Extra announce URLs added to every torrent.
     pub trackers: Vec<String>,
+    /// External player for watch mode (`w`): an explicit path or command
+    /// name (mpv/VLC). None = auto-detect on PATH (mpv first, then VLC).
+    pub player: Option<String>,
 }
 
 impl Default for Config {
@@ -56,6 +59,7 @@ impl Default for Config {
             theme: "titanium".into(),
             seed_by_default: true,
             trackers: Vec::new(),
+            player: None,
         }
     }
 }
@@ -505,6 +509,7 @@ mod tests {
             theme: "midnight".into(),
             seed_by_default: false,
             trackers: vec!["udp://tracker.example:80".into()],
+            player: Some("mpv".into()),
         };
         store.save_config(&cfg).expect("save");
         assert_eq!(store.load_config(), Loaded::Ok(cfg));

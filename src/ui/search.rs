@@ -33,7 +33,11 @@ const SEARCH_BAR_H: u16 = 3;
 /// Block cursor glyph at the end of the query — the input's focus marker.
 const CURSOR: &str = "▌";
 /// Bottom hint — the keybinds that matter on this screen.
-const HINT: &str = "enter search · d download · tab downloads · ? help · q quit";
+///
+/// Every printable key types on this screen (so "dune" can never fire a
+/// download on the `d`); downloading is shift+D mid-query, or plain `d`
+/// with an empty query.
+const HINT: &str = "enter search · shift+d download · tab downloads · ? help · q quit";
 /// Placeholder while the query is empty and idle.
 const PLACEHOLDER: &str = "search torrents…";
 /// Bar label while searching on an empty query — the curated-browse mode

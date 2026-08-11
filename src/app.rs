@@ -547,6 +547,17 @@ impl App {
         }
     }
 
+    /// Stops an in-flight search: the partial results already merged stay on
+    /// screen, so navigation is stable (arrow keys during streaming read as
+    /// "let me look at what's here", not "move the cursor under a changing
+    /// list").
+    fn stop_search(&mut self) {
+        if let Some(token) = self.search_cancel.take() {
+            token.cancel();
+        }
+        self.state.search.searching = false;
+    }
+
     /// Starts a search, cancelling whatever was in flight (`FR-20`).
     fn start_search(&mut self, query: String) {
         if let Some(previous) = self.search_cancel.take() {
@@ -952,8 +963,21 @@ async fn apply_action(app: &mut App, action: Action) {
             app.state.downloads.show_seeding = !app.state.downloads.show_seeding;
             app.state.downloads.selected = 0;
         }
-        Action::MoveUp => move_selection(app, -1),
-        Action::MoveDown => move_selection(app, 1),
+        Action::MoveUp => {
+            // During a streaming search the list shifts under the cursor;
+            // an arrow press reads as "let me look at what's here", so it
+            // stops the search and keeps the partial results stable.
+            if app.state.screen == Screen::Search {
+                app.stop_search();
+            }
+            move_selection(app, -1);
+        }
+        Action::MoveDown => {
+            if app.state.screen == Screen::Search {
+                app.stop_search();
+            }
+            move_selection(app, 1);
+        }
         Action::Type(c) => app.state.search.query.push(c),
         Action::Backspace => {
             app.state.search.query.pop();
