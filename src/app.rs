@@ -31,6 +31,7 @@ use ratatui::{Frame, Terminal};
 
 use crate::anim::{self, Spinner, Ticker};
 use crate::theme::{Color, Theme};
+use std::sync::{Arc, Mutex};
 
 /// Base render cadence (docs/design.md §Animation): the loop redraws at most
 /// once per tick; a burst of input within one tick coalesces into one frame.
@@ -469,12 +470,19 @@ fn fade_t(elapsed: Duration, at: Duration, dur: Duration) -> f64 {
 /// cursor), renders the animated splash at 30fps until the user quits, and
 /// restores the terminal on every exit path via [`TerminalGuard`] (normal
 /// quit, errors, and panics — Drop runs during unwinding).
-pub fn run(theme: Theme) -> Result<(), Box<dyn std::error::Error>> {
+///
+/// Takes the shared `Arc<Mutex<Theme>>` rather than an owned `Theme` so the
+/// theme-watcher thread can swap themes underneath a running render loop
+/// (docs/theming.md §Custom themes). The lock is taken once per frame and
+/// released before the next `poll`, so a watcher swap never blocks input.
+pub fn run(theme: Arc<Mutex<Theme>>) -> Result<(), Box<dyn std::error::Error>> {
     let _guard = TerminalGuard::enter()?;
 
     let mut terminal = Terminal::new(CrosstermBackend::new(io::stdout()))?;
     let mut ticker = Ticker::new(FPS);
-    let mut splash = SplashState::new(&theme);
+    // Splash state is seeded from the theme active at startup; a later swap
+    // repaints with new colors on the next frame.
+    let mut splash = SplashState::new(&lock_theme(&theme));
 
     loop {
         // Block until the next frame slot or the first pending input; then
@@ -484,12 +492,25 @@ pub fn run(theme: Theme) -> Result<(), Box<dyn std::error::Error>> {
         }
         let now = Instant::now();
         splash.spinner.advance(now, SPINNER_INTERVAL);
+        let active = lock_theme(&theme);
         // Each frame is one synchronized write — no flicker/tearing between
         // the border, logo, and status line (docs/design.md §2).
         anim::with_sync_output(|| {
-            terminal.draw(|frame| draw_splash(frame, &theme, &mut splash, now))?;
+            terminal.draw(|frame| draw_splash(frame, &active, &mut splash, now))?;
             Ok(())
         })?;
+        // Drop before the next poll so the watcher thread can swap themes
+        // while we are blocked waiting for input.
+        drop(active);
     }
     Ok(())
+}
+
+/// Recover from a poisoned theme lock instead of panicking: a watcher thread
+/// that panicked mid-swap must not take the render loop down with it. The
+/// last value written is still a fully-formed `Theme`, so it is safe to use.
+fn lock_theme(theme: &Arc<Mutex<Theme>>) -> std::sync::MutexGuard<'_, Theme> {
+    theme
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }

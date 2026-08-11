@@ -69,7 +69,10 @@ pub fn draw(frame: &mut Frame, area: Rect, state: &DownloadsState, theme: &Theme
         draw_active(frame, chunks[1], state, theme);
     }
     frame.render_widget(
-        Paragraph::new(Line::from(suffix_span(HINT.into(), colors.muted().to_ratatui()))),
+        Paragraph::new(Line::from(suffix_span(
+            HINT.into(),
+            colors.muted().to_ratatui(),
+        ))),
         chunks[2],
     );
 }
@@ -231,17 +234,17 @@ fn bar_line(item: &QueueItem, width: usize, selected: bool, theme: &Theme) -> Li
         .peers
         .map(|p| p.to_string())
         .unwrap_or_else(|| "—".into());
-    let eta = item
-        .eta_secs
-        .map(fmt_eta)
-        .unwrap_or_else(|| "—".into());
+    let eta = item.eta_secs.map(fmt_eta).unwrap_or_else(|| "—".into());
     let suffix = vec![
         suffix_span(format!("{pct:>3}%"), accent),
         suffix_span(format!("  {:.1} MiB/s", item.speed_mib), accent),
         suffix_span(format!("  peers {peers}"), muted),
         suffix_span(format!("  eta {eta}"), muted),
     ];
-    let suffix_w = suffix.iter().map(|s| s.content.chars().count()).sum::<usize>();
+    let suffix_w = suffix
+        .iter()
+        .map(|s| s.content.chars().count())
+        .sum::<usize>();
     let bar_w = width.saturating_sub(suffix_w + 2);
     let mut spans = bar_spans(item, bar_w, theme);
     if bar_w > 0 {
@@ -274,7 +277,10 @@ fn bar_spans(item: &QueueItem, width: usize, theme: &Theme) -> Vec<Span<'static>
     if frac >= 0.5 && full < width {
         // The half cell reads as filled at the eased value; bump `full` so
         // the empty run starts one cell later.
-        out.push(suffix_span(theme.symbols.progress_half.as_ref().into(), accent));
+        out.push(suffix_span(
+            theme.symbols.progress_half.as_ref().into(),
+            accent,
+        ));
         full += 1;
     }
     if full < width {
@@ -297,12 +303,18 @@ fn seed_row(item: &QueueItem, selected: bool, width: usize, theme: &Theme) -> Li
         .map(|p| p.to_string())
         .unwrap_or_else(|| "—".into());
     let suffix = vec![
-        suffix_span(format!("  {:.1} MiB/s", item.upload_speed_mib), colors.accent().to_ratatui()),
+        suffix_span(
+            format!("  {:.1} MiB/s", item.upload_speed_mib),
+            colors.accent().to_ratatui(),
+        ),
         suffix_span(format!("  up {uploaded}"), colors.muted().to_ratatui()),
         suffix_span(format!("  peers {peers}"), colors.muted().to_ratatui()),
         Span::styled(format!("  {chip}"), status_chip_style(item.status, colors)),
     ];
-    let suffix_w = suffix.iter().map(|s| s.content.chars().count()).sum::<usize>();
+    let suffix_w = suffix
+        .iter()
+        .map(|s| s.content.chars().count())
+        .sum::<usize>();
     let name = truncate(&item.name, width.saturating_sub(suffix_w + 1));
     let pad = width.saturating_sub(name.chars().count() + suffix_w);
     let mut spans = vec![
@@ -338,7 +350,10 @@ fn row_line(spans: Vec<Span<'static>>, selected: bool, colors: &ThemeColors) -> 
     } else {
         Style::default()
     };
-    Line::styled(spans, base)
+    // `Line::styled` builds a line from *text*; a line already made of spans
+    // takes its base style via `.style()`. Same result, and the per-span fg
+    // still wins over the line's bg.
+    Line::from(spans).style(base)
 }
 
 /// One styled span — collapses the repetitive `Span::styled(.., fg(..))`.
