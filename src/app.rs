@@ -481,7 +481,8 @@ pub fn run(theme: Arc<Mutex<Theme>>) -> Result<(), Box<dyn std::error::Error>> {
     let mut terminal = Terminal::new(CrosstermBackend::new(io::stdout()))?;
     let mut ticker = Ticker::new(FPS);
     // Splash state is seeded from the theme active at startup; a later swap
-    // repaints with new colors on the next frame.
+    // repaints on the next frame (colors are read from the theme per draw,
+    // spinner glyphs are re-synced below).
     let mut splash = SplashState::new(&lock_theme(&theme));
 
     loop {
@@ -491,8 +492,13 @@ pub fn run(theme: Arc<Mutex<Theme>>) -> Result<(), Box<dyn std::error::Error>> {
             break;
         }
         let now = Instant::now();
-        splash.spinner.advance(now, SPINNER_INTERVAL);
         let active = lock_theme(&theme);
+        // `SplashState` owns a clone of the frames it was built with, so a
+        // live theme reload that changes `spinnerFrames` would otherwise keep
+        // spinning the old glyphs while every color around it updated. Re-sync
+        // before advancing; it is a no-op unless the frames actually changed.
+        splash.spinner.set_frames(&active.symbols.spinner_frames);
+        splash.spinner.advance(now, SPINNER_INTERVAL);
         // Each frame is one synchronized write — no flicker/tearing between
         // the border, logo, and status line (docs/design.md §2).
         anim::with_sync_output(|| {
