@@ -16,5 +16,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _color_mode = theme::detect_color_mode();
 
     let theme = std::sync::Arc::new(std::sync::Mutex::new(theme::Theme::titanium()));
+    // Live theme reload (docs/theming.md §Custom themes): edits to the active
+    // theme file under the themes dir swap in at the next render frame.
+    theme_watch::spawn_theme_watcher(theme.clone());
     app::run(theme)
 }

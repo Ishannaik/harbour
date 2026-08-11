@@ -1,4 +1,5 @@
-//! UI views (phase 2): search, downloads, status bar.
+//! UI views: splash (app.rs), search, downloads, status bar, and the help
+//! overlay.
 //!
 //! Each view is a pure `draw(frame, area, state, theme)` function — no input
 //! handling, no state mutation. The app loop (app.rs) owns keybind dispatch
@@ -6,13 +7,10 @@
 //! curated subset (bg, text, accent, border, success, error, warning, muted,
 //! dim, selected_bg).
 
-//! `dead_code` is allowed for this subtree until `app.rs` dispatches to
-//! these views (integration is in flight); mirrors `theme.rs`'s staged-API
-//! allow. The lint scope covers the child view modules too, so it lives
-//! here rather than being repeated in each. Remove it as the wiring lands.
-
-#![allow(dead_code)]
-
 pub mod downloads;
+pub mod help;
 pub mod search;
 pub mod status;
+
+#[cfg(test)]
+mod tests;

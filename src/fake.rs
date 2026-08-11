@@ -6,12 +6,6 @@
 //! same order — so smoke tests can assert on concrete rows. No `std::time`,
 //! no global state: determinism is the contract.
 
-//! `dead_code` is allowed module-wide until `app.rs` wires the phase-2
-//! views to this generator; mirrors `theme_watch.rs`'s staged-API allow.
-//! Remove it as the wiring lands.
-
-#![allow(dead_code)]
-
 use std::path::PathBuf;
 
 use crate::types::{HistoryItem, QueueItem, QueueStatus, SourceId, TorrentResult};
@@ -147,7 +141,13 @@ pub fn fake_results(query: &str) -> Vec<TorrentResult> {
             // Unique infohash per hit: golden-ratio mix of the seed and the
             // index spreads hits apart without consuming RNG state.
             let info_hash = hash40(seed ^ (i as u64 + 1).wrapping_mul(0x9e37_79b9_7f4a_7c15));
-            let name = format!("{query} {suffix}");
+            // Browse mode (empty query, FR-20) has no search term to paste
+            // into the name — the suffix alone reads as a curated row.
+            let name = if query.is_empty() {
+                suffix.trim().to_string()
+            } else {
+                format!("{query} {suffix}")
+            };
             TorrentResult {
                 info_hash: info_hash.clone(),
                 name: name.clone(),

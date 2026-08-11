@@ -1,19 +1,27 @@
-//! Application shell: terminal lifecycle, the 30fps event/draw loop, and the
-//! boot splash (UI slice 1).
+//! Application shell: terminal lifecycle, the 30fps event/draw loop, the boot
+//! splash, and input dispatch for the phase-2 views (search / downloads /
+//! help) against fake data.
 //!
-//! Later slices swap the splash view for search/downloads; this module owns
-//! the parts that stay — entering/leaving the terminal safely on every exit
-//! path and the tick-coalesced render loop.
+//! The loop owns everything that stays when the engine lands: entering and
+//! leaving the terminal safely on every exit path, the tick-coalesced render
+//! loop, and the keybind dispatch (docs/design.md §Keybinds). Views are pure
+//! paint (`ui/*`); they never read input or mutate state. The engine and
+//! sources tracks land later, so search results, the queue, and history come
+//! from the deterministic fake generator (`fake.rs`) until then.
 //!
 //! The splash is deliberately over the top (omp-grade energy): a block-letter
 //! HARBOUR logo that converges with a CRT-style flicker, a shimmer band that
 //! sweeps across it, twinkling particles, a scrolling harbor wave, a breathing
 //! border, and staggered tagline/status fades — everything still live at 30fps
-//! until the user quits. All color comes from the theme's curated subset
+//! until the app auto-advances to search (FR-01: the splash is a timed intro,
+//! not a resting state). All color comes from the theme's curated subset
 //! (accent/text/success/muted/border/bg), so custom themes keep working.
 
+use std::collections::HashMap;
 use std::io;
-use std::time::{Duration, Instant};
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crossterm::cursor::{Hide, Show};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
@@ -30,8 +38,10 @@ use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui::{Frame, Terminal};
 
 use crate::anim::{self, Spinner, Ticker};
+use crate::fake;
 use crate::theme::{Color, Theme};
-use std::sync::{Arc, Mutex};
+use crate::types::{AppState, QueueItem, QueueStatus, Screen, SourceStatus, TorrentResult};
+use crate::ui;
 
 /// Base render cadence (docs/design.md §Animation): the loop redraws at most
 /// once per tick; a burst of input within one tick coalesces into one frame.
@@ -42,6 +52,10 @@ const DRAW_IN: Duration = Duration::from_millis(700);
 
 /// After this much time the splash status line flips to "ready".
 const READY_AFTER: Duration = Duration::from_millis(1600);
+
+/// Splash is a timed intro (FR-01): it auto-advances to search this long
+/// after boot; any key skips the wait.
+const SPLASH_DURATION: Duration = Duration::from_millis(2400);
 
 /// Status spinner cadence (docs/design.md §Animation): one frame per 80ms.
 const SPINNER_INTERVAL: Duration = Duration::from_millis(80);
@@ -65,6 +79,11 @@ const VERSION_FADE_DUR: Duration = Duration::from_millis(350);
 /// White-hot highlight used by the shimmer band and the ready-flash — the one
 /// literal color in the splash (a highlight, not a theme choice).
 const HOT: Color = Color::Rgb(255, 255, 255);
+
+/// Fake search latency (MVP): long enough for the streaming shimmer/spinner
+/// to read as "streaming" (design §2.2), short enough to stay snappy. The
+/// engine track replaces this with real per-source answers.
+const SEARCH_LATENCY: Duration = Duration::from_millis(400);
 
 /// Block-letter HARBOUR logo, 5 rows x 41 columns. Hand-drawn so each letter
 /// is exactly 5 cells wide + 1 separator: crisp monospace output, no emoji
@@ -123,7 +142,8 @@ impl Drop for TerminalGuard {
 }
 
 /// Quit keys: `q`, `Esc`, and `Ctrl+C` — the conventional TUI escape hatches
-/// plus the splash's explicit hint.
+/// plus the splash's explicit hint. Esc doubles as "close the help overlay"
+/// when help is open (handled before this is consulted).
 fn is_quit_key(key: &KeyEvent) -> bool {
     matches!(
         key,
@@ -144,11 +164,20 @@ fn is_quit_key(key: &KeyEvent) -> bool {
 /// Drains every input event currently queued and reports whether the user
 /// asked to quit. Draining in a loop coalesces a burst of events into one
 /// frame (docs/design.md §Animation): the outer loop renders at most once
-/// per tick no matter how many keys arrived within it.
-fn drain_events() -> io::Result<bool> {
+/// per tick no matter how many keys arrived within it. Key events route
+/// through `app.handle_key`, which owns the per-screen dispatch.
+fn drain_events(app: &mut App) -> io::Result<bool> {
     loop {
         match event::read()? {
-            Event::Key(key) if is_quit_key(&key) => return Ok(true),
+            Event::Key(key) => {
+                if app.handle_key(&key) {
+                    return Ok(true);
+                }
+            }
+            // Resize needs no state fix-up here: the next frame redraws
+            // against the new area, and every view already lays out from the
+            // area it is handed.
+            Event::Resize(..) => {}
             _ => {}
         }
         if !event::poll(Duration::ZERO)? {
@@ -164,8 +193,8 @@ struct Particle {
     phase: f64,
 }
 
-/// Boot splash state. Kept in a struct so a later slice can swap in a
-/// different view without touching the loop.
+/// Boot splash state. Kept in a struct so the loop can swap views without
+/// touching the splash's internals.
 struct SplashState {
     start: Instant,
     spinner: Spinner,
@@ -466,10 +495,321 @@ fn fade_t(elapsed: Duration, at: Duration, dur: Duration) -> f64 {
     }
 }
 
+/// Top-level app state for the loop: which screen is showing, the view state,
+/// and the loop-owned clocks (search latency, spinners). Input dispatch and
+/// the per-frame pump live here so keybind tests drive the same code path
+/// the loop does.
+struct App {
+    screen: Screen,
+    /// The screen underneath the help overlay; restored when it closes.
+    help_base: Screen,
+    state: AppState,
+    /// When a fake search resolves (`pump_search`), if one is in flight.
+    search_deadline: Option<Instant>,
+    splash: SplashState,
+    status_spinner: Spinner,
+}
+
+impl App {
+    /// Boots on the splash with the fake queue/history preloaded, so the
+    /// downloads view has render branches to show on first visit.
+    fn new(theme: &Theme) -> Self {
+        let mut state = AppState::default();
+        state.downloads.items = fake::fake_queue();
+        state.downloads.history = fake::fake_history();
+        Self {
+            screen: Screen::Splash,
+            help_base: Screen::Search,
+            state,
+            search_deadline: None,
+            splash: SplashState::new(theme),
+            status_spinner: Spinner::new(theme.symbols.spinner_frames.clone()),
+        }
+    }
+
+    /// Handles one key event; returns true when the app should quit.
+    ///
+    /// Dispatch order: the help overlay eats every key while open (`?`
+    /// toggles, Esc closes, `q`/Ctrl+C still quit), then global quit keys,
+    /// then the per-screen handlers. The splash is the exception: any key
+    /// (other than quit) skips the intro.
+    fn handle_key(&mut self, key: &KeyEvent) -> bool {
+        match self.screen {
+            Screen::Help => {
+                // `q`/Ctrl+C quit even with help open; Esc or any other key
+                // closes the overlay (docs/design.md §Keybinds).
+                if matches!(key.code, KeyCode::Char('q'))
+                    || (key.code == KeyCode::Char('c')
+                        && key.modifiers.contains(KeyModifiers::CONTROL))
+                {
+                    return true;
+                }
+                self.screen = self.help_base;
+                false
+            }
+            _ => {
+                if is_quit_key(key) {
+                    return true;
+                }
+                match self.screen {
+                    Screen::Splash => self.screen = Screen::Search,
+                    Screen::Search => self.search_key(key),
+                    Screen::Downloads => self.downloads_key(key),
+                    Screen::Help => unreachable!("handled above"),
+                }
+                false
+            }
+        }
+    }
+
+    /// Search-screen keys (docs/design.md §Keybinds + Tab screen cycle).
+    fn search_key(&mut self, key: &KeyEvent) {
+        let search = &mut self.state.search;
+        match key.code {
+            KeyCode::Char('?') => self.open_help(),
+            // `d` and shift+d both enqueue to the default folder for now:
+            // the folder picker is engine-track work (FR-29, phase 4). Must
+            // precede the generic Char arm or 'd' would type into the query.
+            KeyCode::Char('d' | 'D') if !search.results.is_empty() => self.download_selected(),
+            // Tab cycles screens; Left/Right are the downloads tabs' keys.
+            KeyCode::Tab => self.screen = Screen::Downloads,
+            KeyCode::Enter => self.start_search(),
+            KeyCode::Backspace => {
+                search.query.pop();
+            }
+            // Plain printable characters edit the query; modifier chords
+            // (Ctrl/Alt) are left for future actions, not typed into it.
+            KeyCode::Char(c)
+                if !key
+                    .modifiers
+                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+            {
+                search.query.push(c);
+            }
+            KeyCode::Up => self.move_selection(-1),
+            KeyCode::Down => self.move_selection(1),
+            _ => {}
+        }
+    }
+
+    /// Downloads-screen keys: tabs (Left/Right), selection (Up/Down),
+    /// pause/resume (`p`), Tab cycles back to search.
+    fn downloads_key(&mut self, key: &KeyEvent) {
+        match key.code {
+            KeyCode::Char('?') => self.open_help(),
+            KeyCode::Tab => self.screen = Screen::Search,
+            KeyCode::Left => self.state.downloads.show_seeding = false,
+            KeyCode::Right => self.state.downloads.show_seeding = true,
+            KeyCode::Up => self.downloads_move(-1),
+            KeyCode::Down => self.downloads_move(1),
+            KeyCode::Char('p') => self.toggle_pause(),
+            _ => {}
+        }
+    }
+
+    fn open_help(&mut self) {
+        self.help_base = self.screen;
+        self.screen = Screen::Help;
+    }
+
+    /// Kicks off a (fake) search: the shimmer/spinner reads while
+    /// `search_deadline` counts down, then `pump_search` applies the rows.
+    fn start_search(&mut self) {
+        self.state.search.searching = true;
+        self.search_deadline = Some(Instant::now() + SEARCH_LATENCY);
+    }
+
+    /// Applies a pending fake search once its latency deadline passes —
+    /// called every frame so a slow frame cannot miss the transition.
+    fn pump_search(&mut self, now: Instant) {
+        let Some(deadline) = self.search_deadline else {
+            return;
+        };
+        if now < deadline {
+            return;
+        }
+        self.search_deadline = None;
+        let query = self.state.search.query.clone();
+        apply_results(&mut self.state.search, &query);
+    }
+
+    fn move_selection(&mut self, delta: isize) {
+        let len = self.state.search.results.len();
+        if len == 0 {
+            return;
+        }
+        let i = self.state.search.selected as isize + delta;
+        // FR-27: arrows wrap at the ends.
+        self.state.search.selected = i.rem_euclid(len as isize) as usize;
+    }
+
+    /// `d` on the selected result enqueues a fake download (FR-29; real
+    /// enqueue is engine-track, phase 4). Duplicates are allowed for now —
+    /// FR-56's dedupe focuses the existing item, which needs the engine.
+    fn download_selected(&mut self) {
+        let Some(result) = self
+            .state
+            .search
+            .results
+            .get(self.state.search.selected)
+            .cloned()
+        else {
+            return;
+        };
+        let item = queue_item_from_result(&result);
+        let downloads = &mut self.state.downloads;
+        downloads.items.push(item);
+        downloads.selected = downloads.items.len() - 1;
+    }
+
+    /// Moves the downloads selection within the *visible* tab's rows, so the
+    /// highlighted row always matches what the view paints.
+    fn downloads_move(&mut self, delta: isize) {
+        let visible: Vec<usize> = self
+            .state
+            .downloads
+            .items
+            .iter()
+            .enumerate()
+            .filter(|(_, it)| {
+                let seeding = matches!(it.status, QueueStatus::Seeding | QueueStatus::Missing);
+                seeding == self.state.downloads.show_seeding
+            })
+            .map(|(i, _)| i)
+            .collect();
+        if visible.is_empty() {
+            return;
+        }
+        let pos = visible
+            .iter()
+            .position(|&i| i == self.state.downloads.selected)
+            .unwrap_or(0) as isize;
+        let next = (pos + delta).rem_euclid(visible.len() as isize) as usize;
+        self.state.downloads.selected = visible[next];
+    }
+
+    /// `p` toggles pause/resume (FR-43, OQ-1: pause-only — a paused seed
+    /// stays in the Seeding tab, disambiguated by `finished`).
+    fn toggle_pause(&mut self) {
+        let downloads = &mut self.state.downloads;
+        let Some(item) = downloads.items.get_mut(downloads.selected) else {
+            return;
+        };
+        match item.status {
+            QueueStatus::Downloading | QueueStatus::Queued => {
+                item.status = QueueStatus::Paused;
+                item.speed_mib = 0.0;
+            }
+            QueueStatus::Paused if item.finished => item.status = QueueStatus::Seeding,
+            QueueStatus::Paused => item.status = QueueStatus::Downloading,
+            QueueStatus::Seeding => {
+                item.status = QueueStatus::Paused;
+                item.upload_speed_mib = 0.0;
+            }
+            QueueStatus::Failed | QueueStatus::Missing => {} // no-op: nothing to resume
+        }
+    }
+
+    /// Paints the current screen. The splash owns the full frame; every
+    /// other screen carves the status bar (and error banner) off the bottom
+    /// and paints the view + status line, with the help modal on top when
+    /// help is open.
+    fn draw(&mut self, frame: &mut Frame, theme: &Theme, now: Instant) {
+        if self.screen == Screen::Splash {
+            draw_splash(frame, theme, &mut self.splash, now);
+            return;
+        }
+        let area = frame.area();
+        let banner_h = self
+            .state
+            .error_banner
+            .as_ref()
+            .map_or(0, |msg| 2 + msg.lines().count().clamp(1, 2) as u16);
+        let status_h = 1 + banner_h;
+        let view_area = Rect::new(
+            area.x,
+            area.y,
+            area.width,
+            area.height.saturating_sub(status_h),
+        );
+        let status_area = Rect::new(
+            area.x,
+            area.y + view_area.height,
+            area.width,
+            status_h.min(area.height),
+        );
+
+        let base = if self.screen == Screen::Help {
+            self.help_base
+        } else {
+            self.screen
+        };
+        match base {
+            Screen::Search => ui::search::draw(frame, view_area, &self.state.search, theme),
+            Screen::Downloads => {
+                ui::downloads::draw(frame, view_area, &self.state.downloads, theme)
+            }
+            Screen::Splash | Screen::Help => {} // base is never one of these
+        }
+
+        let glyph = self.status_spinner.current().to_string();
+        ui::status::draw(frame, status_area, self.screen, &self.state, theme, &glyph);
+
+        if self.screen == Screen::Help {
+            ui::help::draw(frame, area, theme);
+        }
+    }
+}
+
+/// Applies fake results for `query` to the search state: rows, sidebar
+/// health dots, and per-source counts (the groups' staggered pop-in). Kept
+/// separate from `pump_search` so tests can apply results synchronously.
+fn apply_results(search: &mut crate::types::SearchState, query: &str) {
+    let results = fake::fake_results(query);
+    let mut source_health = HashMap::new();
+    let mut source_counts = HashMap::new();
+    for r in &results {
+        source_health.insert(r.source, SourceStatus::Online);
+        *source_counts.entry(r.source).or_insert(0) += 1;
+    }
+    search.results = results;
+    search.selected = 0;
+    search.searching = false;
+    search.source_health = source_health;
+    search.source_counts = source_counts;
+}
+
+/// Builds a fake `QueueItem` from a search result — the MVP stand-in for
+/// the engine's enqueue (FR-29/FR-39, phase 4).
+fn queue_item_from_result(r: &TorrentResult) -> QueueItem {
+    QueueItem {
+        id: r.info_hash.clone(),
+        name: r.name.clone(),
+        source: Some(r.source.to_owned()),
+        magnet: r.magnet.clone(),
+        dir: PathBuf::from("~/harbour/downloads"),
+        status: QueueStatus::Downloading,
+        finished: false,
+        progress: 0.05,
+        total_bytes: r.size_bytes,
+        downloaded_bytes: 0,
+        speed_mib: 6.0,
+        upload_speed_mib: 0.0,
+        uploaded_bytes: 0,
+        peers: Some(24),
+        eta_secs: Some(3_600),
+        error: None,
+        added_at_epoch_ms: SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0),
+    }
+}
+
 /// Runs the TUI: enters the terminal (raw mode + alternate screen + hidden
-/// cursor), renders the animated splash at 30fps until the user quits, and
-/// restores the terminal on every exit path via [`TerminalGuard`] (normal
-/// quit, errors, and panics — Drop runs during unwinding).
+/// cursor), renders at 30fps, and restores the terminal on every exit path
+/// via [`TerminalGuard`] (normal quit, errors, and panics — Drop runs during
+/// unwinding).
 ///
 /// Takes the shared `Arc<Mutex<Theme>>` rather than an owned `Theme` so the
 /// theme-watcher thread can swap themes underneath a running render loop
@@ -483,26 +823,38 @@ pub fn run(theme: Arc<Mutex<Theme>>) -> Result<(), Box<dyn std::error::Error>> {
     // Splash state is seeded from the theme active at startup; a later swap
     // repaints on the next frame (colors are read from the theme per draw,
     // spinner glyphs are re-synced below).
-    let mut splash = SplashState::new(&lock_theme(&theme));
+    let mut app = {
+        let active = lock_theme(&theme);
+        App::new(&active)
+    };
 
     loop {
         // Block until the next frame slot or the first pending input; then
         // drain the whole burst so N events in one tick produce one draw.
-        if event::poll(ticker.next())? && drain_events()? {
+        if event::poll(ticker.next())? && drain_events(&mut app)? {
             break;
         }
         let now = Instant::now();
         let active = lock_theme(&theme);
-        // `SplashState` owns a clone of the frames it was built with, so a
-        // live theme reload that changes `spinnerFrames` would otherwise keep
-        // spinning the old glyphs while every color around it updated. Re-sync
-        // before advancing; it is a no-op unless the frames actually changed.
-        splash.spinner.set_frames(&active.symbols.spinner_frames);
-        splash.spinner.advance(now, SPINNER_INTERVAL);
+        app.pump_search(now);
+        // Spinner glyphs come from the theme; re-sync after a live reload so
+        // a swap does not keep spinning the old frames. No-op unless changed.
+        app.splash
+            .spinner
+            .set_frames(&active.symbols.spinner_frames);
+        app.status_spinner
+            .set_frames(&active.symbols.spinner_frames);
+        app.splash.spinner.advance(now, SPINNER_INTERVAL);
+        app.status_spinner.advance(now, SPINNER_INTERVAL);
+        // FR-01: the splash is a timed intro — leave it even if the user
+        // never presses a key.
+        if app.screen == Screen::Splash && now.duration_since(app.splash.start) >= SPLASH_DURATION {
+            app.screen = Screen::Search;
+        }
         // Each frame is one synchronized write — no flicker/tearing between
         // the border, logo, and status line (docs/design.md §2).
         anim::with_sync_output(|| {
-            terminal.draw(|frame| draw_splash(frame, &active, &mut splash, now))?;
+            terminal.draw(|frame| app.draw(frame, &active, now))?;
             Ok(())
         })?;
         // Drop before the next poll so the watcher thread can swap themes
@@ -519,4 +871,302 @@ fn lock_theme(theme: &Arc<Mutex<Theme>>) -> std::sync::MutexGuard<'_, Theme> {
     theme
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crossterm::event::KeyEvent;
+    use std::time::Duration;
+
+    fn key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    fn app() -> App {
+        App::new(&Theme::titanium())
+    }
+
+    /// Shorthand for "handle a key and assert we didn't quit".
+    fn tap(app: &mut App, code: KeyCode) {
+        assert!(!app.handle_key(&key(code)), "key {code:?} must not quit");
+    }
+
+    // --- global quit ---
+
+    #[test]
+    fn quit_keys_work_on_every_screen() {
+        for code in [KeyCode::Char('q'), KeyCode::Esc] {
+            let mut a = app();
+            a.screen = Screen::Search;
+            assert!(a.handle_key(&key(code)));
+        }
+        // Ctrl+C specifically needs the CONTROL modifier; a bare `c` is a
+        // normal character and must NOT quit.
+        let mut a = app();
+        a.screen = Screen::Search;
+        assert!(a.handle_key(&KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)));
+        let mut a = app();
+        a.screen = Screen::Search;
+        tap(&mut a, KeyCode::Char('c'));
+        assert_eq!(a.screen, Screen::Search, "bare c types into the query");
+    }
+
+    // --- splash ---
+
+    #[test]
+    fn splash_any_key_advances_to_search() {
+        let mut a = app();
+        assert_eq!(a.screen, Screen::Splash);
+        tap(&mut a, KeyCode::Char('x'));
+        assert_eq!(a.screen, Screen::Search);
+    }
+
+    // --- search input ---
+
+    #[test]
+    fn search_types_and_backspaces_query() {
+        let mut a = app();
+        a.screen = Screen::Search;
+        tap(&mut a, KeyCode::Char('d'));
+        tap(&mut a, KeyCode::Char('u'));
+        tap(&mut a, KeyCode::Char('n'));
+        assert_eq!(a.state.search.query, "dun");
+        tap(&mut a, KeyCode::Backspace);
+        assert_eq!(a.state.search.query, "du");
+    }
+
+    #[test]
+    fn enter_starts_search_and_pump_applies_results() {
+        let mut a = app();
+        a.screen = Screen::Search;
+        a.state.search.query = "dune".into();
+        tap(&mut a, KeyCode::Enter);
+        assert!(a.state.search.searching, "searching flag on");
+        assert!(a.search_deadline.is_some());
+
+        // Before the deadline: still searching, no results.
+        let t0 = Instant::now();
+        a.pump_search(t0 + SEARCH_LATENCY - Duration::from_millis(1));
+        assert!(a.state.search.searching);
+
+        // At/after the deadline: deterministic rows + sidebar counts.
+        a.pump_search(t0 + SEARCH_LATENCY);
+        assert!(!a.state.search.searching);
+        assert!(a.search_deadline.is_none());
+        assert!(!a.state.search.results.is_empty());
+        assert!(a.state.search.results[0].name.contains("dune"));
+        assert!(a.state.search.source_counts.contains_key("yts"));
+        // Same query, same rows (deterministic fake data).
+        let first: Vec<String> = a
+            .state
+            .search
+            .results
+            .iter()
+            .map(|r| r.info_hash.clone())
+            .collect();
+        let mut b = app();
+        b.screen = Screen::Search;
+        b.state.search.query = "dune".into();
+        apply_results(&mut b.state.search, "dune");
+        let second: Vec<String> = b
+            .state
+            .search
+            .results
+            .iter()
+            .map(|r| r.info_hash.clone())
+            .collect();
+        assert_eq!(first, second);
+    }
+
+    #[test]
+    fn empty_enter_browses_curated_library() {
+        let mut a = app();
+        a.screen = Screen::Search;
+        tap(&mut a, KeyCode::Enter);
+        let t0 = Instant::now();
+        a.pump_search(t0 + SEARCH_LATENCY);
+        assert!(!a.state.search.results.is_empty(), "browse returns rows");
+        assert!(a.state.search.query.is_empty());
+    }
+
+    #[test]
+    fn arrows_wrap_selection_at_ends() {
+        let mut a = app();
+        a.screen = Screen::Search;
+        apply_results(&mut a.state.search, "dune");
+        let len = a.state.search.results.len();
+        assert!(len > 1);
+        tap(&mut a, KeyCode::Up);
+        assert_eq!(a.state.search.selected, len - 1, "up wraps to bottom");
+        tap(&mut a, KeyCode::Down);
+        assert_eq!(a.state.search.selected, 0, "down wraps to top");
+    }
+
+    #[test]
+    fn d_enqueues_selected_result() {
+        let mut a = app();
+        a.screen = Screen::Search;
+        apply_results(&mut a.state.search, "dune");
+        let before = a.state.downloads.items.len();
+        tap(&mut a, KeyCode::Char('d'));
+        let items = &a.state.downloads.items;
+        assert_eq!(items.len(), before + 1);
+        let added = items.last().unwrap();
+        assert_eq!(added.status, QueueStatus::Downloading);
+        assert_eq!(added.name, a.state.search.results[0].name);
+        assert_eq!(added.id, a.state.search.results[0].info_hash);
+        assert_eq!(a.state.downloads.selected, items.len() - 1);
+    }
+
+    #[test]
+    fn d_with_no_results_is_a_noop() {
+        let mut a = app();
+        a.screen = Screen::Search;
+        tap(&mut a, KeyCode::Char('d'));
+        assert_eq!(a.state.downloads.items.len(), 3, "fake queue untouched");
+    }
+
+    // --- screen navigation ---
+
+    #[test]
+    fn tab_cycles_screens_both_ways() {
+        let mut a = app();
+        a.screen = Screen::Search;
+        tap(&mut a, KeyCode::Tab);
+        assert_eq!(a.screen, Screen::Downloads);
+        tap(&mut a, KeyCode::Tab);
+        assert_eq!(a.screen, Screen::Search);
+    }
+
+    // --- downloads ---
+
+    #[test]
+    fn arrows_switch_downloads_tabs() {
+        let mut a = app();
+        a.screen = Screen::Downloads;
+        assert!(!a.state.downloads.show_seeding);
+        tap(&mut a, KeyCode::Right);
+        assert!(a.state.downloads.show_seeding);
+        tap(&mut a, KeyCode::Left);
+        assert!(!a.state.downloads.show_seeding);
+    }
+
+    #[test]
+    fn downloads_arrows_move_visible_selection() {
+        let mut a = app();
+        a.screen = Screen::Downloads;
+        // Active tab shows 2 of the 3 fake items (Downloading + Paused);
+        // the Seeding item is filtered out.
+        let active: Vec<usize> = (0..a.state.downloads.items.len())
+            .filter(|&i| !matches!(a.state.downloads.items[i].status, QueueStatus::Seeding))
+            .collect();
+        tap(&mut a, KeyCode::Down);
+        assert_eq!(a.state.downloads.selected, active[1]);
+        tap(&mut a, KeyCode::Down);
+        assert_eq!(a.state.downloads.selected, active[0], "wraps");
+    }
+
+    #[test]
+    fn p_toggles_pause_per_status() {
+        let mut a = app();
+        a.screen = Screen::Downloads;
+        // Select the Downloading item (index 0), pause it.
+        a.state.downloads.selected = 0;
+        tap(&mut a, KeyCode::Char('p'));
+        assert_eq!(a.state.downloads.items[0].status, QueueStatus::Paused);
+        assert_eq!(a.state.downloads.items[0].speed_mib, 0.0);
+        // Resume it.
+        tap(&mut a, KeyCode::Char('p'));
+        assert_eq!(a.state.downloads.items[0].status, QueueStatus::Downloading);
+
+        // Select the Seeding item (index 2), pause the seed — it stays
+        // `finished == true` so it still lives on the Seeding tab.
+        a.state.downloads.selected = 2;
+        tap(&mut a, KeyCode::Char('p'));
+        assert_eq!(a.state.downloads.items[2].status, QueueStatus::Paused);
+        assert!(a.state.downloads.items[2].finished);
+        tap(&mut a, KeyCode::Char('p'));
+        assert_eq!(a.state.downloads.items[2].status, QueueStatus::Seeding);
+    }
+
+    // --- help overlay ---
+
+    #[test]
+    fn help_toggles_and_esc_closes_without_quitting() {
+        let mut a = app();
+        a.screen = Screen::Search;
+        tap(&mut a, KeyCode::Char('?'));
+        assert_eq!(a.screen, Screen::Help);
+        assert_eq!(a.help_base, Screen::Search);
+        // Esc closes the overlay instead of quitting.
+        tap(&mut a, KeyCode::Esc);
+        assert_eq!(a.screen, Screen::Search);
+        // Any key closes it too (toggling behavior, UR-10).
+        tap(&mut a, KeyCode::Char('?'));
+        assert_eq!(a.screen, Screen::Help);
+        tap(&mut a, KeyCode::Enter);
+        assert_eq!(a.screen, Screen::Search);
+    }
+
+    #[test]
+    fn help_from_downloads_restores_downloads() {
+        let mut a = app();
+        a.screen = Screen::Downloads;
+        tap(&mut a, KeyCode::Char('?'));
+        assert_eq!(a.screen, Screen::Help);
+        assert_eq!(a.help_base, Screen::Downloads);
+        tap(&mut a, KeyCode::Esc);
+        assert_eq!(a.screen, Screen::Downloads);
+    }
+
+    #[test]
+    fn q_quits_even_with_help_open() {
+        let mut a = app();
+        a.screen = Screen::Search;
+        tap(&mut a, KeyCode::Char('?'));
+        assert!(a.handle_key(&key(KeyCode::Char('q'))));
+    }
+
+    // --- splash buffer snapshot ---
+
+    #[test]
+    fn splash_snapshot_after_convergence() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let theme = Theme::titanium();
+        let mut splash = SplashState::new(&theme);
+        // At exactly DRAW_IN the logo has converged and `converging` is
+        // false, so no rng draws happen — the frame is fully deterministic
+        // (particles derive from the fixed seed, tagline/version fades are 0,
+        // status is still "raising anchor…" before READY_AFTER).
+        let now = splash.start + DRAW_IN;
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).expect("test backend");
+        terminal
+            .draw(|f| draw_splash(f, &theme, &mut splash, now))
+            .expect("draw must succeed");
+        let buf = terminal.backend().buffer();
+        let lines: Vec<String> = (0..24)
+            .map(|y| {
+                let mut l: String = (0..80).map(|x| buf[(x, y)].symbol().to_string()).collect();
+                while l.ends_with(' ') {
+                    l.pop();
+                }
+                l
+            })
+            .collect();
+        for (i, l) in lines.iter().enumerate() {
+            eprintln!("{i:>2}|{l}");
+        }
+        // The logo's letters are present (logo_row skips the art's spacing
+        // columns, so rows pack: "HHAAARRRR…"), and the timed elements have
+        // painted. Particles can replace a single char anywhere, so assert
+        // on stable fragments, not full lines.
+        assert!(lines.iter().any(|l| l.contains("HHAAARRRR")));
+        assert!(lines.iter().any(|l| l.contains("anchor")));
+        assert!(lines.iter().any(|l| l.contains("terminal")));
+        assert!(lines.iter().any(|l| l.contains("v0")));
+    }
 }

@@ -254,7 +254,9 @@ requiring private announces; GPU/ASCII-image rendering.
   crash, the terminal is restored to its prior state.
 - **UR-10** Keybinds (normative): Enter=search, `d`=download to default folder,
   `shift+d`=download to folder, `o`=change output folder, `p`=pause/stop seed,
-  `?`=help, `q`=quit, `w`=watch (phase 6). `?` shows exactly these.
+  `?`=help, `q`=quit, `w`=watch (phase 6). Screen navigation: `Tab` cycles
+  search ⇄ downloads; `←`/`→` switch the downloads tabs (Downloads/Seeding);
+  `esc` closes the help overlay. `?` shows exactly these.
 - **UR-11** Every async operation shows state: streaming search shows shimmer + per-source
   dots; downloads show bars; empty results show an empty state ("no results — try another
   query"), never a blank pane.

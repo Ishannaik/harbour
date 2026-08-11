@@ -5,12 +5,6 @@
 //! (the shared [`Theme`] sits behind an `Arc<Mutex<_>>`, so the render loop
 //! picks it up on its next lock), an invalid edit keeps the last valid theme
 //! and prints a loud error — never a silent partial apply.
-//!
-//! `dead_code` is allowed module-wide until the wiring in `main.rs`/`app.rs`
-//! calls [`spawn_theme_watcher`], mirroring `theme.rs`'s staged-API allow;
-//! remove it as the call lands.
-
-#![allow(dead_code)]
 
 use std::path::PathBuf;
 use std::sync::mpsc;

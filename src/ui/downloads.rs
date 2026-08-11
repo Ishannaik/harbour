@@ -27,7 +27,7 @@ const TAB_GAP: &str = "   ";
 /// Cap on recently-downloaded rows; no scrolling in phase 2.
 const HISTORY_ROWS: usize = 5;
 /// Bottom hint — the three actions that matter on this screen.
-const HINT: &str = "tab switch · p pause · q quit";
+const HINT: &str = "←→ tab · p pause · ? help · q quit";
 
 /// Renders the downloads screen: tabs, queue/seeding body, hint line.
 pub fn draw(frame: &mut Frame, area: Rect, state: &DownloadsState, theme: &Theme) {
