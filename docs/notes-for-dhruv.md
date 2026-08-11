@@ -316,3 +316,112 @@ One line back: the §1 type change is the multiplier for search latency and the
 rest follow it; §2 and §3b land in the fetch layer the scrapers are already
 building against; §3a needs a slot on your engine schedule. Sent, confirmed, and
 back to the scrapers.
+
+---
+---
+
+# Round 2 — from Sarthak, after the freeze decisions
+
+> Your reply landed and I took every item. The freeze is now written up in
+> [`plan-engine.md`](plan-engine.md) §3. This is the part that changes *your* code,
+> newest and most urgent first. Nothing here is a complaint about your work — item 1
+> is a defect in a contract I am responsible for approving.
+
+## 1. `docs/sources.md` §1.1 cannot compile — please stop building against it
+
+`docs/sources.md:39-55` declares `async fn search(...)` and then
+`pub type ArcSource = Arc<dyn Source>;`. **That combination does not compile.**
+`async fn` in a trait forbids a vtable, so the trait is not dyn-compatible and
+`Arc<dyn Source>` is rejected the moment anything uses it:
+
+```
+error[E0038]: the trait `Source` is not dyn compatible
+   = help: consider moving `search` to another trait
+```
+
+The reason nobody has hit it: a `type` alias is not checked until it is *used*. So
+`sources.md` looks fine, your adapters compile individually, and the failure only
+appears when the registry or the fan-out is assembled. I found it by extracting your
+trait into a scratch crate and building it. Ishan's `src/types.rs` has the identical
+defect in a different disguise (`-> impl Future`), so both candidate contracts were
+broken the same way.
+
+**The fix, which I have compiled with a real `Vec<ArcSource>` and an `await`ing
+fan-out:**
+
+```rust
+pub type SearchFuture<'a> =
+    Pin<Box<dyn Future<Output = Result<Vec<TorrentResult>, SourceError>> + Send + 'a>>;
+
+pub trait Source: Send + Sync + 'static {
+    fn def(&self) -> &'static SourceDef;
+    fn search<'a>(&'a self, query: &'a str, ctx: &'a SearchCtx) -> SearchFuture<'a>;
+    fn resolve_magnet<'a>(&'a self, r: &'a TorrentResult, ctx: &'a SearchCtx)
+        -> MagnetFuture<'a>;
+}
+pub type ArcSource = Arc<dyn Source>;
+```
+
+**What it costs you per adapter:** one wrapper. The body stays ordinary async code.
+
+```rust
+fn search<'a>(&'a self, query: &'a str, ctx: &'a SearchCtx) -> SearchFuture<'a> {
+    Box::pin(async move { /* exactly what you have now */ })
+}
+```
+
+This is what `#[async_trait]` generates; I am not taking the dependency for it
+(AGENTS rule 8), but if you'd rather have the macro, say so — it's a fair trade and
+your call, since it's your files that carry the boilerplate.
+
+I'll send the mechanical diff rather than leave you to apply it. **Please push your
+`sources/*` branch even if it's WIP** — I've been reasoning about `net.rs`,
+`magnet.rs`, `cache.rs` and `parse.rs` from your description because they aren't on
+any pushed branch, and I'd rather migrate your real code than guess at it.
+
+## 2. What else changes in your types
+
+| Change | Why | Cost to you |
+| --- | --- | --- |
+| `SourceId` stays an **enum** with serde + `as_str()` | Yours was right; `types.rs`'s `&'static str` was the outlier and it cannot `Deserialize`, which would have made your §7 cache impossible | none |
+| `SourceError` stays a **typed enum** | Your `Blocked` fast-fail, the `429` handling and the negative-TTL gating all key off it; `Result<_, String>` would have erased it | none |
+| `TorrentResult.magnet` → **`Option<String>`** | Your §1 ask, granted. `None` = resolvable on demand. A displayable row never requires the magnet | 1337x/FitGirl/BitTorrented drop their follow-up loop |
+| `TorrentResult.added` → **`Option<i64>`** unix seconds | `DateTime<Utc>` needs chrono, which isn't a dependency, for one integer | small |
+| `search` gains a **`SearchCtx`** param | Carries the deadline budget, cancellation, and the sticky-host hint | signature only |
+| New **`resolve_magnet`** trait method | The other half of lazy magnets — the engine calls it on `d` | implement for the three HTML sources; default impl returns the existing magnet |
+
+## 3. Your three asks, and where they landed
+
+- **Lazy magnets** — granted, and it's now an engine deliverable too (E2 resolves on
+  `d` and shows Ishan's `resolve…` affordance). You were right to refuse to work
+  around it in the scraper.
+- **Negative TTL** — accepted with your three guardrails intact: per *host*, hard
+  failures only, marker as data in the cache layer with the **engine enforcing it**
+  (my E3). Rather than wait on you for the shape, I've picked a default so E3 isn't
+  blocked — `cache/health/<source_id>.json`, spelled out in
+  [`plan-engine.md`](plan-engine.md) §10 D5. It lives in its own file rather than in
+  the search-cache entry precisely because of your "per *host*, not per source"
+  guardrail: the search cache is keyed `(source, query)`, so a host-level fact has no
+  correct home there. **If you publish a different shape in `docs/sources.md` §7,
+  yours wins and I'll adapt** — I just didn't want to stall on it.
+- **Sticky host failover** — you were right that it can't live in the source. It
+  arrives as `SearchCtx.host_hint`, so sources stay stateless exactly as §1.1
+  requires, and the engine holds the session state.
+
+Also: `HARBOUR_SOURCE_TIMEOUT` is going into `AGENTS.md`'s normative env-var list, and
+your per-phase budget (list ≈3s / follow-ups the remainder / total ≤10s) is what E3
+implements.
+
+## 4. Nothing here is blocking you
+
+There are no open questions for you in this round — everything is decided, and the
+decisions with their reasoning and reversal cost are in
+[`plan-engine.md`](plan-engine.md) §10. Two standing offers rather than asks:
+
+- **The trait migration in §1 is mine to write.** If it's disruptive to where you are
+  right now, I'll send it as a PR against your branch instead of asking you to apply
+  it. `#[async_trait]` is also a perfectly fair alternative if ten `Box::pin`
+  wrappers annoy you more than one dependency does (D4) — your files, your call.
+- **Push `sources/*` whenever, even mid-thought.** I'm proceeding with the freeze
+  without it (D8) because blocking E0 blocks two tracks, but the moment it's up I can
+  migrate your real code instead of reasoning from your description of it.
