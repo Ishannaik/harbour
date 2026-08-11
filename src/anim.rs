@@ -195,10 +195,33 @@ impl Spinner {
         }
     }
 
+    /// Adopts a new frame set, e.g. after a live theme reload swapped
+    /// `spinnerFrames` underneath a running spinner.
+    ///
+    /// Cadence is deliberately preserved: `last_advance` is untouched, so the
+    /// spinner keeps its place in the 80ms rhythm instead of restarting and
+    /// visibly stuttering on every theme edit. `idx` is wrapped rather than
+    /// reset so a swap between equal-length sets does not jump the animation
+    /// backwards.
+    ///
+    /// A no-op when the frames are unchanged (the common case — this runs
+    /// once per rendered frame) and when `frames` is empty: theme validation
+    /// already rejects an empty `spinnerFrames`, but the render loop is the
+    /// wrong place to trust another module's invariant, and panicking here
+    /// would take the TUI down mid-frame.
+    pub fn set_frames(&mut self, frames: &[String]) {
+        if frames.is_empty() || self.frames == frames {
+            return;
+        }
+        self.frames = frames.to_vec();
+        self.idx %= self.frames.len();
+    }
+
     /// The currently displayed frame.
     pub fn current(&self) -> &str {
-        // Safe: `idx` is always < `frames.len()` (wrapped mod len, and the
-        // non-empty invariant is enforced in `new`).
+        // Safe: `idx` is always < `frames.len()` (wrapped mod len in both
+        // `advance` and `set_frames`, and the non-empty invariant is enforced
+        // in `new` and upheld by `set_frames`).
         &self.frames[self.idx]
     }
 }
@@ -407,6 +430,61 @@ mod tests {
     #[should_panic(expected = "at least one frame")]
     fn spinner_rejects_empty_frames() {
         let _ = Spinner::new(Vec::new());
+    }
+
+    #[test]
+    fn spinner_set_frames_swaps_glyphs_without_restarting_cadence() {
+        let mut s = Spinner::new(vec!["a".into(), "b".into(), "c".into()]);
+        let t0 = Instant::now();
+        s.advance(t0 + Duration::from_millis(80), Duration::from_millis(80));
+        assert_eq!(s.current(), "b");
+
+        // A theme reload swaps the glyph set: the index is kept, so the
+        // animation continues in place rather than snapping back to frame 0.
+        s.set_frames(&["x".into(), "y".into(), "z".into()]);
+        assert_eq!(s.current(), "y", "index preserved across a swap");
+
+        // Cadence is preserved too: the swap must not reset `last_advance`,
+        // so the next advance still lands one interval after the previous one
+        // and not one interval after the swap.
+        s.advance(t0 + Duration::from_millis(160), Duration::from_millis(80));
+        assert_eq!(
+            s.current(),
+            "z",
+            "advance still gated on the original clock"
+        );
+    }
+
+    #[test]
+    fn spinner_set_frames_is_a_noop_when_unchanged_or_empty() {
+        let frames = vec!["a".into(), "b".into()];
+        let mut s = Spinner::new(frames.clone());
+        let t0 = Instant::now();
+        s.advance(t0 + Duration::from_millis(80), Duration::from_millis(80));
+        assert_eq!(s.current(), "b");
+
+        // Same frames: the per-frame call in the render loop must not disturb
+        // the running animation.
+        s.set_frames(&frames);
+        assert_eq!(s.current(), "b");
+
+        // Empty is ignored rather than panicking: theme validation already
+        // rejects it, and a panic in the render loop would kill the TUI.
+        s.set_frames(&[]);
+        assert_eq!(s.current(), "b");
+    }
+
+    #[test]
+    fn spinner_set_frames_clamps_index_into_a_shorter_set() {
+        let mut s = Spinner::new(vec!["a".into(), "b".into(), "c".into()]);
+        let t0 = Instant::now();
+        s.advance(t0 + Duration::from_millis(80), Duration::from_millis(80));
+        s.advance(t0 + Duration::from_millis(160), Duration::from_millis(80));
+        assert_eq!(s.current(), "c", "idx == 2");
+
+        // Shorter set: idx must wrap into range or `current()` would panic.
+        s.set_frames(&["x".into(), "y".into()]);
+        assert_eq!(s.current(), "x", "2 % 2 == 0");
     }
 
     // --- with_sync_output ---
