@@ -72,5 +72,6 @@ pub struct AppState {
 }
 
 pub mod downloads;
+pub mod help;
 pub mod search;
 pub mod status;

@@ -589,10 +589,27 @@ pub enum EngineEvent {
     Missing {
         id: InfoHash,
     },
+    /// A source's health changed — in flight, online, empty, or offline.
+    ///
+    /// `Checking` is emitted the moment a source starts, so the sidebar can
+    /// distinguish "still working" from "dead" while a search is in flight.
+    SourceStatus {
+        source: SourceId,
+        status: SourceStatus,
+    },
     /// One source finished successfully.
     SourceAnswered {
         source: SourceId,
         count: usize,
+    },
+    /// One source's rows.
+    ///
+    /// The app state accumulates these and runs them through `search::merge`,
+    /// so deduplication and ordering live in one function with one set of tests
+    /// rather than being re-derived per source.
+    SourceResults {
+        source: SourceId,
+        results: Vec<TorrentResult>,
     },
     /// One source gave up. `class` is [`SourceError::class`].
     SourceFailed {
@@ -600,10 +617,8 @@ pub enum EngineEvent {
         class: &'static str,
         message: String,
     },
-    /// A search round finished (every source settled or the budget expired).
-    SearchComplete {
-        results: Vec<TorrentResult>,
-    },
+    /// Every source has settled, or the budget expired.
+    SearchComplete,
 }
 
 #[cfg(test)]
