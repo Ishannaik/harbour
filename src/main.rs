@@ -1,6 +1,9 @@
 mod anim;
 mod app;
+mod fake;
 mod theme;
+mod types;
+mod ui;
 
 /// Loads the default titanium theme and hands control to the TUI. The
 /// engine/sources integration (async runtime, config loading) arrives in

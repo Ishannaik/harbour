@@ -88,6 +88,22 @@ pub fn rgb_to_ansi_256(r: u8, g: u8, b: u8) -> u8 {
     16 + 36 * cube(r) + 6 * cube(g) + cube(b)
 }
 
+/// Linear interpolation between two colors. Only RGB endpoints blend;
+/// `Index`/`Default` endpoints (custom themes) fall back to `a` unchanged
+/// rather than guessing at a ramp. Shared by the splash, the gradient query
+/// bar, and the status-line colorizer.
+pub fn lerp_color(a: Color, b: Color, t: f64) -> Color {
+    let t = t.clamp(0.0, 1.0);
+    match (a, b) {
+        (Color::Rgb(ar, ag, ab), Color::Rgb(br, bg, bb)) => Color::Rgb(
+            (ar as f64 + (br as f64 - ar as f64) * t).round() as u8,
+            (ag as f64 + (bg as f64 - ag as f64) * t).round() as u8,
+            (ab as f64 + (bb as f64 - ab as f64) * t).round() as u8,
+        ),
+        _ => a,
+    }
+}
+
 /// Terminal color capability, fixed for the process lifetime.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ColorMode {
@@ -218,6 +234,35 @@ impl ThemeColors {
         dim => dim;
         selected_bg => selected_bg;
         status_line_bg => status_line_bg;
+    }
+}
+
+/// Extended curated tokens (design.md §4): markdown tokens for the help
+/// view, syntax tokens for result rows, diff tokens for queue-state
+/// coloring. Kept in a second impl block so the core list above stays the
+/// stable, engine-reviewed surface.
+impl ThemeColors {
+    view_accessors! {
+        border_accent => border_accent;
+        border_muted => border_muted;
+        md_heading => md_heading;
+        md_code => md_code;
+        md_quote => md_quote;
+        md_list_bullet => md_list_bullet;
+        md_link => md_link;
+        md_link_url => md_link_url;
+        syntax_comment => syntax_comment;
+        syntax_keyword => syntax_keyword;
+        syntax_function => syntax_function;
+        syntax_variable => syntax_variable;
+        syntax_string => syntax_string;
+        syntax_number => syntax_number;
+        syntax_type => syntax_type;
+        syntax_operator => syntax_operator;
+        syntax_punctuation => syntax_punctuation;
+        tool_diff_added => tool_diff_added;
+        tool_diff_removed => tool_diff_removed;
+        tool_diff_context => tool_diff_context;
     }
 }
 

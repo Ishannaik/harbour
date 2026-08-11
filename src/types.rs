@@ -4,6 +4,13 @@
 //! NOTE: per decision-1, the *normative* freeze is owned by the engine track
 //! (Sarthak, phase 1A). This file implements his contract so the UI and
 //! sources tracks can build now; when his `types.rs` lands, keep his.
+//!
+//! `dead_code` is allowed module-wide: the engine/source surface (`Source`,
+//! `EngineStats`, `EngineEvent`, `SearchOptions`) is staged contract for
+//! phases 3-4, validated but not consumed by the phase-2 UI. Remove the
+//! allow as the engine and sources tracks land.
+
+#![allow(dead_code)]
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -84,7 +91,7 @@ pub trait Source: Send + Sync {
 }
 
 /// Static source metadata (sidebar + registry read only this).
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SourceDef {
     pub id: SourceId,
     pub label: &'static str,
@@ -95,7 +102,7 @@ pub struct SourceDef {
 
 /// Queue lifecycle — the six statuses (Sarthak's A3): one `Paused` for both
 /// paused downloads and paused seeds, disambiguated by `QueueItem::finished`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum QueueStatus {
     Queued,
     Downloading,
@@ -129,7 +136,9 @@ impl QueueStatus {
 pub struct QueueItem {
     pub id: InfoHash,
     pub name: String,
-    pub source: Option<SourceId>,
+    /// `String`, not `SourceId`: `&'static str` cannot be deserialized (the
+    /// ledger needs a plain owned string until the engine's final types land).
+    pub source: Option<String>,
     pub magnet: String,
     pub dir: PathBuf,
     pub status: QueueStatus,
@@ -154,7 +163,8 @@ pub struct HistoryItem {
     pub id: InfoHash,
     pub name: String,
     pub size_bytes: u64,
-    pub source: Option<SourceId>,
+    /// Owned string for serde, same rationale as `QueueItem::source`.
+    pub source: Option<String>,
     pub completed_at_epoch_ms: i64,
 }
 
@@ -191,15 +201,51 @@ pub enum EngineEvent {
     Error { id: InfoHash, message: String },
 }
 
+/// Which part of the search screen has keyboard focus. The results list owns
+/// navigation by default; the sidebar takes over for group/source filtering
+/// (design.md §2.2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Focus {
+    #[default]
+    Results,
+    Sidebar,
+}
+
+/// Sidebar filter applied to the results list. `All` clears the filter;
+/// group/source selections intersect (design.md open questions, default:
+/// cumulative — a group + source selection is the source alone).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum SidebarFilter {
+    #[default]
+    All,
+    Group(SourceGroup),
+    Source(&'static str),
+}
+
 /// Search/browse state for the search view.
 #[derive(Debug, Clone, Default)]
 pub struct SearchState {
+    /// The committed query (what the last search ran with); empty when the
+    /// last action was curated top lists.
     pub query: String,
+    /// What is being typed in the search bar; committed to `query` on Enter.
+    pub draft: String,
+    /// One row per unique info_hash (deduped across sources, design.md §6).
     pub results: Vec<TorrentResult>,
+    /// All sources that reported each row — the staggered tag set (§2.2).
+    pub tags: HashMap<InfoHash, Vec<SourceId>>,
     pub selected: usize,
+    /// Selected row in the sidebar's flat entry list (sidebar focus only).
+    pub sidebar_selected: usize,
     pub searching: bool,
     pub source_health: HashMap<SourceId, SourceStatus>,
     pub source_counts: HashMap<SourceId, usize>,
+    pub filter: SidebarFilter,
+    pub focus: Focus,
+    /// Whether the user is typing in the query bar. While editing, printable
+    /// keys build the draft and action keys (`d`/`p`/`o`) are literal — so
+    /// "dune" can be typed. Enter commits the search and leaves editing.
+    pub editing: bool,
 }
 
 /// Downloads screen state.
@@ -231,16 +277,11 @@ pub struct AppState {
 }
 
 /// Screen the TUI is showing.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Screen {
     Splash,
+    #[default]
     Search,
     Downloads,
     Help,
-}
-
-impl Default for Screen {
-    fn default() -> Self {
-        Screen::Search
-    }
 }
