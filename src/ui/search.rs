@@ -20,8 +20,9 @@ use ratatui::symbols::border::Set as BorderSet;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 
+use crate::core::types::{SourceGroup, SourceId, SourceStatus, TorrentResult};
 use crate::theme::{Color, Theme, ThemeColors};
-use crate::types::{SearchState, SourceGroup, SourceStatus, TorrentResult};
+use crate::ui::SearchState;
 
 /// Panel title — same framing as the downloads view and the splash.
 const TITLE: &str = " harbour — search ";
@@ -49,24 +50,31 @@ const HOT: Color = Color::Rgb(255, 255, 255);
 /// Sidebar source matrix: group → (source id, label), mirroring the source
 /// matrix in docs/sources.md §2. Ids are the engine's canonical SourceId
 /// strings; labels are what the user sees.
-const SIDEBAR: &[(SourceGroup, &[(&str, &str)])] = &[
-    (SourceGroup::Games, &[("fitgirl", "FitGirl")]),
+const SIDEBAR: &[(SourceGroup, &[(SourceId, &str)])] = &[
+    (SourceGroup::Games, &[(SourceId::FitGirl, "FitGirl")]),
     (
         SourceGroup::Movies,
         &[
-            ("yts", "YTS"),
-            ("tpb-movies", "TPB"),
-            ("x1337-movies", "1337x"),
-            ("bittorrented", "BitTorrented"),
+            (SourceId::Yts, "YTS"),
+            (SourceId::TpbMovies, "TPB"),
+            (SourceId::X1337Movies, "1337x"),
+            (SourceId::Bittorrented, "BitTorrented"),
         ],
     ),
     (
         SourceGroup::Tv,
-        &[("eztv", "EZTV"), ("tpb-tv", "TPB"), ("x1337-tv", "1337x")],
+        &[
+            (SourceId::Eztv, "EZTV"),
+            (SourceId::TpbTv, "TPB"),
+            (SourceId::X1337Tv, "1337x"),
+        ],
     ),
     (
         SourceGroup::Anime,
-        &[("nyaa", "Nyaa"), ("subsplease", "SubsPlease")],
+        &[
+            (SourceId::Nyaa, "Nyaa"),
+            (SourceId::SubsPlease, "SubsPlease"),
+        ],
     ),
 ];
 
@@ -121,7 +129,7 @@ fn draw_sidebar(frame: &mut Frame, area: Rect, state: &SearchState, theme: &Them
     for (group, sources) in SIDEBAR {
         let active = sources
             .iter()
-            .any(|(id, _)| state.source_counts.contains_key(*id));
+            .any(|(id, _)| state.source_counts.contains_key(id));
         // Divider header (mirrors the "recently downloaded" line): label,
         // then border glyphs filling the rest of the row.
         let label = group.label();
@@ -132,7 +140,7 @@ fn draw_sidebar(frame: &mut Frame, area: Rect, state: &SearchState, theme: &Them
             Style::default().fg(head_color.to_ratatui()),
         )));
         for (id, label) in *sources {
-            lines.push(source_line(id, label, state, theme, width));
+            lines.push(source_line(*id, label, state, theme, width));
         }
     }
     frame.render_widget(Paragraph::new(lines), area);
@@ -141,18 +149,22 @@ fn draw_sidebar(frame: &mut Frame, area: Rect, state: &SearchState, theme: &Them
 /// One source row: health dot + label. A missing dot renders the muted
 /// placeholder so an unprobed source reads "unknown", not "down".
 fn source_line(
-    id: &'static str,
+    id: SourceId,
     label: &'static str,
     state: &SearchState,
     theme: &Theme,
     width: usize,
 ) -> Line<'static> {
     let colors = &theme.colors;
-    let (dot, dot_color) = match state.source_health.get(id) {
+    // A source that has not answered *yet* must not read as dead: `Checking`
+    // renders the live glyph muted (Ishan's pending dot), while never-probed
+    // stays the neutral placeholder.
+    let (dot, dot_color) = match state.source_health.get(&id).copied() {
         Some(SourceStatus::Online) => (theme.symbols.dot_online.as_ref(), colors.success()),
         Some(SourceStatus::Offline) => (theme.symbols.dot_offline.as_ref(), colors.error()),
         Some(SourceStatus::Empty) => (theme.symbols.dot_offline.as_ref(), colors.warning()),
-        None => ("·", colors.muted()),
+        Some(SourceStatus::Checking) => (theme.symbols.dot_online.as_ref(), colors.muted()),
+        Some(SourceStatus::Unknown) | None => ("·", colors.muted()),
     };
     Line::from(vec![
         Span::styled(
@@ -448,7 +460,7 @@ fn result_line(
     } else {
         colors.muted()
     };
-    let chip_fg = if state.source_counts.contains_key(result.source) {
+    let chip_fg = if state.source_counts.contains_key(&result.source) {
         colors.text()
     } else {
         colors.dim()
@@ -469,19 +481,18 @@ fn result_line(
 
 /// Narrow chip text per source — shorter than the sidebar label so names
 /// keep their width (design's `[x1337-m]` style).
-fn chip_label(id: &'static str) -> &'static str {
+fn chip_label(id: SourceId) -> &'static str {
+    // The two sources that appear in both a Movies and a TV row share a chip:
+    // the row already says which category it is.
     match id {
-        "fitgirl" => "fitgirl",
-        "yts" => "yts",
-        "tpb-movies" => "tpb",
-        "x1337-movies" => "x1337",
-        "bittorrented" => "bttr",
-        "eztv" => "eztv",
-        "tpb-tv" => "tpb",
-        "x1337-tv" => "x1337",
-        "nyaa" => "nyaa",
-        "subsplease" => "subsplease",
-        other => other,
+        SourceId::FitGirl => "fitgirl",
+        SourceId::Yts => "yts",
+        SourceId::TpbMovies | SourceId::TpbTv => "tpb",
+        SourceId::X1337Movies | SourceId::X1337Tv => "x1337",
+        SourceId::Bittorrented => "bttr",
+        SourceId::Eztv => "eztv",
+        SourceId::Nyaa => "nyaa",
+        SourceId::SubsPlease => "subsplease",
     }
 }
 
