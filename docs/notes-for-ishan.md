@@ -204,29 +204,30 @@ decide now than after the results list is built.
 > one genuine open question and two places where I'm departing from your working copy
 > on purpose.
 
-## 1. One question I can't answer for you: who owns dedupe?
+## 1. Decision taken: the engine owns fan-out and dedupe
 
-Your #7 says dedupe happens "at the aggregation layer (UI-track wiring, app state)".
-But `docs/architecture.md` §3(a) draws the search flow as `AppState → Engine →
-Sources → Cache`, with the engine doing the fan-out and the UI consuming a merged
-stream — and the cache, the per-source deadlines, the negative-TTL marker and the
-sticky-host hint all have to live wherever the fan-out lives.
+Your #7 put dedupe "at the aggregation layer (UI-track wiring, app state)", and
+`docs/architecture.md` §3(a) draws it in the engine. Rather than send that back and
+forth, **I've decided it: the engine owns both** (plan §5 E3, recorded as D1).
 
-My plan puts fan-out **and** dedupe in the engine (E3), because splitting them means
-the merge happens in one crate and the thing it merges is produced in another. But
-this is your call as much as mine, and it's a week of work either way.
+The reasoning: the cache, the per-source deadlines, the negative-TTL marker, the
+sticky-host hint and cancellation all have to live where the fan-out lives. Putting
+the merge somewhere else spreads one invariant across two layers, and the merge would
+be reading state it doesn't own.
 
-**Please pick one:**
+**What you get:** one already-merged, already-deduped, seeder-sorted list, plus
+`SourceAnswered` / `SourceFailed` events. Your staggered source tags and the 3s
+pending dot still work exactly as you described — they're driven by those events, not
+by owning the merge. It's less state in the UI, not less control over presentation.
 
-- **Engine owns fan-out + dedupe** (my assumption). UI receives an already-merged,
-  already-deduped, already-sorted list plus per-source status events. Less UI state.
-- **UI owns dedupe.** Engine streams per-source results and the app state merges. You
-  keep more control over ordering and the stagger; I keep only the cache and
-  deadlines.
+**If you'd rather have it:** it's about half a day to reverse. The engine emits
+per-source batches alongside the merged view and app state merges instead. Say so on
+the PR and I'll do it — I just didn't want to block E0 on a round trip.
 
-## 2. Two places I'm deliberately departing from your `types.rs`
+## 2. Two decisions that depart from your `types.rs`
 
-Both are arguments, not overwrites — tell me if you disagree.
+Taken, not asked (D2 and D3 in the plan's decision record). Both are one match arm
+to reverse, so they're cheap to overturn — but here's why I think they should stand.
 
 **`EngineEvent::Error` maps to `failed`, never `missing`.** Your comment at
 `src/types.rs:206` says "item → Failed; seed → Missing". I think that's wrong and
@@ -285,7 +286,12 @@ optional magnet, FR-18 `checking`, FR-49 history semantics are new) and I'll lan
 them in E0 rather than leaving them in your queue — including the FR-43 clause
 removal you asked me for.
 
-## 5. Nothing else needs you
+## 5. Nothing here needs an answer
 
-Everything else from your reply is agreed and scheduled. If you're happy with §1 and
-don't object to §2, I have no blockers on your side.
+Everything from your reply is agreed and scheduled, and the open items above are
+decided rather than pending — E0 starts now. Every decision on this track, with its
+reasoning and its reversal cost, is in [`plan-engine.md`](plan-engine.md) §10; that's
+the place to look if something in the engine surprises you later.
+
+The only thing that will land in your files is the stats-split PR in §3, and it comes
+with the `downloads.rs` changes already made and reviewed with you.

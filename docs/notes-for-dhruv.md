@@ -397,8 +397,13 @@ any pushed branch, and I'd rather migrate your real code than guess at it.
   around it in the scraper.
 - **Negative TTL** — accepted with your three guardrails intact: per *host*, hard
   failures only, marker as data in the cache layer with the **engine enforcing it**
-  (my E3). **I need the marker shape from you** — publish it in `docs/sources.md` §7
-  and I'll schedule against it.
+  (my E3). Rather than wait on you for the shape, I've picked a default so E3 isn't
+  blocked — `cache/health/<source_id>.json`, spelled out in
+  [`plan-engine.md`](plan-engine.md) §10 D5. It lives in its own file rather than in
+  the search-cache entry precisely because of your "per *host*, not per source"
+  guardrail: the search cache is keyed `(source, query)`, so a host-level fact has no
+  correct home there. **If you publish a different shape in `docs/sources.md` §7,
+  yours wins and I'll adapt** — I just didn't want to stall on it.
 - **Sticky host failover** — you were right that it can't live in the source. It
   arrives as `SearchCtx.host_hint`, so sources stay stateless exactly as §1.1
   requires, and the engine holds the session state.
@@ -407,8 +412,16 @@ Also: `HARBOUR_SOURCE_TIMEOUT` is going into `AGENTS.md`'s normative env-var lis
 your per-phase budget (list ≈3s / follow-ups the remainder / total ≤10s) is what E3
 implements.
 
-## 4. One thing I'd like back
+## 4. Nothing here is blocking you
 
-The only open item on your side is the negative-TTL marker shape. Everything else is
-mine. If the trait migration in §1 is disruptive to where you are right now, tell me
-and I'll do it as a PR against your branch instead.
+There are no open questions for you in this round — everything is decided, and the
+decisions with their reasoning and reversal cost are in
+[`plan-engine.md`](plan-engine.md) §10. Two standing offers rather than asks:
+
+- **The trait migration in §1 is mine to write.** If it's disruptive to where you are
+  right now, I'll send it as a PR against your branch instead of asking you to apply
+  it. `#[async_trait]` is also a perfectly fair alternative if ten `Box::pin`
+  wrappers annoy you more than one dependency does (D4) — your files, your call.
+- **Push `sources/*` whenever, even mid-thought.** I'm proceeding with the freeze
+  without it (D8) because blocking E0 blocks two tracks, but the moment it's up I can
+  migrate your real code instead of reasoning from your description of it.
