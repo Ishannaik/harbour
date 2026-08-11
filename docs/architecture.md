@@ -1,7 +1,7 @@
 # harbour — architecture
 
-> Status: design document for the intended implementation. The repo has no code
-> yet; nothing here describes shipped behavior.
+> Status: design document. Parts have shipped (terminal lifecycle, theme, animation, the
+> phase-2 views, and the shared contract in `src/core`); the rest still describes intent.
 >
 > Contract: `docs/context.md` is the single source of truth. Every
 > name, keybind, and decision below is normative. Identifiers follow Rust
