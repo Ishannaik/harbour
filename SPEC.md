@@ -73,7 +73,10 @@ requiring private announces; GPU/ASCII-image rendering.
 - **FR-07** `HARBOUR_MAX_DOWNLOADS` env is read at startup: `0`/unset = unlimited; a
   positive integer = hard concurrency cap; invalid values fall back to unlimited with a
   warning.
-- **FR-08** Crash marker is written at boot and cleared on clean exit (bootguard). If the
+- **FR-08** Crash marker is written at boot and cleared on clean exit (bootguard).
+  Clean exit happens in exactly this order: **flush the ledger, then clear the marker, then
+  restore the terminal, then exit**. A crash between flush and clear must leave the marker
+  armed — clearing first would stand the breaker down over stale state. If the
   marker is present at startup (previous run died), every restored item starts paused and
   no engine starts until the user resumes — verified by killing the process mid-run and
   restarting.
@@ -97,8 +100,11 @@ requiring private announces; GPU/ASCII-image rendering.
   results before all sources finish; a source's results appear no later than 1 render frame
   after its response is received.
 - **FR-14** Every `TorrentResult` carries `{ info_hash, name, size_bytes, seeders,
-  leechers, num_files?, source, magnet, added? }`; a result missing `info_hash` or `name`
-  is dropped, not rendered.
+  leechers, num_files?, source, magnet?, added? }`; a result missing `info_hash` or `name` is
+  dropped, not rendered. `magnet` is **optional**: sources that hide it behind a detail page
+  return none and the engine resolves it on demand when the user presses `d`. A displayable
+  row never requires the magnet — fetching one detail page per row at search time is the
+  single largest avoidable latency cost in the product.
 - **FR-15** Per-source isolation: a source that errors, times out, or is unreachable
   shows an `offline` tag in the sidebar and is skipped; the other 9 sources continue and
   the search completes.
@@ -108,8 +114,11 @@ requiring private announces; GPU/ASCII-image rendering.
   search within TTL renders from cache without network activity (verified by a
   `HARBOUR_TEST_NET=0`-style offline run — cache hits still return rows; TTL expiry is unit-
   tested with a fake clock).
-- **FR-18** Sidebar shows the 4 groups (Games/Movies/TV/Anime), each listing its sources
-  with a live health dot (online/offline/checking) that updates as search completes.
+- **FR-18** Sidebar shows the 4 groups (Games/Movies/TV/Anime), each listing its sources with
+  a live health dot that updates as the search progresses. States are `unknown` (never
+  probed), `checking` (search in flight, no answer yet), `online`, `empty` (answered, no
+  matches) and `offline` (failed or out of budget). `checking` and `unknown` are distinct
+  from `offline`: a source that has not answered *yet* must never render as dead.
 - **FR-19** Sources are polled only while a search is active; idle searches leave no
   in-flight network work (verified: no connections remain 5s after last result).
 - **FR-20** Search cancellation: a new query cancels in-flight requests for the previous
@@ -128,8 +137,11 @@ requiring private announces; GPU/ASCII-image rendering.
 - **FR-24** Seeders and leechers are colored: seeders ≥ 100 green (success), 1–99 yellow
   (warning), 0 dim; leechers follow the same scale with the muted token. Colors come from
   the active theme, not hardcoded.
-- **FR-25** Results sort by seeders descending within each source's block; blocks are
-  appended in source order as they arrive (no re-sorting across sources mid-stream).
+- **FR-25** Results merge into a **single list, deduplicated by `info_hash`**, keeping the
+  copy reporting more seeders, sorted by seeders descending and then by date. Rows appear as
+  their source answers and the list re-sorts as late results land. Deduplication happens in
+  the search-orchestration layer, never in a scraper — a source cannot know what the others
+  returned.
 - **FR-26** Staggered source tags: each source's block header tag appears with a slight
   stagger on arrival (e.g. 80ms apart) — pure presentation, never reorders rows.
 - **FR-27** Arrow keys navigate the list (Up/Down move one row, wrap at ends); the
@@ -144,10 +156,14 @@ requiring private announces; GPU/ASCII-image rendering.
   `config.toml`); `shift+d` prompts for a folder first, then enqueues; `o` changes the
   default output folder (persisted).
 - **FR-30** Any number of items can be queued (unlimited queue); statuses progress
-  `queued → downloading → failed`, and on completion move to `seeding`.
+  `queued → downloading → failed`, and on completion move to `seeding`. `p` moves a
+  downloading or seeding item to `paused` and back.
 - **FR-31** Concurrency cap: at most `HARBOUR_MAX_DOWNLOADS` items download at once;
   when a slot frees, the oldest `queued` item is promoted (`promote()`) automatically.
-- **FR-32** Active download rows show: animated progress bar, speed, peers, and ETA;
+- **FR-32** Active download rows show: animated progress bar, speed, peers, and ETA.
+  Peers and ETA are **absent, not zero**, whenever the engine cannot report them (paused,
+  initializing, or errored): the UI renders an em dash, never `0`, so a paused item is
+  never mistaken for one nobody is connected to. Otherwise:
   values refresh at the 30fps render cadence with a 500ms stats poll from the engine.
 - **FR-33** Progress bars ease toward the target value — the rendered value never jumps
   more than a bounded per-frame step (fixed-tick determinism test).
@@ -177,13 +193,21 @@ requiring private announces; GPU/ASCII-image rendering.
 
 - **FR-42** Finished torrents seed by default; seeding is per-item and trackers override
   are supported when the tracker advertises a non-seed role.
-- **FR-43** `p` on a seeding item pauses/stops seeding; pressing it again resumes (or the
-  item is removed per config — behavior documented in help).
-- **FR-44** Seeding tab shows per-item upload speed and peer count, refreshed at the same
+- **FR-43** `p` on a seeding item pauses seeding; pressing it again resumes. `p` never
+  removes an item or deletes data — removal is a separate, explicitly confirmed action.
+- **FR-44** Seeding tab shows per-item upload speed and peer count (em dash when unknown,
+  per FR-32), refreshed at the same
   500ms poll cadence.
-- **FR-45** Missing-file detection (stray-download detector): a seed reporting
-  `speed > 0 && progress < 1` for 2 consecutive polls after a 10s grace period is flagged
-  `missing`; `missing` items render with a distinct tag and do not count as active seeds.
+- **FR-45** Missing-file detection: a completed item the engine reports as live and
+  *downloading again* has lost its files on disk — a real seed never pulls data, because
+  verification reads the disk. It is flagged `missing`, the torrent is stopped, and nothing
+  is re-downloaded. The detector requires consecutive observations past a grace window (a
+  fresh re-seed legitimately looks identical while it verifies); the thresholds are derived
+  from observed engine behaviour in the E1 spike rather than copied from the reference
+  product, whose constants describe a different engine. **An engine error is never
+  `missing`** — that is `failed` (FR-36). `missing` items render with a distinct tag and do
+  not count as active seeds. Acceptance is behavioural: delete a seed's files, the item goes
+  `missing`, and no re-download starts.
 - **FR-46** A seed that becomes `missing` does not block downloads or other seeds; the
   user can re-check or remove it.
 - **FR-47** Seeding state persists across restarts (see 4.6); on bootguard recovery all
@@ -192,10 +216,18 @@ requiring private announces; GPU/ASCII-image rendering.
 ### 4.6 Persistence (FR-48 … FR-56)
 
 - **FR-48** `downloads.json` is the ledger: one entry per known item with info_hash,
-  name, source, magnet, output folder, status (`queued|downloading|failed|seeding|missing`),
-  and progress. It is written atomically (write-temp + rename) on every status change.
-- **FR-49** `history.json` records search queries with a hard cap of 500 entries,
-  oldest evicted first; cap is enforced on write and verified by a unit test.
+  name, source, magnet, output folder, and status
+  (`queued|downloading|paused|failed|seeding|missing`). It is written atomically
+  (write-temp + rename) on every status change.
+  **Live statistics are never persisted**: progress, speed, peers and ETA come from the
+  engine at runtime, and piece-level resume state is librqbit's per FR-50, so a persisted
+  copy would be either stale between writes or a whole-file rewrite twice a second per
+  item. Ledger writes are debounced and flushed synchronously on exit.
+- **FR-49** `history.json` records **search queries** with a hard cap of 500 entries, oldest
+  evicted first, de-duplicated; the cap is enforced on write and verified by a unit test. The
+  recently-downloaded list is a different thing: it is derived from the ledger (items with
+  `finished == true`) rather than kept in a second file, so there is one source of truth for
+  what has completed.
 - **FR-50** On startup the ledger is loaded and reconciled against librqbit session
   state; piece-level resume state comes from librqbit's session, not from `downloads.json`.
 - **FR-51** Config (`config.toml`) persists: default output folder, theme name, and
@@ -301,8 +333,11 @@ requiring private announces; GPU/ASCII-image rendering.
   render instead of dropping state (backpressure, UR-02).
 - **NFR-02 (Performance)** Input latency: keypress → visible state change ≤ 50ms p95
   (measured with synthetic input + frame timestamps).
-- **NFR-03 (Performance)** Fast startup: TUI interactive (splash visible) ≤ 500ms after
-  process start on the reference machine; network work never delays first paint.
+- **NFR-03 (Performance)** Fast startup: TUI interactive (splash visible) **≤ 100ms p95**
+  after process start on the reference machine, excluding first-run state-directory
+  creation; network work never delays first paint. The budget sits far below what the
+  reference product achieves on purpose: lighter and faster has to be a number we work for,
+  not one we inherit.
 - **NFR-04 (Performance)** Low idle CPU: with no active search/download, render loop idles
   at ≤ 2% of one core (frames suppressed when state is unchanged — differential render +
   coalescing, UR-04).
@@ -327,6 +362,13 @@ requiring private announces; GPU/ASCII-image rendering.
   torrent name) — unit-tested.
 - **NFR-12 (Maintainability)** Every public item is rustdoc'd; non-obvious invariants get
   a why-comment at the decision site (code-comment convention from context).
+- **NFR-13 (Footprint)** Idle resident memory while seeding 20 torrents with no active
+  download stays within the budget recorded in `docs/engine-spike-librqbit.md` §5.
+- **NFR-14 (Footprint)** The release binary stays within the size budget recorded in the
+  same place. Both numbers come from E1 measurements rather than guesses.
+- **NFR-15 (Reliability)** No failure in config, ledger, theme, engine construction, or
+  restore may stop the app reaching a usable screen, and no subsystem failure may escalate
+  to another. Every failure mode has a defined fallback (`docs/plan-engine.md` §4.2).
 
 ## 8. Acceptance criteria — v1 checklist (all must pass)
 
@@ -362,9 +404,9 @@ requiring private announces; GPU/ASCII-image rendering.
 
 ## 9. Open questions
 
-- **OQ-1** `p` on a seeding item: pause-only, or pause-with-remove? FR-43 defers to config;
-  the config key name and default are undecided — decide in phase 4 with librqbit's
-  seeding API.
+- ~~**OQ-1**~~ *Resolved:* `p` is pause-only; deletion sits behind an explicit confirm.
+  librqbit offers both `pause`/`unpause` and `delete(delete_files)`, so this was a product
+  decision rather than a technical one.
 - **OQ-2** Result pagination: source responses can exceed one screen; whether blocks
   virtualize (scroll within a source's block) or paginate per source is undecided —
   ratatui buffer tests depend on this.

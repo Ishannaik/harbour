@@ -1,542 +1,524 @@
-# Engine & Foundation — revised track plan (Sarthak)
+# Engine & Foundation — plan of record (Sarthak)
 
-> **Scope of this document.** It revises the plan for **one track only** — Engine &
-> Foundation, i.e. `AGENTS.md`'s "crate skeleton, shared-types freeze, librqbit
-> integration, queue, persistence, bootguard, resume". It does **not** change the
-> Terminal UI track (Ishan) or the Sources & Cache track (Dhruv). Where a change
-> would touch a shared normative artifact (`SPEC.md`, `AGENTS.md`, `docs/roadmap.md`,
-> `docs/architecture.md`) I have written the exact amendment in §4 rather than
-> editing it unilaterally — per `AGENTS.md` rule 2, SPEC is the referee and changes
-> to it go through review first.
+> **Status:** final, end-to-end. This replaces the first revision (git history has
+> it at `f58ec1e`). That version was written before the UI and Sources tracks
+> replied and before phase-2 UI code merged; both changed what this track owes.
 >
-> Evidence for every engine claim is in [`engine-spike-librqbit.md`](engine-spike-librqbit.md),
-> re-derived on a Windows machine against `librqbit 8.1.1`.
+> **Scope:** the Engine & Foundation track only — `AGENTS.md:11`'s "crate skeleton,
+> shared-types freeze, librqbit integration, queue, persistence, bootguard, resume",
+> plus the search-orchestration work the two replies assigned here.
+>
+> **Verification:** every `file:line` below was read in the tree at `110b674`.
+> Every librqbit fact is re-derived locally against 8.1.1
+> ([`engine-spike-librqbit.md`](engine-spike-librqbit.md)). Every compile claim was
+> compiled. Reviewed adversarially by a second model; §9 logs what that changed.
 
 ---
 
-## 1. Verdict on the existing plan
+## 1. Where things actually stand
 
-The existing plan is **good** — better than most repos have at commit 3. `SPEC.md`
-is genuinely testable (61 FRs, 13 URs, 8 TRs, 12 NFRs, each with a verification
-method), the phase dependency graph is explicit, and the decision to steal
-torlink's hard-won behaviours (bootguard, stray detection, metadata caching,
-oldest-first promote) rather than rediscover them is exactly right.
+**Merged:** theme system, animation primitives, splash, theme watcher, phase-2 views
+(search/downloads/status), deterministic fake data, a working `src/types.rs`, and
+three-OS CI. Both other tracks have replied in full and agreed to every decision I
+asked for.
 
-I am not proposing to replace it. I am proposing **thirteen specific corrections**.
-Three are blocking for my track (F-1, F-2, F-3) and three must land before the
-shared-types freeze or every track pays for it later (F-3, F-5, F-13).
+**Not merged, and this matters:** Dhruv's reply describes `net.rs`, `magnet.rs`,
+`cache.rs`, `parse.rs`, a pinned registry and "22 tests green"
+(`notes-for-dhruv.md:158-175`). **None of it is on any pushed branch** — `main` has
+only `src/{anim,app,fake,main,theme,theme_watch,types}.rs` and `src/ui/*`. I cannot
+reconcile the freeze against code I cannot read, so §3 picks shapes on merit and
+states the migration cost for each.
 
-The corrections cluster into three themes:
+**Of my thirteen amendments, two landed.** `HARBOUR_STATE_DIR` is in `AGENTS.md:49`
+and `docs/context.md` is committed. The rest did not, including two that
+`notes-reply-ishan.md:46-49` reports as done:
 
-1. **The engine track is scheduled behind work it does not depend on**, and the
-   contract it owns is defined inside someone else's phase. (F-1, F-2)
-2. **The types freeze is not yet freezable** — it is missing a status the spec
-   requires in three places, and it models engine facts that the engine does not
-   actually expose in that shape. (F-3, F-5, F-13)
-3. **The riskiest dependency is the only one without a spike**, and two spec
-   requirements contradict each other in a way that costs runtime performance —
-   on a project whose whole premise is "lighter and faster". (F-4, F-7, F-10)
+| Claimed done | Actual |
+| --- | --- |
+| "Crate name standardized on `harbour` (fixed AGENTS/roadmap/design)" | `harbour-tui` still at `AGENTS.md:51`, `docs/roadmap.md:32`, `docs/design.md:3` |
+| "all `C:/tmp/harbour-context.md` citations fixed" | `docs/roadmap.md:5` and `docs/design.md:5` still cite the uncommitted scratch file |
+
+Not a criticism — Ishan explicitly deferred the SPEC edits to my 1A pass
+(`notes-reply-ishan.md:42`, `:51-53`). But the amendments are mine to land, and I
+should stop treating them as someone else's queue.
+
+**Three documents now describe the same contract differently**, and none of them
+compiles as written. Resolving that is the whole of E0.
 
 ---
 
-## 2. Findings
+## 2. The two defects that decide the freeze
 
-Each finding: what it is, the evidence, why it matters, what I propose.
+### 2.1 Neither candidate `Source` trait can back a registry
 
-### F-1 — The shared-types contract is owned by one track and scheduled inside another **[blocking]**
+This is the finding that matters most, and I verified it by compiling both.
 
-- `AGENTS.md:11` — Sarthak's roadmap phases are "1 (types), 4, 5".
-- `AGENTS.md:33` — "Shared-types freeze (`TorrentResult`, `Source` trait,
-  `QueueStatus`, engine event enum) is Sarthak's, **lands in phase 1**."
-- `docs/roadmap.md` **Phase 1 has no types task at all.** Its first task is
-  "Scaffold crate", the remaining seven are theme/animation/terminal work.
-- `docs/roadmap.md` **Phase 2, task 1** is "Define the shared core types once, in
-  one module … the mpsc contract phase 4 implements against" — and Phase 2 is
-  Ishan's per `AGENTS.md:10`.
-- `docs/roadmap.md` Phase 4: "Dependencies: Phase 1 (runtime/lifecycle), **Phase 2
-  (shared types)**."
+`docs/sources.md:39-55` declares `async fn search(...)` and then
+`pub type ArcSource = Arc<dyn Source>`. `src/types.rs:84-91` declares
+`fn search(...) -> impl Future<...>`. **Both are dyn-incompatible.** A type alias
+isn't checked until used, which is why the error has stayed hidden — the moment
+either is used for the 10-source registry the fan-out needs, it fails:
 
-**Why it matters:** the two governing documents disagree about who defines the
-contract and when. As written, the engine owner waits on the UI track to define the
-engine's own event enum. `AGENTS.md` rule 4 exists precisely to stop this.
+```
+error[E0038]: the trait `Source` is not dyn compatible
+   = help: consider moving `search` to another trait
+```
 
-**Proposal:** the types module moves into Phase 1, owned by me, as an explicit task.
-Phase 2 and Phase 4 both consume it. See F-2 for the phase split that makes this cheap.
+`async fn` and `-> impl Future` in a trait both forbid a vtable. So
+`Vec<Arc<dyn Source>>` — the natural shape for "fan out across ten heterogeneous
+sources" — is impossible in either. Dhruv is building his registry against a
+contract that cannot exist, and neither CI nor a review would have caught it
+because nothing has instantiated it yet.
 
-### F-2 — The engine track is gated behind UI-domain work **[blocking]**
+**Fix, compiled and verified with a real registry and fan-out:** return a boxed
+future at the trait boundary. Adapters still write ordinary `async` code; only the
+signature changes.
 
-- `docs/roadmap.md` §6: "**Phase 1 is serial** — everything hangs off it. One
-  workstream, do not split."
-- Phase 1's eight tasks: crate scaffold, omp theme schema port, theme loader with
-  live reload, embedded titanium theme + colour-mode detection, 30fps animation
-  subsystem with adaptive backpressure, DEC 2026 BSU/ESU, terminal lifecycle,
-  loader/easing primitives. **Seven of the eight are Terminal-UI-track work** by
-  `AGENTS.md:10`'s own scope definition.
-- Phase 4 (mine) declares a dependency on all of it.
+```rust
+pub type SearchFuture<'a> =
+    Pin<Box<dyn Future<Output = Result<Vec<TorrentResult>, SourceError>> + Send + 'a>>;
 
-**Why it matters:** the highest-risk work in the project (an unproven engine
-dependency) is scheduled to start only after theme JSON live-reload and eased
-progress bars are production-grade. That is the wrong risk order, and it wastes the
-parallelism the three-track split was created to buy.
+pub trait Source: Send + Sync + 'static {
+    fn def(&self) -> &'static SourceDef;
+    fn search<'a>(&'a self, query: &'a str, ctx: &'a SearchCtx) -> SearchFuture<'a>;
+    fn resolve_magnet<'a>(&'a self, r: &'a TorrentResult, ctx: &'a SearchCtx)
+        -> MagnetFuture<'a>;
+}
+pub type ArcSource = Arc<dyn Source>;
+```
 
-The engine's *actual* prerequisites from Phase 1 are narrow: a compiling crate, the
-tokio runtime, CLI parsing, config-dir resolution, an error type, and the signatures
-of the crash-log and bootguard lifecycle hooks. None of that needs a theme.
+This is exactly what `#[async_trait]` generates, without the dependency
+(`AGENTS.md` rule 8). Cost to Dhruv: one `Box::pin(async move { … })` wrapper per
+adapter. Cost of not doing it: the registry never compiles.
 
-**Proposal:** split Phase 1.
+### 2.2 `&'static str` cannot round-trip, and the cache depends on it
 
-| | Phase 1A — Foundation | Phase 1B — Terminal & Theme |
+`docs/sources.md:86-88` derives `Serialize`/`Deserialize` on `TorrentResult`
+"because the search cache persists it verbatim". `src/types.rs:55` types
+`source: SourceId = &'static str`. Those are mutually exclusive — `&'static str`
+has no `Deserialize`. I already hit this on the persisted structs and had to widen
+them to `String` to make PR #3 compile (`src/types.rs:147`, `:173`).
+
+**Fix:** `SourceId` becomes an enum with serde, as `docs/sources.md:22-28` already
+has it, plus `as_str()` for display and cache paths. Exhaustive matching, no typos,
+and the cache becomes possible.
+
+---
+
+## 3. The freeze (E0 deliverable)
+
+Type by type, with the decision and its cost. This is the normative contract;
+`src/types.rs` on `main` is superseded.
+
+| # | Item | Decision | Rationale / cost |
+| --- | --- | --- | --- |
+| T1 | `Source` trait | Boxed-future, `def() -> &'static SourceDef`, typed error, `SearchCtx` param | §2.1. `def()` over five getters: one const per source instead of five fns; mechanical migration |
+| T2 | `SourceId` | `enum` + serde + `as_str()` | §2.2. Unblocks the cache; matches `docs/sources.md` |
+| T3 | `SourceError` | `enum { Network, Parse, Blocked, Timeout }`, `thiserror` | `Result<_, String>` (`types.rs:90`) erases the classification Dhruv's `Blocked` fast-fail, `429` handling and negative-TTL gating all key off |
+| T4 | `TorrentResult.magnet` | `Option<String>`; `None` = resolvable on demand | Both tracks committed to it (`notes-for-dhruv.md:189-191`, `notes-reply-ishan.md:80-83`). Contract: **a displayable row never requires the magnet** |
+| T5 | `TorrentResult.added` | `Option<i64>` unix seconds | `docs/sources.md:82` wants `DateTime<Utc>`; chrono is not a dependency and this is one integer. Serde-trivial |
+| T6 | `QueueStatus` | Six: `queued, downloading, paused, failed, seeding, missing` | Already in `types.rs:111-118` and agreed by both. Needs the doc amendments (A-1) |
+| T7 | `QueueItem` | **Durable fields only** — id, name, source, magnet, dir, status, `finished`, total_bytes, added_at | F-7. Keeps `finished`, which Ishan's paused-seed rendering depends on (`notes-reply-ishan.md:25-30`) |
+| T8 | `EngineStats` | All volatile stats, **never persisted**; `eta: Option<Duration>` | Resolves the file's internal split (`eta_secs: Option<u64>` at `types.rs:161` vs `time_remaining: Option<Duration>` at `:188`) |
+| T9 | `ItemView` | `QueueItem` + `Option<EngineStats>`, what the UI renders | The seam that lets T7 happen without deleting the downloads view |
+| T10 | `SourceStatus` | `Unknown, Checking, Online, Empty, Offline` | `FR-18` mandates `checking`; `types.rs:61-66` has no way to express it, so the UI renders every unanswered source as "unknown" forever. Also carries Ishan's 3s *pending* dot |
+| T11 | `SearchCtx` | `{ list_deadline, total_deadline, host_hint, cancel }` | Carries `FR-20` cancellation, Dhruv's per-phase budget and his session-scope sticky-host hint. Needs `tokio-util` for `CancellationToken` |
+| T12 | `EngineEvent` | `Metadata, Progress, Done, Error, SourceAnswered, SourceFailed` | Search events join engine events on one channel; the UI needs `SourceAnswered` to update "N results from M sources" |
+| T13 | `Engine` trait + fake | Object-safe, with an in-memory fake | Makes the queue unit-testable with no network and gives the UI a real contract instead of `fake.rs` |
+
+**Engine → harbour status projection**, written down once, here:
+
+| librqbit state | harbour status |
+| --- | --- |
+| `Initializing && !finished` | `downloading` |
+| `Initializing && finished` | `seeding` (verifying) |
+| `Live && !finished` | `downloading` |
+| `Live && finished` | `seeding` |
+| `Paused` | `paused` |
+| `Error` | `failed` |
+
+`queued` is harbour-side (before the item reaches the engine). **`missing` is
+reachable only from the file-gone detector, never from an engine error** — this
+contradicts `src/types.rs:206` ("seed → Missing") and the contradiction is
+deliberate. Conflating them means a transient tracker error marks a seed's files
+missing; `FR-45`'s entire purpose is that we never guess wrong in that direction.
+
+**The `Initializing` split is load-bearing:** after a restart a complete seed passes
+through `Initializing` with `finished == true`, and mapping that to `downloading`
+would show every restored seed as an active download, breaking `FR-47`.
+
+---
+
+## 4. Failure policy — nothing forced, everything degrades
+
+This section is normative for every line of code in this track, and it outranks the
+phase list: a feature that works only on the happy path is not done.
+
+The reference product earns its reputation here, and it is the thing most worth
+stealing. A native module that will not build prints a warning and the app runs
+without WebRTC. A config that will not parse falls back to defaults. A boot that
+died mid-restore comes back paused instead of walking into the same explosion. A
+source that is down names itself and the search continues. **Not one of those
+failures reaches the user as a crash.** That is the bar.
+
+### 4.1 The three invariants
+
+1. **The app always reaches a usable screen.** No failure in config, ledger, theme,
+   engine construction, or restore may leave the user staring at a spinner or a
+   panic. If everything else fails, an empty queue and a working search bar is a
+   valid outcome.
+2. **A subsystem failure never escalates.** A dead source does not stop a search; a
+   failed item does not stop the queue; a persistence error does not stop a
+   download; a poisoned lock does not stop the render loop.
+3. **Never silently destroy user data.** When we are unsure, we stop and say so —
+   we do not re-download 50 GB, do not delete files, do not overwrite a ledger we
+   failed to parse. Uncertainty degrades to *paused and visible*, never to *acted
+   upon*.
+
+### 4.2 Failure modes and their fallbacks
+
+Every one of these is a test, not a hope.
+
+| Failure | Fallback | Never |
 | --- | --- | --- |
-| Owner | **Sarthak** | Ishan |
-| Contents | crate/module layout, shared types freeze, paths & config-dir, error type, CLI parse, lifecycle hook signatures, CI matrix | theme schema + loader + live reload, titanium, animation loop, DEC 2026 sync, terminal lifecycle impl, loader/easing primitives |
-| Effort | ~2 days | as currently scoped |
-| Blocks | everything | Phase 2 only |
+| `config.toml` missing | Defaults, silently — a first run is not an error | — |
+| `config.toml` corrupt | Defaults + a loud banner naming the file | Silent defaults; overwriting it |
+| `downloads.json` corrupt | Quarantine to `.corrupt`, start empty, banner | Deleting it; starting with a half-parsed queue |
+| A single ledger entry is malformed | Skip that entry, keep the rest, log it | Discarding the whole ledger for one bad row |
+| Ledger write fails (disk full, permissions) | Banner, keep running in memory, retry on the next transition | Killing the download; a torn file |
+| Previous boot died mid-restore | Safe mode: everything paused, no engine starts, banner explains | Auto-resuming into the same crash |
+| librqbit `Session` will not construct | Search still works; downloads report unavailable with the reason | Aborting startup |
+| A single torrent fails to add | That item → `failed` with the message + retry affordance | Failing the batch or the restore |
+| Engine stats read throws / returns partial | Use what we have, keep the poller alive | An escaping panic in the poll task |
+| Seed's files are gone | `missing`, engine stopped, item visible | Re-downloading; deleting the record |
+| Metadata never arrives (dead magnet) | Time out, `failed`, explain "no peers found" | Hanging forever |
+| A source times out / is blocked | `Checking` → `Offline` with the reason; other nine continue | Failing the search |
+| Every source fails | Empty state that says so and offers retry | A blank pane |
+| Magnet resolution fails on `d` | Row stays, banner explains, item is not enqueued | A half-enqueued item |
+| Cache read fails or schema drifted | Treat as a miss, re-fetch, overwrite | Propagating a deserialization error |
+| Cache write fails | Continue — the cache is an optimisation | Failing the search |
+| `HARBOUR_*` env var is garbage | Documented default + a warning | Panicking on parse; silent reinterpretation |
+| Theme lock poisoned by a dying watcher | Recover the inner value and keep rendering | Panicking in the render loop |
+| Panic anywhere | Hook restores the terminal, writes a crash log | Leaving the user in a wrecked alt-screen |
 
-Phase 4 then depends on **1A + the runtime/lifecycle part of 1B**, not on Phase 2.
-1B, Phase 2 and Phase 3 run fully parallel to my E1–E3. The serial barrier shrinks
-from a whole UI phase to two days.
+### 4.3 Coding rules that make the table true
 
-### F-3 — `paused` is missing from the normative status vocabulary **[blocking, pre-freeze]**
+- **No `unwrap`/`expect`/`panic!` on any path reachable from I/O, the engine, or
+  the render loop.** Where an invariant genuinely cannot fail, `debug_assert!` plus
+  a graceful branch — not a release-mode panic. The one existing precedent I am
+  keeping is `Spinner::new`'s assert, which is a pure programming error at
+  construction, and even there `set_frames` degrades instead of asserting.
+- **Every `catch`-equivalent explains itself.** A silently swallowed error is a
+  future bug report with no evidence; log with context, surface what the user can
+  act on.
+- **Timeouts on everything that touches the network or the swarm.** No unbounded
+  await, ever.
+- **Persistence is atomic (temp + rename) and flushed synchronously on exit**, so a
+  crash leaves either the old file or the new one.
+- **Degrade in the direction of the user's data.** If the choice is between losing
+  a download and showing a stale row, show the stale row.
 
-- `AGENTS.md:48` — "Queue statuses: `queued`, `downloading`, `failed`, `seeding`, `missing`."
-- `FR-43` — "`p` on a seeding item pauses/stops seeding; pressing it again resumes".
-- `FR-47` — "on bootguard recovery all seeds start paused until resumed".
-- `FR-53` — "every restored item is paused, engines start only on explicit user resume".
-- And from the engine side: `TorrentStatsState::Paused` is a first-class librqbit
-  state (spike V-6/V-7), with `Session::pause`/`unpause` and `is_paused()`.
+### 4.4 On not forcing other tracks
 
-**Why it matters:** three requirements and the engine itself need a state the shared
-vocabulary does not have. Discovered after the freeze, this is a breaking change to
-a type every track compiles against.
+Two items in this plan change code other people own — the `Source` trait
+(§2.1) and the `QueueItem` stats split (T7/T8/T9). Neither will be landed as a
+break-and-let-them-fix-it:
 
-**Proposal:** six statuses — `queued`, `downloading`, `paused`, `failed`, `seeding`,
-`missing` — plus an explicit engine→harbour projection table owned by the engine
-track (§3, E0). One decision to make with Ishan: whether a paused download and a
-paused seed are one status or two. **My recommendation: one status, disambiguated by
-whether the item has ever reached `finished`** — it keeps the enum small and matches
-how the user thinks about the `p` key.
-
-### F-4 — The riskiest dependency is the only one without a spike
-
-- `docs/roadmap.md` Phase 7 spikes cs.rin.ru, online-fix.me, cover art, and headless
-  daemons — all deferred, none load-bearing.
-- `docs/architecture.md` §1 commits librqbit to **three** load-bearing roles: engine,
-  session resume, and the phase-6 streaming endpoint.
-- `Cargo.toml` currently declares one dependency: `tokio`. librqbit is not pinned,
-  and 8→9 is mid-flight (`9.0.0-rc.0` published, `8.1.1` latest stable).
-
-**Why it matters:** committing three subsystems to an unpinned, unspiked, pre-1.0
-crate is the largest single schedule risk in the project.
-
-**Proposal:** phase E1, a time-boxed behavioural spike with a written go/no-go and a
-recorded fallback. **Half of it is already done** — the static half is in
-`engine-spike-librqbit.md`, and the news is good: librqbit 8.1.1 builds clean on
-Windows/MSVC in 97 seconds with no native toolchain. Pin `8.1.1` exact; stay off the rc.
-
-### F-5 — `peers` and ETA are not shaped the way the spec assumes **[pre-freeze]**
-
-- `FR-32` (downloads) and `FR-44` (seeding) both render **peers**.
-- Spike V-8: `TorrentStats` has **no peer field**. Peers are at
-  `stats.live?.snapshot.peer_stats`, and `live` is `None` whenever the torrent is
-  paused, initializing, or errored.
-- Spike V-9: the engine already supplies `time_remaining`, and speeds are
-  `Speed { mbps: f64 }` — MiB/s floats, not bytes/sec integers.
-
-**Why it matters:** if the frozen type says `peers: u32`, a paused seed renders as
-"0 peers", which is a lie the UI cannot distinguish from a real zero. And if we hand
-Ishan bytes/sec when the engine gives MiB/s, the conversion gets done twice or not
-at all.
-
-**Proposal:** `peers: Option<u32>`, `eta: Option<Duration>`, and speeds carried in
-one documented unit with the conversion done once, in the engine adapter. `FR-32`
-and `FR-44` get a clause for the unknown case (§4).
-
-### F-6 — The 500 ms poll is applied to items that cannot change
-
-- `FR-32`/`FR-44` fix a 500 ms stats poll; `docs/architecture.md` §4 applies it
-  "per active item".
-- Spike V-10: `wait_until_completed()` is an awaitable future — completion does not
-  need to be discovered by polling.
-
-**Why it matters:** on a seedbox with 200 idle seeds, a flat 500 ms poll is 400
-stat reads per second to learn nothing, against `NFR-04`'s ≤2% idle CPU. For a
-project whose goal is "lighter", this is free.
-
-**Proposal:** adaptive cadence — 500 ms while any item is `downloading`, 5 s when
-every item is a settled seed, and completion driven by `wait_until_completed()`
-rather than by observing `finished` on a tick. Keeps `FR-32`'s user-visible
-guarantee, drops the idle cost.
-
-### F-7 — The ledger's `progress` field is redundant with `FR-50` and stale by construction
-
-- `FR-48` — `downloads.json` holds "status **and progress**", "written atomically
-  (write-temp + rename) **on every status change**".
-- `FR-50` — "**piece-level resume state comes from librqbit's session, not from
-  `downloads.json`**."
-- Spike V-12: librqbit already persists its own session state
-  (`SessionPersistenceConfig::Json { folder }`).
-
-**Why it matters:** this is a redundancy, not a contradiction — `FR-50` governs only
-where *resume* state comes from. But it leaves `progress` in a bad spot either way.
-Written on status change only (as `FR-48` specifies), it is stale between
-transitions and nothing may trust it. Written often enough to be accurate, it turns
-a whole-file atomic rewrite into a per-poll-tick treadmill — the reference product's
-known weakness, which we are supposedly improving on. There is no cadence at which
-the field is both correct and cheap, and `FR-50` means nothing needs it.
-
-**Proposal:** the ledger stores **durable identity only** — info_hash, name, source,
-magnet, output folder, status, timestamps. Volatile stats never touch disk. Writes
-fire on status transitions, are debounced, and are flushed synchronously on exit.
-
-### F-8 — Crash-marker and ledger-flush ordering is unspecified
-
-- `docs/architecture.md` §5 step 1: marker written at boot. `FR-08`: cleared on clean exit.
-- The roadmap puts bootguard in Phase 5; the marker's write/clear hook points are in
-  Phase 1's terminal lifecycle.
-- `UR-08`: exit is synchronous and never waits on engine sockets.
-
-**Why it matters:** if the marker is cleared before the ledger is flushed, a crash
-in that window leaves "clean marker + stale ledger" — bootguard stands down exactly
-when it was needed. The reference product gets this right and the ordering is load-
-bearing: `persistSync()` then `disarmBootMarker()`, in that order, in one function.
-
-**Proposal:** normative ordering — **flush the ledger synchronously, then clear the
-marker, then restore the terminal, then exit.** Phase 1A defines the lifecycle hook
-signatures; E3 fills them in.
-
-### F-9 — CI is single-OS while the spec names Windows as the primary target
-
-- `.github/workflows/ci.yml` **as of commit `5ba92c8`**: one job, `runs-on:
-  ubuntu-latest`. (Fixed on this branch — see the note at the end of this finding.
-  The file in your working tree already has the matrix.)
-- `NFR-08`: "**Primary target Windows Terminal (Windows 11)**; macOS and Linux
-  terminals are supported for the same feature set."
-- `FR-06`: `%USERPROFILE%\.harbour`. `FR-55`: atomic rename **on the same volume**.
-  `UR-03`: DEC 2026 sync "observable on Windows Terminal".
-
-**Why it matters:** path resolution, atomic rename semantics, and file locking are
-where cross-platform actually breaks, and all three live in my files. The reference
-product learned this and moved to a three-OS matrix. Doing it now, while the repo is
-four lines of Rust, is free; doing it at Phase 5 means bisecting a Windows failure
-through three tracks of merged work.
-
-**Proposal:** three-OS matrix. **Applied on this branch** — it is foundation work,
-in-track, and small enough to review at a glance.
-
-### F-10 — The performance bar is set at the level of the thing we are replacing
-
-- `NFR-03`: "TUI interactive (splash visible) **≤ 500ms** after process start."
-- The reference product is a Node CLI that boots React + Ink + Yoga-WASM + a
-  222-package engine graph before its first frame. I have **not** measured its
-  startup and no in-repo evidence exists; the point does not depend on the exact
-  number, only on the fact that 500 ms is a budget a Node TUI can plausibly hit and
-  a static Rust binary should not need.
-
-**Why it matters:** "lighter and faster" is the reason this project exists. A
-statically linked Rust binary that renders a first frame should be an order of
-magnitude under this. As written, harbour could ship, meet `NFR-03`, and be no
-faster to start than the thing it replaces — and nothing in the spec would catch it.
-There is also no requirement for memory or binary size at all, which are the two
-places where "lighter" is actually observable.
-
-**Proposal:** tighten `NFR-03` to **≤100 ms p95** to first paint (excluding
-first-run config creation, measured on the reference machine), and add two NFRs for
-idle RSS and release binary size (§4). Numbers get set from E1's measurements —
-but the requirement should exist before the numbers do.
-
-### F-11 — The declared source of truth is a machine-local path
-
-`docs/architecture.md:7` — "Contract: `C:/tmp/harbour-context.md` is the single
-source of truth. Every name, keybind, and decision below is normative."
-
-That path does not exist on my machine and cannot exist for a contributor on macOS
-or Linux. A normative document that no one else can read is not normative.
-
-**Proposal:** fold it into `SPEC.md` or commit it as `docs/context.md`, and make
-`architecture.md` point at the in-repo copy.
-
-### F-12 — The missing-file detector's constants were derived for a different engine
-
-- `FR-45`: a seed with `speed > 0 && progress < 1` for 2 consecutive polls after a
-  **10 s grace** is flagged `missing`.
-- Those constants come from the reference product, where the grace exists to cover
-  **hash re-verification on re-seed** — during which `progress < 1` with
-  `downloadSpeed > 0` is normal and indistinguishable from a genuinely missing file.
-- librqbit has a distinct `Initializing` state (spike V-6) and its own resume state
-  (V-12), so the condition the grace was protecting against may not arise in the
-  same shape. And the inputs differ in shape: download speed is reachable only
-  through `live: Option<LiveStats>` (so it is *absent*, not zero, whenever the
-  torrent is not live) and is MiB/s as `f64`, not a flat byte count (V-9).
-
-**Why it matters:** copying the constants without the reasoning gives us a detector
-that is either dead code or a false-positive generator, and this detector's failure
-mode is "silently re-download 50 GB". `FR-45`'s *intent* is right and must survive.
-
-**Proposal:** keep the intent, re-derive the mechanism from observed librqbit
-behaviour in E1 spike item 3, and amend `FR-45` to state the condition in engine
-terms. The acceptance test is behavioural, not numeric: **delete the file under a
-running seed → the item goes `missing` and no re-download starts.**
-
-### F-13 — Two crate names across five documents
-
-`harbour-tui` in `AGENTS.md:51`, `docs/roadmap.md:32` and `docs/design.md:3`;
-`harbour` in `SPEC.md:3` and `Cargo.toml:2` — and `Cargo.toml` is the one that
-actually compiles.
-
-Trivial, but it is a shared-vocabulary item in the foundation I own, and it will
-cost someone an afternoon of confused imports.
-
-**Proposal:** `harbour`, matching `SPEC.md` and the committed `Cargo.toml`; correct
-`AGENTS.md:51`. Single crate for now — a workspace split is justified by compile
-times, and we don't have compile times yet (`AGENTS.md` rule 8).
+- I write the migration, not just the contract. The `Source` change is one
+  `Box::pin(async move { … })` per adapter, and I will send the diff rather than
+  the requirement.
+- The stats split ships as **one PR touching both `types.rs` and
+  `downloads.rs`**, reviewed with Ishan, so `main` is never red. If that PR is not
+  ready in time, `QueueItem` keeps the volatile fields as deprecated pass-throughs
+  for one cycle rather than breaking the view — worse code for a week beats a
+  broken `main`.
+- Where I disagree with a merged decision, I raise it and let the owner decide.
+  §3's `Error → failed` mapping contradicts `src/types.rs:206`, and it goes to
+  Ishan as a question with the reasoning, not as a silent overwrite.
 
 ---
 
-## 3. The revised track plan
+## 5. Phases
 
-Replaces roadmap Phase 1 (types), Phase 4 and Phase 5 **for this track**, pending
-review. Phase numbering is deliberately `E`-prefixed so it does not collide with the
-shared roadmap's numbering until §4's amendments are accepted.
+**Every phase carries its §4.2 rows as acceptance criteria, not as follow-up.** A
+phase is done when its happy path works *and* each failure mode it introduces has a
+test proving the fallback. E1 in particular exists to observe real failures before
+E2 codes against guessed ones.
 
-### E0 — Foundation (= proposed Phase 1A) · ~2 days · blocks everything
+### E0 — Foundation & freeze · ~3 days · blocks both other tracks
 
-- Crate/module layout per `docs/architecture.md` §2; resolve the crate name (F-13).
-- **`types.rs` — the freeze.** `TorrentResult`, `Source` trait signature,
-  `QueueStatus` (six variants, F-3), `QueueItem`, `EngineEvent`. Documented as
-  breaking-on-change per `AGENTS.md` rule 4.
-  - `peers: Option<u32>`, `eta: Option<Duration>`, one documented speed unit (F-5).
-  - The **engine→harbour status projection table**, written down once here:
+1. `src/core/types.rs` per §3, rustdoc on every public item, announced frozen.
+2. `Engine` trait + in-memory fake (T13).
+3. `paths.rs` — config dir (`FR-06`), `HARBOUR_STATE_DIR`, `HARBOUR_MAX_DOWNLOADS`
+   (`FR-07`), `HARBOUR_SOURCE_TIMEOUT`.
+4. Error type; crash-log and bootguard arm/disarm **hook signatures** (the terminal
+   side already exists in `app.rs`).
+5. CLI parse: `FR-02`–`FR-05`, infohash validation, magnet builder.
+6. Land amendments A-1…A-18 (§6).
+7. **Coordinated edit with Ishan:** `src/ui/downloads.rs` reads `item.eta_secs`
+   (`:237`), `item.speed_mib` (`:240`), `item.upload_speed_mib` (`:307`),
+   `item.peers` (`:233-234`). T7/T8/T9 move those to `EngineStats`, so the view
+   switches to `ItemView`. Ships as one PR touching both files, agreed with Ishan;
+   if that slips, the fields stay as deprecated pass-throughs for a cycle (§4.4).
 
-    | librqbit state | harbour status |
-    | --- | --- |
-    | `Initializing && !finished` | `downloading` |
-    | `Initializing && finished` | `seeding` (verifying) |
-    | `Live && !finished` | `downloading` |
-    | `Live && finished` | `seeding` |
-    | `Paused` | `paused` |
-    | `Error` | `failed` |
-    | — | `missing` is harbour-derived only (F-12) |
+**DoD:** four CI gates green on all three OSes; a `Vec<ArcSource>` registry and a
+fan-out over it **compile** (the §2.1 regression test); round-trip test for the
+ledger including `paused`; infohash/magnet/path unit tests under both
+`%USERPROFILE%` and `$HOME`.
 
-    The `Initializing` split is load-bearing: after a restart a **complete** seed
-    passes through `Initializing` with `finished == true`, and mapping that to
-    `downloading` would show every restored seed as an active download, breaking
-    `FR-47`. `queued` is harbour-side too — it exists before the item is handed to
-    the engine at all.
-- **An `Engine` trait plus a fake implementation.** This is the piece that unblocks
-  everyone: the queue becomes unit-testable with no network, and Ishan's Phase 2
-  gets a real downloads contract instead of inventing fake download data.
-- `paths.rs`: config-dir resolution (`FR-06`) **plus a `HARBOUR_STATE_DIR` override**
-  so all three tracks can test against a temp dir and never touch real user state.
-  (Ported from the reference product's `TORLINK_STATE_DIR`; it is the reason their
-  test suite can touch persistence at all.)
-- Error type; crash-log hook and bootguard arm/disarm hook **signatures** (F-8) —
-  1B implements the terminal side against them.
-- CLI parse: `FR-02`–`FR-05`, infohash validation, magnet builder.
-- **`FR-07`**: `HARBOUR_MAX_DOWNLOADS` parsed at startup, invalid → unlimited with a
-  warning. (The cap *logic* is E2's; the env parse belongs with the other startup
-  config so there is one place where the environment is read.)
-- CI three-OS matrix (F-9).
+### E1 — librqbit behavioural spike + gate · ~2–3 days
 
-**DoD:** `cargo build && cargo test && cargo clippy -- -D warnings && cargo fmt
---check` green on Linux, macOS **and Windows**; `harbour --version` / `--help`
-per `FR-03`/`FR-04`; unit tests for infohash validation, magnet builder, and path
-resolution under both `%USERPROFILE%` and `$HOME`; the types module has rustdoc on
-every public item and is announced as frozen in the PR description.
+Static half done. Remaining, each pass/fail:
 
-### E1 — librqbit behavioural spike + decision gate · ~2–3 days
-
-Static half is done (`engine-spike-librqbit.md`). Remaining, each a pass/fail gate:
-
-1. Real tiny magnet: add → metadata → download → finish → seed.
+1. Magnet → metadata → download → finish → seed.
 2. `kill -9` mid-download → relaunch → resumes **with no rehash**.
 3. Delete the file under a live seed → **record what `TorrentStats` actually
-   reports**; that recording is the specification for F-12's detector.
-4. `pause`/`unpause` round trip; `delete(id, delete_files: true)` with an open
-   handle (Windows locking is the risk).
-4b. **Re-add from a cached `.torrent` against files already on disk** and confirm it
-   verifies locally without swarm traffic. This is `FR-37`'s load-bearing half and
-   the whole reason we cache the metadata; if librqbit re-fetches anyway, the cache
-   is dead weight and `FR-37` needs rewriting.
-5. Measure `Session::new` cost, RSS at 1 and 20 torrents, release binary size →
-   these become the numbers behind the new NFRs (F-10).
-6. `default-tls` vs `rust-tls` (rustls avoids a system OpenSSL dependency — likely
-   right for a portable binary).
+   reports**. That recording is the specification for the `FR-45` detector; the
+   torlink constants (2 polls, 10s grace) were derived for webtorrent's
+   re-verification behaviour and must not be copied blind.
+4. Re-add from cached `.torrent` against files on disk → verifies locally, no swarm
+   metadata fetch (`FR-37`'s load-bearing half).
+5. `pause`/`unpause`; `delete(id, delete_files)` with an open handle (Windows
+   locking is the risk, not Linux).
+6. Measure `Session::new` cost, RSS at 1 and 20 torrents, release binary size →
+   these become the numbers behind NFR-13/14.
+7. `default-tls` vs `rust-tls` — rustls avoids a system OpenSSL dependency.
 
-**DoD:** written verdict appended to the spike doc, version pinned in `Cargo.toml`
-with a why-comment, go/no-go recorded. **No-go fallback**, recorded now rather than
-improvised later: drive the `rqbit` binary over its `http-api` feature as a sidecar.
-That costs the single-binary property — a product decision for Ishan, not a dead end.
+**DoD:** written verdict appended to the spike doc; `librqbit = "=8.1.1"` pinned
+with a why-comment; go/no-go recorded. **No-go fallback, recorded now:** drive the
+`rqbit` binary over its `http-api` feature as a sidecar. That costs the
+single-binary property — Ishan's call, not a dead end.
 
-### E2 — Engine + queue (= roadmap Phase 4, engine half) · ~1.5–2 weeks
+### E2 — Engine + queue · ~2 weeks
 
 - `engine.rs`: `Session` wrapper, add from magnet/infohash/`.torrent`, handle
-  registry keyed by info_hash, the projection table from E0.
-- **Adaptive stats cadence** (F-6): 500 ms while anything is downloading, 5 s when
-  everything is a settled seed, completion via `wait_until_completed()`.
-- `queue.rs`: concurrency cap (`FR-31`), oldest-first `promote()`, duplicate
-  detection by info_hash (`FR-56`) — all unit-tested against the fake `Engine`.
+  registry keyed by info_hash, the §3 projection table.
+- **Adaptive cadence:** 500ms while anything is downloading, ~5s when everything is
+  a settled seed, completion via `wait_until_completed()` rather than polling for
+  `finished`. Keeps `FR-32`'s guarantee; drops the idle cost `NFR-04` budgets.
+- `queue.rs`: cap (`FR-31`), oldest-first `promote()`, dedupe by info_hash
+  (`FR-56`) — all unit-tested against the fake `Engine`, no network.
+- **Magnet resolution on demand** (T4): `d` on a row with `magnet: None` calls
+  `Source::resolve_magnet`, shows Ishan's `resolve…` affordance, then enqueues.
 - Metadata capture → `cache/torrents/<info_hash>.torrent`, **and the re-seed path
-  that consumes it** — `FR-37` is two halves and only the capture half is obvious.
-- Seed-by-default with **trackers-override** support (`FR-42`, carried over from
-  roadmap Phase 4 task 5 so it does not fall through the phase re-cut).
-- Missing-file detector, re-derived from E1 item 3 (F-12).
-- Error surfacing (`FR-36`) from both add-time failures and `stats.error` (V-13).
+  that consumes it** (`FR-37` is two halves).
+- Seed-by-default + trackers override (`FR-42`).
+- Missing-file detector, re-derived from E1 item 3.
+- Error surfacing (`FR-36`) from add-time failures and `stats.error`.
 
-**DoD:** `HARBOUR_TEST_NET=1` integration test covering add → download → seed →
-pause → resume → missing; a re-seed from cached metadata that performs no swarm
-metadata fetch (`FR-37`); queue semantics fully covered by network-free unit tests
-against the fake `Engine`; `NFR-11` path-safety tests (no cache or ledger path is
-ever derived from a torrent name).
+**DoD:** `HARBOUR_TEST_NET=1` integration covering add → download → seed → pause →
+resume → missing; a re-seed that performs no swarm metadata fetch; a lazy-magnet
+download from a `None` row; queue semantics fully covered network-free; `NFR-11`
+path-safety tests (no path derived from a torrent name).
 
-### E3 — Persistence + bootguard + resume (= roadmap Phase 5) · ~1 week
+**Degradation gates (§4.2):** a `Session` that will not construct leaves search
+working and downloads reporting why; one torrent that fails to add does not fail a
+restore of twenty; a dead magnet times out and explains "no peers found"; a stats
+read that throws leaves the poller alive; a seed whose files vanish goes `missing`
+with the engine stopped and **nothing re-downloaded**.
 
-- Ledger with durable fields only (F-7); atomic temp+rename; debounced writes;
-  synchronous flush on exit.
-- `history.json` cap 500 (`FR-49`); `config.toml` (`FR-51`); corrupt-file quarantine
-  (`FR-54`); **recently-downloaded list persisted and restored** (roadmap Phase 5
-  task 7, carried over so it does not fall through the phase re-cut).
-- Bootguard: arm at boot, **flush-then-disarm** on clean exit (F-8); safe mode
-  restores everything paused with a banner.
-- Reconcile the ledger against librqbit's session state on startup (`FR-50`).
+### E3 — Search orchestration · ~1 week
+
+Assigned here by both replies. Sources produce; **this layer merges**.
+
+- Fan-out over `Vec<ArcSource>`, one task per source, per-source deadline.
+- **Per-phase budget** (Dhruv, `notes-for-dhruv.md:246-255`): list ≈3s, follow-ups
+  the remainder, total ≤10s, tunable via `HARBOUR_SOURCE_TIMEOUT`. At 3s the UI
+  releases the bar; unanswered sources go `Checking`, **not** `Offline`; late
+  arrivals stream in and flip to `Online`.
+- **Dedupe + merge** (`FR-25`, now decided as a fix): one list, dedupe by
+  `info_hash` keeping the higher seeder count, global sort seeders desc then date.
+- **Cache**: TTL read/write, empty-success negative caching, and the **hard-failure
+  `failed_at` marker Dhruv assigned to the engine** (`notes-for-dhruv.md:232-238`),
+  per *host* not per source, ~60s.
+- **Sticky host hint** passed in via `SearchCtx.host_hint` — the engine holds the
+  session state so sources stay stateless (`docs/sources.md:37-39`).
+- Cancellation on new query (`FR-20`).
+
+**DoD:** with the slowest source blackholed, results render inside the list budget
+and the dead source reads `Checking` then `Offline`; a repeat query is a cache read
+with no network; a cross-source duplicate collapses to one row with the higher
+seeder count (Dhruv is shipping fixtures for exactly this).
+
+**Degradation gates (§4.2):** all ten sources failing yields an empty state that
+says so and offers retry, never a blank pane; a cache file with a drifted schema is
+treated as a miss and overwritten, never propagated as a parse error; a cache write
+failure is invisible to the user because the cache is only ever an optimisation.
+
+### E4 — Persistence + bootguard + resume · ~1 week
+
+- Ledger: durable fields only (T7); atomic temp+rename; debounced; **synchronous
+  flush on exit**.
+- `history.json` = search queries, cap 500 (`FR-49`). Recently-downloaded is
+  **derived from the ledger** (`finished == true`), not a second file — this removes
+  the `HistoryItem`/`FR-49` collision where `types.rs:166` models completed
+  downloads while citing `FR-53`, which is bootguard.
+- `config.toml` (`FR-51`); corrupt-file quarantine (`FR-54`).
+- Bootguard: arm at boot, **flush the ledger, then clear the marker**, then restore
+  the terminal, then exit. A crash between flush and clear must not leave a clean
+  marker over a stale ledger.
+- Reconcile ledger against librqbit session state on startup (`FR-50`).
 
 **DoD:** `kill -9` mid-download → relaunch resumes with no rehash; simulated crash →
-safe mode with zero engines started; corrupt ledger quarantined and startup survives;
-verified on all three OSes.
+safe mode with zero engines started; corrupt ledger quarantined and startup
+survives; all three OSes.
 
-### E4 — Integration · joins Ishan and Dhruv
+**Degradation gates (§4.2):** one malformed ledger row is skipped and the other
+nineteen load; a read-only or full disk surfaces a banner and keeps the download
+running in memory; a corrupt `config.toml` falls back loudly and is **never
+overwritten**; a crash between ledger flush and marker clear still boots into safe
+mode, not into a clean marker over a stale ledger.
 
-Hand over the real `Engine` behind the E0 trait, replacing the fake. Own the M0
-acceptance run for items 4–8 of `SPEC.md` §8.
+### E5 — Integration · joins both tracks
 
-**Track total: ~4–5 weeks**, of which only E0's two days are a barrier to the other
-two tracks.
+Swap the real `Engine` behind the E0 trait; own M0 acceptance items 4–8 of
+`SPEC.md` §8.
 
----
-
-## 4. Amendment requests to shared documents
-
-These need Ishan's review because they touch normative artifacts. Wording is
-ready-to-merge.
-
-| # | File | Change | From finding |
-| --- | --- | --- | --- |
-| A-1 | `AGENTS.md:48` **+ `SPEC.md` FR-30 (`:147`) + FR-48 (`:195`)** | Queue statuses become `queued`, `downloading`, `paused`, `failed`, `seeding`, `missing`. All three lists must change together — as it stands the ledger's own enum (`FR-48`) would make `paused` unpersistable. | F-3 |
-| A-2 | `AGENTS.md:51`, `docs/roadmap.md:32`, `docs/design.md:3` | Crate is `harbour` (not `harbour-tui`), matching `SPEC.md:3` and `Cargo.toml:2`. | F-13 |
-| A-3 | `docs/roadmap.md` §2 and §6 | Split Phase 1 into 1A (Foundation, Sarthak) and 1B (Terminal & Theme, Ishan); move the "define the shared core types" task from Phase 2 to 1A; §6's "do not split" applies to 1B. **Atomically**: delete the types task at `roadmap.md:57`, drop "shared types are stable" from the Phase 2 DoD (`:70`), and fix "which phase 2 pins down first" (`:247`). Leaving any of those makes two tracks owners of the frozen contract, which is the exact failure `AGENTS.md` rule 4 exists to prevent. | F-1, F-2 |
-| A-4 | `docs/roadmap.md` Phase 4 | Dependencies become "Phase 1A (types, paths, runtime) + Phase 1B (terminal lifecycle)" — not Phase 2. | F-1, F-2 |
-| A-5 | `SPEC.md` FR-32, FR-44 | Add: "peers and ETA are absent while the torrent is not live (paused/initializing/errored); the UI renders `—`, never `0`." | F-5 |
-| A-6 | `SPEC.md` FR-48 | Drop "and progress" from the ledger; add "volatile statistics are never persisted; piece state is librqbit's per FR-50. Ledger writes fire on status transition, are debounced, and are flushed synchronously on exit." | F-7 |
-| A-7 | `SPEC.md` FR-08 / UR-08 | Add the normative exit ordering: flush ledger → clear crash marker → restore terminal → exit. | F-8 |
-| A-8 | `SPEC.md` FR-45 | Restate the detector in librqbit terms; replace the numeric constants with the condition recorded in E1 spike item 3. Acceptance stays behavioural: delete the file under a seed → `missing`, no re-download. | F-12 |
-| A-9 | `SPEC.md` NFR-03 | Tighten to ≤100 ms p95 to first paint (excluding first-run config creation). | F-10 |
-| A-10 | `SPEC.md` §7 | Add **NFR-13 (Footprint)**: idle RSS ≤ *N* MB with 20 seeds. Add **NFR-14 (Footprint)**: release binary ≤ *N* MB. *N* set from E1 measurements. | F-10 |
-| A-11 | `docs/architecture.md:7`, `docs/roadmap.md:5`, `SPEC.md:8` | Replace every reference to the machine-local context file with an in-repo path. All three cite it as normative. | F-11 |
-| A-12 | `SPEC.md` §9 OQ-1, **co-amending FR-43 (`:180`) and UR-10** | OQ-1 (`p` = pause-only vs pause-with-remove) is answerable now: librqbit has `pause`/`unpause` **and** `delete(id, delete_files)`, so both are cheap. Recommend pause-only on `p`, deletion behind an explicit confirm — which means FR-43's "or the item is removed per config" clause must go at the same time, or Ishan wires a keybind to a behaviour we just decided against. | spike V-11 |
-| A-13 | `AGENTS.md:49` | Add `HARBOUR_STATE_DIR` to the normative env-var vocabulary alongside `HARBOUR_MAX_DOWNLOADS` and `HARBOUR_TEST_NET`. E0 introduces it and all three tracks will use it for tests. | E0 |
-
-**Applied on this branch** (in-track foundation, small enough to review at a glance):
-
-- `.github/workflows/ci.yml` → three-OS matrix (F-9).
+**Track total ≈ 5–6 weeks.** Only E0's three days block anyone else.
 
 ---
 
-## 5. What I deliberately did not change
+## 6. Amendments to land in E0
 
-Out of my track. Flagged here so they are not lost, for Ishan and Dhruv to accept or
-reject on their own terms.
+A-13 and A-11(partial) are done. The rest are mine now, not Ishan's queue.
 
-- **Sources track — the 1337x critical path.** The reference product fetches up to
-  four detail pages per 1337x search purely to extract magnets, and registers 1337x
-  **twice** (movies + TV), so one user search can cost up to sixteen requests to the
-  single flakiest source. `FR-11` reproduces both registrations. Suggestion for
-  Dhruv: fetch the detail page **lazily**, only when a row is selected or
-  downloaded — list rows already carry name, size and seeders — and let one fetch
-  serve both category tabs. This is the largest perceived-latency item in the
-  reference product and it is a design fix, not a language fix.
-- **Sources track — per-source deadlines.** `FR-16` mandates a per-request timeout
-  and retry policy but no wall-clock deadline for the whole source. A hard budget
-  with partial rendering is what makes a search *feel* fast when one source is sick.
-- **Phase 7 — headless daemons.** librqbit ships `http-api`, `webui` and `watch` as
-  upstream features (spike V-4). Most of that spike is "enable a feature and write a
-  compatibility shim", not "build four daemons". Worth re-scoping when it comes up.
-- **All of `docs/theming.md`, UR/TR requirements, and Phase 2/3/6 scope** — Ishan's
-  and Dhruv's, untouched.
+| # | Target | Change |
+| --- | --- | --- |
+| A-1 | `AGENTS.md:48`, `SPEC.md:147` (FR-30), `SPEC.md:195` (FR-48) | Six statuses. All three, or the ledger cannot legally persist `paused` |
+| A-2 | `AGENTS.md:51`, `docs/roadmap.md:32`, `docs/design.md:3` | Crate is `harbour` (matches `Cargo.toml:2`) |
+| A-3 | `docs/roadmap.md` §2, §6 | Phase 1 → 1A/1B. Atomically delete the types task at `:57`, the "shared types are stable" DoD clause at `:70`, and "phase 2 pins down first" at `:247` |
+| A-4 | `docs/roadmap.md` Phase 4 | Depends on 1A, not Phase 2 |
+| A-5 | `SPEC.md` FR-32, FR-44 | peers/ETA absent while not live; UI renders `—`, never `0` |
+| A-6 | `SPEC.md` FR-48 | Drop "and progress"; volatile stats never persisted; debounced writes; sync flush on exit |
+| A-7 | `SPEC.md` FR-08 / UR-08 | Exit ordering: flush → clear marker → restore → exit |
+| A-8 | `SPEC.md` FR-45 | Restate in librqbit terms; constants come from E1 item 3. Acceptance stays behavioural |
+| A-9 | `SPEC.md` NFR-03 | ≤100ms p95 to first paint (Ishan agreed, `notes-reply-ishan.md:38-42`) |
+| A-10 | `SPEC.md` §7 | NFR-13 idle RSS with 20 seeds; NFR-14 release binary size. Numbers from E1 |
+| A-11 | `docs/roadmap.md:5`, `docs/design.md:5` | Point at `docs/context.md` — still citing the uncommitted scratch file |
+| A-12 | `SPEC.md` FR-43, OQ-1, UR-10 | `p` is pause-only; delete the "or removed per config" clause. Ishan asked for this explicitly |
+| A-13 | `AGENTS.md:49` | Add `HARBOUR_SOURCE_TIMEOUT` |
+| **A-14** | `SPEC.md` FR-25 | **New.** Single merged list, dedupe by info_hash keeping higher seeders, global seeder sort. Decided by Ishan (`notes-reply-ishan.md:55-62`), agreed by Dhruv, and the shipped UI already draws a flat list — SPEC is the only holdout |
+| **A-15** | `SPEC.md` FR-14, `docs/sources.md:79` | **New.** `magnet` is optional at search time, resolvable on demand |
+| **A-16** | `SPEC.md` FR-18 | **New.** Health states are unknown/checking/online/empty/offline — `checking` is currently unrepresentable |
+| **A-17** | `SPEC.md` FR-49 | **New.** `history.json` is search queries; recently-downloaded derives from the ledger |
+| **A-18** | `docs/roadmap.md:3`, `docs/architecture.md:3`, `docs/design.md:5` | **New.** All three still say "repo has no code yet" |
 
 ---
 
-## 6. Risk register — this track
+## 7. Obligations inherited from the replies
+
+Every one is now scheduled; this table exists so none silently drops again.
+
+| From | Obligation | Lands in |
+| --- | --- | --- |
+| Dhruv §1 + Ishan | Optional/resolvable magnet in the freeze + on-demand resolution | T4, E2 |
+| Ishan #7 + Dhruv §5 | Cross-source dedupe by info_hash | E3, A-14 |
+| Dhruv §3a | Engine-enforced negative TTL on hard failures, per host | E3 |
+| Dhruv §4 | Session-scope sticky-host hint (sources stay stateless) | T11, E3 |
+| Dhruv §3b + Ishan | Per-phase deadline budget + `Checking` state + `HARBOUR_SOURCE_TIMEOUT` | T10, T11, E3, A-13, A-16 |
+| Dhruv §2/§4 | Typed `SourceError` must survive the freeze | T3 |
+| Ishan #3 | `finished` flag stays — paused-seed rendering depends on it | T7 |
+| Ishan #5 | NFR-03 → 100ms + footprint NFRs | A-9, A-10 |
+| Ishan #6 | FR-43 clause removal | A-12 |
+
+---
+
+## 8. Risks
 
 | Risk | Likelihood | Impact | Mitigation |
 | --- | --- | --- | --- |
-| librqbit fastresume or the missing-file signal doesn't behave as needed | Medium | Project-shaping | E1 gate with a recorded sidecar fallback |
-| 8→9 major lands mid-build and 8.1.1 goes unmaintained | Medium | Medium | Pin exact; `Engine` trait keeps the blast radius to one module |
-| Types freeze breaks after other tracks build against it | **Medium-high** | High — recompiles all three tracks | F-3/F-5/F-13 fixed **before** the freeze; that is the entire point of E0 |
-| Windows-specific persistence failure found late | Medium | High | Three-OS CI from commit 4 (F-9) |
-| E0 slips and blocks two other people | Low | High | Two days, tightly scoped, no engine dependency |
-| Apache-2.0 (librqbit) vs MIT (harbour) NOTICE obligations | Low | Low | Handle at packaging; permissive-compatible |
+| Dhruv's unpushed adapters were built against the `docs/sources.md` trait and need rework | **High** | Medium | §2.1 makes rework unavoidable regardless — that trait cannot compile. Land E0 fast and hand him the migration inline |
+| The T7/T8/T9 stats split breaks `downloads.rs` | **Certain if uncoordinated** | High | One PR touching both, with Ishan |
+| librqbit fastresume or the missing-file signal misbehaves | Medium | Project-shaping | E1 gate; sidecar fallback recorded |
+| 8→9 lands mid-build | Medium | Medium | Pin `=8.1.1`; the `Engine` trait keeps the blast radius to one module |
+| More contract drift while three docs describe one contract | **High** | Medium | E0 makes `src/core/types.rs` normative and the other descriptions explicitly derivative |
+| Ledger silently persists volatile stats today and nothing flags it | Certain until E4 | Medium | A-6 + the T7 split; a round-trip test asserting the persisted field set |
 
 ---
 
-## 7. Open questions for the team
+## 9. Verification log
 
-1. **Ishan** — do you accept the Phase 1A/1B split (A-3, A-4)? It is the change that
-   decides whether two tracks wait two days or a whole UI phase.
-2. **Ishan** — paused download and paused seed: one status or two (F-3)? I recommend
-   one; you own how it renders.
-3. **Ishan** — `NFR-03` at 100 ms (A-9). If we are not going to be an order of
-   magnitude faster to start than the reference product, we should say so in the
-   README rather than in a requirement no one measures.
-4. **Dhruv** — the lazy-1337x suggestion in §5. Yours to take or leave; it is the
-   single biggest search-latency lever and it is cheaper to build that way from the
-   start than to retrofit.
-5. **Both** — where should the `C:/tmp/harbour-context.md` content live (A-11)?
+**Compiled, not assumed.** Both `Source` traits were extracted into a scratch crate
+and built: `docs/sources.md`'s `Arc<dyn Source>` and `src/types.rs`'s `impl Future`
+variant both fail with `E0038: not dyn compatible` the moment a registry uses them.
+The boxed-future replacement in §2.1 was then compiled with a real
+`Vec<ArcSource>` and an `await`ing fan-out. librqbit 8.1.1 facts come from
+`cargo info`/`Cargo.lock`/a Windows build/reading the vendored source.
+
+**Adversarial review.** A second model (opencode, `deepseek-v4-flash-free`) audited
+this plan against the merged tree and both replies, asked only for problems. I
+re-verified each claim against the files rather than accepting it. It was right
+about all of the following, and this document changed accordingly:
+
+- Three obligations from the replies had **no phase at all** — engine-enforced
+  negative TTL, the sticky-host hint, and the deadline-budget/pending-state
+  contract. Now E3, T11, T10.
+- `SourceStatus` cannot express `FR-18`'s `checking`, so an unanswered source
+  renders as unknown forever and Ishan's 3s pending dot is unimplementable → T10.
+- `types.rs:166` models completed downloads as `HistoryItem` while citing `FR-53`
+  (bootguard); `FR-49`'s `history.json` is *search queries*. Two different cap-500
+  objects → A-17, E4.
+- `types.rs:206` maps an engine `Error` on a seed to `Missing`, contradicting the
+  projection table → resolved explicitly in §3, against the merged file.
+- `eta_secs: Option<u64>` and `time_remaining: Option<Duration>` coexist in the
+  freeze candidate, so "one unit, converted once" was already violated → T8.
+- F-2 is now moot (Ishan merged 1B, the serial barrier is gone) and F-9 is done;
+  F-4's evidence line was stale (`Cargo.toml` has nine deps now, still no librqbit).
+- Ishan's "tidy batch — done" is contradicted by the tree on two of four items.
+
+It missed the §2.1 dyn-compatibility defect in `docs/sources.md`, which is the
+single most consequential thing in this document.
+
+**Still unverified, and marked as such:** every runtime librqbit claim (fastresume,
+missing-file signalling, Windows delete-with-open-handle) and every performance
+number. Those are E1's gate. Nothing here is presented as measured unless it is in
+the spike doc's evidence table.
 
 ---
 
-## 8. Verification log
+## 10. Decision record
 
-This document was not written and shipped in one pass. What was checked, and how:
+Decisions taken on this track rather than escalated. Each is recorded with its
+reasoning and its reversal cost, so anyone can see why it went this way and how
+much it costs to change their mind later. **None of these needs an answer from
+anyone to start work.** Disagree by replying on the PR or opening an issue; nothing
+here is expensive to undo except where noted.
 
-**Engine claims** — every fact in §2 that concerns librqbit was re-derived on this
-machine against `librqbit 8.1.1`: `cargo search`/`cargo info` for versions, features
-and licence; `cargo add` + `Cargo.lock` for resolution; `cargo build` on
-Windows/MSVC for buildability; and the vendored source in `~/.cargo/registry` for
-every API shape. Nothing is quoted from a summary. Details and file:line evidence in
-[`engine-spike-librqbit.md`](engine-spike-librqbit.md).
+| # | Decision | Why | Cost to reverse |
+| --- | --- | --- | --- |
+| **D1** | **The engine owns fan-out *and* dedupe.** UI receives one merged, deduped, seeder-sorted list plus per-source status events. | The cache, per-source deadlines, the negative-TTL marker, the sticky-host hint and cancellation all have to live where the fan-out lives. Putting the merge somewhere else means one invariant spread across two layers. `docs/architecture.md` §3(a) already draws it this way. Ishan's staggered tags and pending dots still work — they're driven by `SourceAnswered`/`SourceFailed` events, not by owning the merge. | Low. The engine emits per-source batches alongside the merged view; the UI merges instead. One extra `EngineEvent` variant, ~half a day. |
+| **D2** | **`EngineEvent::Error` maps to `failed`, never `missing`.** | Contradicts `src/types.rs:206` on purpose. A transient tracker or network error on a seed would otherwise tell the user their files are gone. `missing` is reachable only from the file-gone detector, because FR-45 exists to never guess wrong in that direction — the wrong guess re-downloads 50 GB or hides a real loss. | Trivial — one match arm. But do it knowingly. |
+| **D3** | **`Initializing` splits on `finished`.** `Initializing && finished → seeding (verifying)`. | After a restart a complete seed passes through `Initializing` with `finished == true`. Mapping it unconditionally to `downloading` shows every restored seed as an active download on launch, contradicting FR-47. | Trivial — one match arm. |
+| **D4** | **Boxed futures at the `Source` boundary, not `#[async_trait]`.** | Both are correct; `Box::pin` is exactly what the macro generates. `AGENTS.md` rule 8 says justify every crate, and this one buys syntax only. | Trivial — add the crate, delete the wrappers. If Dhruv finds the boilerplate annoying across ten adapters, the macro is a fair trade and his call. |
+| **D5** | **Health/negative-TTL marker lives in `cache/health/<source_id>.json`, not in the search-cache file.** Shape below. | Dhruv's own guardrail was "per *host*, not per source" — and the search cache is keyed `(source, query)`, so a host-level fact has no correct home there. A separate small file keeps the search cache's schema untouched and makes the marker readable on its own. | Low — it's an implementation detail behind the cache API. |
+| **D6** | **E3 (search orchestration) is accepted into this track.** | Both replies assigned it here and D1 makes it coherent. It is roughly a week that was not in the original track scope. | N/A — a scope call, not a technical one. |
+| **D7** | **All 18 amendments land as one commit in E0**, not as a separate review round. | They are corrections to documents that already contradict each other and the merged code. Spreading them over three PRs means three windows where SPEC, AGENTS and the tree disagree in different ways. | N/A. |
+| **D8** | **The freeze proceeds without the unpushed `sources/*` code.** | It cannot be reconciled against code that is not on a branch, and blocking E0 on it blocks two tracks. §2.1 means that code needs migrating regardless of what it currently looks like. | N/A — I own the migration diff when the branch appears. |
 
-**Repo claims** — every `file:line` citation in §2 was read in the tree at commit
-`5ba92c8` before being cited.
+### Decisions taken during implementation
 
-**Adversarial review** — a second model (opencode, `deepseek-v4-flash-free`) was
-given this document plus the six artifacts it critiques, and asked only to find
-errors: verify each finding's evidence, name anything overstated or already handled,
-name what the plan missed for this track, and flag amendments that would break
-another track. Its findings were then re-verified against the files rather than
-accepted on trust. It was right about all of the following, and this document was
-corrected accordingly:
+| # | Decision | Why | Cost to reverse |
+| --- | --- | --- | --- |
+| **D9** | **native-tls, not rustls.** | librqbit's `rust-tls` feature pulls `aws-lc-sys`, which **requires NASM to build on Windows** — the exact native-toolchain install pain this project exists to escape, on the platform `NFR-08` names as primary. native-tls uses SChannel on Windows, Security.framework on macOS, OpenSSL on Linux, and needs no extra toolchain on any of them. | Low, but re-check the Windows build first. |
+| **D10** | **The queue re-keys a lazily-resolved download on the magnet's infohash.** | The three detail-page sources carry the site's numeric id in `info_hash` as a placeholder until `resolve_magnet` runs. Enqueuing under the placeholder files the item under an id the engine never reports back — librqbit keys by the real hash — so the row would sit at 0% for ever while the download actually ran. The magnet is authoritative. | Trivial, but do not: this is a correctness fix, not a preference. |
+| **D11** | **An unresolved detail-page row does not take part in cross-source dedupe.** | Its placeholder hash is not the real one, so it cannot match another source's copy. Resolving every row to fix it would reintroduce the per-row detail fetch that lazy magnets exist to avoid. | N/A — a documented consequence, revisit if dedupe quality disappoints. |
+| **D12** | **`.torrent`-on-launch is parsed and refused with an explanation**, not half-implemented. | Reading one means bencode plus hashing its info dict for the id. An honest "paste the magnet instead" beats a path that half-works on launch. | Small follow-up, not a redesign. |
+| **D13** | **The engine is constructed before the first frame.** | Simplest correct ordering: the queue restores against a live engine. But it is the thing most likely to blow `NFR-03`'s 100 ms budget, and that budget is now unmeasured. Flagged rather than quietly left to rot — moving construction after first paint is the fix if measurement says so. | Medium: the queue restore has to become async-after-paint. |
 
-| It found | Fix |
-| --- | --- |
-| The projection table mapped `Initializing` unconditionally to `downloading`, which would render every **restored complete seed** as an active download, breaking `FR-47` | E0's table now splits `Initializing` on `finished` |
-| `FR-42` trackers-override and roadmap Phase 5's recently-downloaded persistence **fell through the phase re-cut** | Carried into E2 and E3 explicitly |
-| `FR-07` (`HARBOUR_MAX_DOWNLOADS` env parse) was scheduled nowhere | Added to E0 |
-| `FR-37`'s load-bearing half — verifying on-disk files from cached metadata without a swarm re-fetch — had no task, test or DoD | Added to E1 (spike 4b) and E2 |
-| A-1 changed the vocabulary but not `FR-30`/`FR-48`, leaving `paused` unpersistable | A-1 now amends all three |
-| A-3 would have left the types task in Phase 2, giving **two tracks ownership of the frozen contract** | A-3 now specifies the deletions that must land atomically with the move |
-| A-12 contradicted `FR-43`'s surviving "or removed per config" clause | A-12 now co-amends FR-43 and UR-10 |
-| `HARBOUR_STATE_DIR` was introduced without being added to the normative vocabulary — this document breaking its own discipline | Added as A-13 |
-| F-7 called a redundancy a "contradiction" and asserted a write treadmill the spec does not actually mandate | Reframed as redundant-and-stale-by-construction |
-| F-9's evidence line described a file this branch had already fixed | Now dated to commit `5ba92c8` |
-| F-12 cited "speed is `Option`"; `Speed` is not an `Option` — it is reachable only through `live: Option<LiveStats>` | Citation corrected |
-| F-13 said "three ways"; it is two names across five documents | Corrected, and A-2 extended to `roadmap.md:32` and `design.md:3` |
-| The intro said "twelve corrections" and "four blocking" against thirteen findings and three blocking tags | Corrected |
+**D5, the marker shape** — this is the default; if Dhruv publishes a different shape
+in `docs/sources.md` §7 first, his wins and I adapt:
 
-It also read the CI matrix as already-committed and marked F-9 as failing; that is a
-sequencing artifact — the matrix was applied on this branch before the review ran —
-but the wording was genuinely stale and has been fixed. One thing it missed:
-`docs/design.md:3` is a fifth `harbour-tui` reference.
+```json
+{
+  "hosts": {
+    "yts.mx":  { "failed_at": 1786000000, "class": "network" },
+    "1337x.to": { "failed_at": 1786000042, "class": "blocked" }
+  }
+}
+```
 
-**Still unverified, and flagged as such:** every behavioural claim about librqbit at
-runtime (fastresume, missing-file signalling, Windows file-locking on delete) and
-every performance number. Those are E1's job. No number in this document is
-presented as measured unless it is in the spike doc's evidence table.
+`class` is the `SourceError` variant (`network | parse | blocked | timeout`).
+Entries older than the negative TTL (~60s) are ignored on read and pruned on write.
+Only hard failures are recorded — a clean "no results" is a *success* and is already
+negative-cached at the normal TTL in the search-cache file. Deleting `cache/` stays
+safe at all times.

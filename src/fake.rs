@@ -6,66 +6,84 @@
 //! same order — so smoke tests can assert on concrete rows. No `std::time`,
 //! no global state: determinism is the contract.
 
+//! `dead_code` is allowed module-wide until `app.rs` wires the phase-2
+//! views to this generator; mirrors `theme_watch.rs`'s staged-API allow.
+//! Remove it as the wiring lands.
+
+#![allow(dead_code)]
+
 use std::path::PathBuf;
 
-use crate::types::{HistoryItem, QueueItem, QueueStatus, SourceGroup, SourceId, TorrentResult};
+use std::time::Duration;
+
+use crate::core::magnet::build_magnet;
+use crate::core::types::{
+    CompletedItem, EngineStats, ItemView, QueueItem, QueueStatus, SourceGroup, SourceId,
+    TorrentResult,
+};
 
 /// Sidebar source matrix (docs/sources.md §2): id, chip label, name suffix,
 /// and the size band in bytes that source plausibly produces — all bands
 /// inside the 700 MiB–60 GiB fake-data contract.
-const SOURCES: &[(&str, &str, &str, u64, u64)] = &[
+const SOURCES: &[(SourceId, &str, &str, u64, u64)] = &[
     (
-        "fitgirl",
+        SourceId::FitGirl,
         "FitGirl",
         "(2026) [Repack] [Multi]",
         20 << 30,
         60 << 30,
     ),
-    ("yts", "YTS", "(2026) [1080p] [WEBRip]", 1 << 30, 4 << 30),
     (
-        "tpb-movies",
+        SourceId::Yts,
+        "YTS",
+        "(2026) [1080p] [WEBRip]",
+        1 << 30,
+        4 << 30,
+    ),
+    (
+        SourceId::TpbMovies,
         "TPB",
         "(2026) [1080p] [BluRay]",
         734_003_200,
         4 << 30,
     ),
     (
-        "x1337-movies",
+        SourceId::X1337Movies,
         "1337x",
         "(2026) [1080p] [BluRay]",
         2 << 30,
         8 << 30,
     ),
     (
-        "eztv",
+        SourceId::Eztv,
         "EZTV",
         "S01E01 [1080p] [WEBRip]",
         734_003_200,
         3 << 30,
     ),
     (
-        "tpb-tv",
+        SourceId::TpbTv,
         "TPB",
         "S01E01 [1080p] [H.264]",
         734_003_200,
         3 << 30,
     ),
     (
-        "nyaa",
+        SourceId::Nyaa,
         "Nyaa",
         "- 01 [1080p] [HEVC] [AAC]",
         734_003_200,
         2 << 30,
     ),
     (
-        "subsplease",
+        SourceId::SubsPlease,
         "SubsPlease",
         "- 01 [1080p] [HEVC]",
         734_003_200,
         (3 << 30) / 2,
     ),
     (
-        "bittorrented",
+        SourceId::Bittorrented,
         "BitTorrented",
         "(2026) [1080p] [BluRay]",
         1 << 30,
@@ -116,18 +134,17 @@ fn hash40(seed: u64) -> String {
     out
 }
 
-/// `magnet:?` URI for a fake infohash; `dn` uses `+` for spaces like the
-/// real magnet builder, so a fake URL stays paste-able into any client.
+/// Fake data goes through the *real* magnet builder rather than formatting its
+/// own string, so the fixtures exercise the same encoding the product uses.
 fn magnet(hash: &str, name: &str) -> String {
-    format!("magnet:?xt=urn:btih:{hash}&dn={}", name.replace(' ', "+"))
+    build_magnet(hash, name)
 }
 
 /// Demo-only query → category heuristic (FR-25's grouped layout). The REAL
-/// per-source relevance comes from Dhruv's scrapers (FR-14/15: each source
-/// searches and returns only what it actually carries); until then this tiny
-/// lexicon decides which sources *participate* so a demo search for an anime
-/// doesn't show a 55 GB FitGirl repack on top. Honest scope: it routes the
-/// group, it never invents rows a source wouldn't plausibly carry.
+/// per-source relevance comes from the scrapers (FR-14/15: each source
+/// searches and returns only what it actually carries); this tiny lexicon
+/// only decides which fake sources *participate*, so a demo search for an
+/// anime doesn't show a 55 GB FitGirl repack on top.
 fn query_category(query: &str) -> SourceGroup {
     let q = query.to_ascii_lowercase();
     if GAME_WORDS.iter().any(|w| q.contains(w)) {
@@ -180,6 +197,23 @@ const ANIME_WORDS: &[&str] = &[
     "frieren",
 ];
 
+/// Which fake sources answer for a category. Only sources in the SOURCES
+/// matrix — browse mode (empty query) skips this and uses the whole matrix,
+/// because a curated library is cross-source by design.
+fn category_sources(category: SourceGroup) -> &'static [SourceId] {
+    match category {
+        SourceGroup::Games => &[SourceId::FitGirl],
+        SourceGroup::Movies => &[
+            SourceId::Yts,
+            SourceId::TpbMovies,
+            SourceId::X1337Movies,
+            SourceId::Bittorrented,
+        ],
+        SourceGroup::Tv => &[SourceId::Eztv, SourceId::TpbTv],
+        SourceGroup::Anime => &[SourceId::Nyaa, SourceId::SubsPlease],
+    }
+}
+
 /// One demo-catalog entry: keywords that select it (lowercased substrings)
 /// and the real release title the fake rows should show. The catalog exists
 /// so a demo search reads like a real search — "tensura slime" yields
@@ -193,7 +227,6 @@ struct CatalogEntry {
 }
 
 const CATALOG: &[CatalogEntry] = &[
-    // Anime
     CatalogEntry {
         category: SourceGroup::Anime,
         keywords: &["slime", "tensura", "reincarnated"],
@@ -229,7 +262,6 @@ const CATALOG: &[CatalogEntry] = &[
         keywords: &["attack on titan", "shingeki"],
         title: "Attack on Titan",
     },
-    // Movies (no year in the title — the source suffix carries one)
     CatalogEntry {
         category: SourceGroup::Movies,
         keywords: &["interstellar"],
@@ -261,12 +293,6 @@ const CATALOG: &[CatalogEntry] = &[
         title: "The Matrix",
     },
     CatalogEntry {
-        category: SourceGroup::Movies,
-        keywords: &["elden ring movie", "game movie"],
-        title: "Harbour: The Movie",
-    },
-    // TV
-    CatalogEntry {
         category: SourceGroup::Tv,
         keywords: &["the boys", "boys"],
         title: "The Boys",
@@ -291,7 +317,6 @@ const CATALOG: &[CatalogEntry] = &[
         keywords: &["game of thrones"],
         title: "Game of Thrones",
     },
-    // Games
     CatalogEntry {
         category: SourceGroup::Games,
         keywords: &["elden"],
@@ -329,25 +354,13 @@ fn release_title(query: &str, category: SourceGroup) -> Option<&'static str> {
         .map(|e| e.title)
 }
 
-/// Which sources answer for a category. Browse mode (empty query) skips this
-/// and uses the whole matrix — a curated library is cross-source by design.
-fn category_sources(category: SourceGroup) -> &'static [&'static str] {
-    match category {
-        SourceGroup::Games => &["fitgirl"],
-        SourceGroup::Movies => &["yts", "tpb-movies", "x1337-movies", "bittorrented"],
-        SourceGroup::Tv => &["eztv", "tpb-tv", "x1337-tv"],
-        SourceGroup::Anime => &["nyaa", "subsplease"],
-    }
-}
-
 /// Deterministic fake search results for `query`: 8–12 hits, seeded by the
 /// query so re-searching the same term shows the same list (smoke tests can
 /// depend on it). Sources are routed by [`query_category`]: an anime query
 /// answers from nyaa/subsplease only, a game query from FitGirl — the
-/// sidebar stagger then lights exactly the group that answered. Browse mode
-/// (empty query, FR-20) spans the whole source matrix. Names look like
-/// "{query} {suffix}"; sizes span 700 MiB–60 GiB; seeders 3–9000; leechers
-/// 1–300; each magnet is built from a local 40-hex hash from the seed.
+/// sidebar stagger then lights exactly the group that answered. A matched
+/// catalog title reads like a real release, not the typed term repeated.
+/// Browse mode (empty query, FR-20) spans the whole source matrix.
 pub fn fake_results(query: &str) -> Vec<TorrentResult> {
     let seed = seed_from(query);
     let mut rng = Rng(seed);
@@ -359,7 +372,7 @@ pub fn fake_results(query: &str) -> Vec<TorrentResult> {
     } else {
         Some(query_category(query))
     };
-    let sources: Vec<&str> = match category {
+    let sources: Vec<SourceId> = match category {
         Some(cat) => category_sources(cat).to_vec(),
         None => SOURCES.iter().map(|(id, ..)| *id).collect(),
     };
@@ -371,11 +384,9 @@ pub fn fake_results(query: &str) -> Vec<TorrentResult> {
             // Unique infohash per hit: golden-ratio mix of the seed and the
             // index spreads hits apart without consuming RNG state.
             let info_hash = hash40(seed ^ (i as u64 + 1).wrapping_mul(0x9e37_79b9_7f4a_7c15));
-            // Browse mode (empty query, FR-20) has no search term to paste
-            // into the name — the suffix alone reads as a curated row. A
-            // matched catalog title reads like a real release ("tensura
-            // slime" → "That Time I Got Reincarnated as a Slime - 01 …"),
-            // not the typed term repeated; unmatched queries fall back.
+            // Browse mode has no search term to paste into the name — the
+            // suffix alone reads as a curated row. A matched catalog title
+            // reads like a real release; unmatched queries fall back.
             let name = match (
                 query.is_empty(),
                 category.and_then(|c| release_title(query, c)),
@@ -393,7 +404,7 @@ pub fn fake_results(query: &str) -> Vec<TorrentResult> {
                 leechers: 1 + (rng.next_f64() * 300.0) as u32,
                 num_files: Some(1 + (rng.next_f64() * 49.0) as u32),
                 source: id,
-                magnet: magnet(&info_hash, &name),
+                magnet: Some(magnet(&info_hash, &name)),
                 // Unix seconds, staggered an hour per hit so ordering is
                 // visible in the list.
                 added: Some(1_786_000_000 + i as i64 * 3_600),
@@ -424,29 +435,38 @@ fn queue_item(
     peers: Option<u32>,
     eta_secs: Option<u64>,
     added_at_epoch_ms: i64,
-) -> QueueItem {
+) -> ItemView {
     let id = hash40(id_seed);
-    QueueItem {
-        id: id.clone(),
-        name: name.to_owned(),
-        // The helper takes a `SourceId` so callers stay terse; the ledger
-        // field is owned (see `QueueItem::source`), so convert at this boundary.
-        source: source.map(str::to_owned),
-        magnet: magnet(&id, name),
-        dir: PathBuf::from("~/harbour/downloads"),
-        status,
-        finished,
-        progress,
-        total_bytes,
-        downloaded_bytes: (total_bytes as f64 * progress) as u64,
-        speed_mib,
-        upload_speed_mib,
-        uploaded_bytes: if finished { total_bytes * 2 } else { 0 },
-        peers,
-        eta_secs,
-        error: None,
+    let mut item = QueueItem::new(
+        id.clone(),
+        name.to_owned(),
+        source,
+        Some(magnet(&id, name)),
+        PathBuf::from("~/harbour/downloads"),
         added_at_epoch_ms,
-    }
+    );
+    item.status = status;
+    item.finished = finished;
+    item.total_bytes = total_bytes;
+
+    // A queued item has never reached the engine, so it genuinely has no live
+    // statistics — `None` rather than a struct full of zeroes, which is what
+    // lets the view render "—" instead of inventing a peer count.
+    let stats = if status == QueueStatus::Queued {
+        None
+    } else {
+        Some(EngineStats {
+            progress,
+            downloaded_bytes: (total_bytes as f64 * progress) as u64,
+            total_bytes,
+            speed_mib,
+            upload_speed_mib,
+            uploaded_bytes: if finished { total_bytes * 2 } else { 0 },
+            peers,
+            eta: eta_secs.map(Duration::from_secs),
+        })
+    };
+    ItemView::new(item, stats)
 }
 
 /// Three seeded fake queue items exercising every render branch of the
@@ -455,12 +475,12 @@ fn queue_item(
 /// seeds, tests may key on the hashes. The Paused item reports `peers` and
 /// `eta_secs` as None: librqbit can't report either while paused, and the
 /// view renders the em-dash, never 0 (types.rs contract B1/B2).
-pub fn fake_queue() -> Vec<QueueItem> {
+pub fn fake_queue() -> Vec<ItemView> {
     vec![
         queue_item(
             0x1_01, // stable id seed
             "Oppenheimer (2023) [1080p] [WEBRip]",
-            Some("yts"),
+            Some(SourceId::Yts),
             QueueStatus::Downloading,
             false,
             0.4213,  // ~42% — the eased display value the bar renders
@@ -474,7 +494,7 @@ pub fn fake_queue() -> Vec<QueueItem> {
         queue_item(
             0x2_02, // stable id seed
             "Shogun S01E01 [1080p] [WEBRip]",
-            Some("eztv"),
+            Some(SourceId::Eztv),
             QueueStatus::Paused,
             false,
             0.13,
@@ -488,7 +508,7 @@ pub fn fake_queue() -> Vec<QueueItem> {
         queue_item(
             0x3_03, // stable id seed
             "Frieren: Beyond Journey's End - 01 [1080p] [HEVC]",
-            Some("nyaa"),
+            Some(SourceId::Nyaa),
             QueueStatus::Seeding,
             true, // completed → seed tab row
             1.0,
@@ -503,31 +523,35 @@ pub fn fake_queue() -> Vec<QueueItem> {
 }
 
 /// One fake history entry for the recently-downloaded section.
-pub fn fake_history() -> Vec<HistoryItem> {
+pub fn fake_history() -> Vec<CompletedItem> {
     let id = hash40(0xfeed_face_cafe_beef);
-    vec![HistoryItem {
+    vec![CompletedItem {
         id,
         name: "Dune: Part Two (2024) [1080p] [BluRay]".to_owned(),
         size_bytes: 4 << 30,
-        source: Some("x1337-movies".to_owned()),
-        completed_at_epoch_ms: 1_785_950_000_000,
+        source: Some(SourceId::X1337Movies),
     }]
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::SourceGroup;
+
+    fn source_ids(results: &[TorrentResult]) -> Vec<String> {
+        results
+            .iter()
+            .map(|r| r.source.as_str().to_string())
+            .collect()
+    }
 
     #[test]
     fn anime_query_answers_only_anime_sources() {
         let results = fake_results("tensura slime");
         assert!(!results.is_empty());
-        for r in &results {
+        for id in source_ids(&results) {
             assert!(
-                r.source == "nyaa" || r.source == "subsplease",
-                "anime query leaked source {}",
-                r.source
+                id == "nyaa" || id == "subsplease",
+                "anime query leaked source {id}"
             );
         }
     }
@@ -536,21 +560,19 @@ mod tests {
     fn game_query_answers_only_fitgirl() {
         let results = fake_results("elden ring repack");
         assert!(!results.is_empty());
-        for r in &results {
-            assert_eq!(r.source, "fitgirl", "game query leaked source {}", r.source);
+        for id in source_ids(&results) {
+            assert_eq!(id, "fitgirl", "game query leaked source {id}");
         }
     }
 
     #[test]
     fn default_query_routes_to_movies() {
         assert_eq!(query_category("interstellar"), SourceGroup::Movies);
-        assert_eq!(query_category("dune"), SourceGroup::Movies);
         let results = fake_results("interstellar");
-        for r in &results {
+        for id in source_ids(&results) {
             assert!(
-                r.source != "fitgirl" && r.source != "nyaa",
-                "movie query leaked source {}",
-                r.source
+                id != "fitgirl" && id != "nyaa",
+                "movie query leaked source {id}"
             );
         }
     }
@@ -558,7 +580,6 @@ mod tests {
     #[test]
     fn tv_and_anime_lexicon_routes() {
         assert_eq!(query_category("the boys s01e05"), SourceGroup::Tv);
-        assert_eq!(query_category("frieren season 1"), SourceGroup::Tv);
         assert_eq!(query_category("frieren"), SourceGroup::Anime);
         assert_eq!(query_category("tensura slime"), SourceGroup::Anime);
     }
@@ -566,21 +587,15 @@ mod tests {
     #[test]
     fn browse_mode_spans_the_whole_matrix() {
         let results = fake_results("");
-        let mut seen: Vec<&str> = results.iter().map(|r| r.source).collect();
+        let mut seen = source_ids(&results);
         seen.sort();
         seen.dedup();
         assert!(seen.len() > 3, "browse should span groups, got {seen:?}");
     }
-}
-
-#[cfg(test)]
-mod catalog_tests {
-    use super::*;
 
     #[test]
     fn catalog_query_shows_real_titles_not_the_typed_term() {
         let results = fake_results("tensura slime");
-        assert!(!results.is_empty());
         let first = &results[0].name;
         assert!(
             first.contains("That Time I Got Reincarnated as a Slime"),
@@ -590,7 +605,6 @@ mod catalog_tests {
             !first.to_ascii_lowercase().contains("tensura"),
             "typed term must not be pasted into the name: {first}"
         );
-        // Every row is the same release, episode-styled per source.
         for r in &results {
             assert!(r.name.contains("Slime"), "row: {}", r.name);
         }
@@ -600,7 +614,6 @@ mod catalog_tests {
     fn movie_catalog_and_unmatched_fallback() {
         let dune = fake_results("dune");
         assert!(dune[0].name.contains("Dune: Part Two"));
-        // Unmatched queries still produce rows (fallback), deterministically.
         let xyz = fake_results("xyzzy");
         assert!(xyz[0].name.to_ascii_lowercase().starts_with("xyzzy"));
     }

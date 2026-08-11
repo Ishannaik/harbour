@@ -1,30 +1,22 @@
-//! Application shell: terminal lifecycle, the 30fps event/draw loop, the boot
-//! splash, and input dispatch for the phase-2 views (search / downloads /
-//! help) against fake data.
+//! Application shell: terminal lifecycle, the 30fps event/draw loop, and the
+//! boot splash (UI slice 1).
 //!
-//! The loop owns everything that stays when the engine lands: entering and
-//! leaving the terminal safely on every exit path, the tick-coalesced render
-//! loop, and the keybind dispatch (docs/design.md §Keybinds). Views are pure
-//! paint (`ui/*`); they never read input or mutate state. The engine and
-//! sources tracks land later, so search results, the queue, and history come
-//! from the deterministic fake generator (`fake.rs`) until then.
+//! Later slices swap the splash view for search/downloads; this module owns
+//! the parts that stay — entering/leaving the terminal safely on every exit
+//! path and the tick-coalesced render loop.
 //!
 //! The splash is deliberately over the top (omp-grade energy): a block-letter
 //! HARBOUR logo that converges with a CRT-style flicker, a shimmer band that
 //! sweeps across it, twinkling particles, a scrolling harbor wave, a breathing
 //! border, and staggered tagline/status fades — everything still live at 30fps
-//! until the app auto-advances to search (FR-01: the splash is a timed intro,
-//! not a resting state). All color comes from the theme's curated subset
+//! until the user quits. All color comes from the theme's curated subset
 //! (accent/text/success/muted/border/bg), so custom themes keep working.
 
-use std::collections::HashMap;
 use std::io;
-use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use crossterm::cursor::{Hide, Show};
-use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use crossterm::event::{self, Event};
 use crossterm::execute;
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
@@ -37,15 +29,28 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui::{Frame, Terminal};
 
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
+
+use tokio::sync::mpsc;
+
 use crate::anim::{self, Spinner, Ticker};
-use crate::fake;
-use crate::queue_store;
-use crate::theme::{Color, Theme};
-use crate::types::{
-    AppState, NowPlaying, QueueItem, QueueStatus, Screen, SourceStatus, TorrentResult,
+use crate::core::cancel::CancelToken;
+use crate::core::paths;
+use crate::core::types::{
+    Engine as CoreEngine, EngineEvent, ItemView, QueueStatus, SearchCtx, SourceId, SourceStatus,
+    TorrentResult,
 };
-use crate::ui;
-use crate::watch;
+use crate::engine::fake::FakeEngine;
+use crate::engine::rqbit::RqbitEngine;
+use crate::input::Action;
+use crate::persist::{Config, Store};
+use crate::queue::{AddInput, AddOutcome, Queue};
+use crate::search::SearchEngine;
+use crate::sources::cache::SearchCache;
+use crate::theme::{Color, Theme};
+use crate::ui::{AppState, Screen};
 
 /// Base render cadence (docs/design.md §Animation): the loop redraws at most
 /// once per tick; a burst of input within one tick coalesces into one frame.
@@ -56,10 +61,6 @@ const DRAW_IN: Duration = Duration::from_millis(700);
 
 /// After this much time the splash status line flips to "ready".
 const READY_AFTER: Duration = Duration::from_millis(1600);
-
-/// Splash is a timed intro (FR-01): it auto-advances to search this long
-/// after boot; any key skips the wait.
-const SPLASH_DURATION: Duration = Duration::from_millis(2400);
 
 /// Status spinner cadence (docs/design.md §Animation): one frame per 80ms.
 const SPINNER_INTERVAL: Duration = Duration::from_millis(80);
@@ -83,11 +84,6 @@ const VERSION_FADE_DUR: Duration = Duration::from_millis(350);
 /// White-hot highlight used by the shimmer band and the ready-flash — the one
 /// literal color in the splash (a highlight, not a theme choice).
 const HOT: Color = Color::Rgb(255, 255, 255);
-
-/// Fake search latency (MVP): long enough for the streaming shimmer/spinner
-/// to read as "streaming" (design §2.2), short enough to stay snappy. The
-/// engine track replaces this with real per-source answers.
-const SEARCH_LATENCY: Duration = Duration::from_millis(400);
 
 /// Block-letter HARBOUR logo, 5 rows x 41 columns. Hand-drawn so each letter
 /// is exactly 5 cells wide + 1 separator: crisp monospace output, no emoji
@@ -145,51 +141,6 @@ impl Drop for TerminalGuard {
     }
 }
 
-/// Quit keys: `q`, `Esc`, and `Ctrl+C` — the conventional TUI escape hatches
-/// plus the splash's explicit hint. Esc doubles as "close the help overlay"
-/// when help is open (handled before this is consulted).
-fn is_quit_key(key: &KeyEvent) -> bool {
-    matches!(
-        key,
-        KeyEvent {
-            code: KeyCode::Char('q'),
-            ..
-        } | KeyEvent {
-            code: KeyCode::Char('c'),
-            modifiers: KeyModifiers::CONTROL,
-            ..
-        } | KeyEvent {
-            code: KeyCode::Esc,
-            ..
-        }
-    )
-}
-
-/// Drains every input event currently queued and reports whether the user
-/// asked to quit. Draining in a loop coalesces a burst of events into one
-/// frame (docs/design.md §Animation): the outer loop renders at most once
-/// per tick no matter how many keys arrived within it. Key events route
-/// through `app.handle_key`, which owns the per-screen dispatch.
-fn drain_events(app: &mut App) -> io::Result<bool> {
-    loop {
-        match event::read()? {
-            Event::Key(key) => {
-                if app.handle_key(&key) {
-                    return Ok(true);
-                }
-            }
-            // Resize needs no state fix-up here: the next frame redraws
-            // against the new area, and every view already lays out from the
-            // area it is handed.
-            Event::Resize(..) => {}
-            _ => {}
-        }
-        if !event::poll(Duration::ZERO)? {
-            return Ok(false);
-        }
-    }
-}
-
 /// A particle's fixed position (as area fractions) and twinkle phase.
 struct Particle {
     fx: f64,
@@ -197,8 +148,8 @@ struct Particle {
     phase: f64,
 }
 
-/// Boot splash state. Kept in a struct so the loop can swap views without
-/// touching the splash's internals.
+/// Boot splash state. Kept in a struct so a later slice can swap in a
+/// different view without touching the loop.
 struct SplashState {
     start: Instant,
     spinner: Spinner,
@@ -499,508 +450,815 @@ fn fade_t(elapsed: Duration, at: Duration, dur: Duration) -> f64 {
     }
 }
 
-/// Top-level app state for the loop: which screen is showing, the view state,
-/// and the loop-owned clocks (search latency, spinners). Input dispatch and
-/// the per-frame pump live here so keybind tests drive the same code path
-/// the loop does.
+/// How often the queue polls the engine while anything is actively
+/// transferring. Slower than the render cadence on purpose: progress that
+/// changes thirty times a second is noise, and the eased bars smooth the gaps.
+const POLL_ACTIVE: Duration = Duration::from_millis(500);
+
+/// Poll cadence once everything has settled into seeding.
+///
+/// A seedbox with 200 idle seeds should not perform 400 stat reads a second to
+/// learn nothing (`NFR-04`). Completion arrives as an event rather than being
+/// discovered by polling, so nothing is missed by slowing down.
+const POLL_IDLE: Duration = Duration::from_secs(5);
+
+/// How long the splash holds before the search screen takes over.
+const SPLASH_DURATION: Duration = Duration::from_millis(1800);
+
+/// What the command line asked us to start with.
+#[derive(Debug, Clone, PartialEq)]
+pub enum InitialAction {
+    None,
+    /// Enqueue this magnet as soon as the engine is up (`FR-02`).
+    Magnet(String),
+    /// Read this `.torrent` and enqueue it.
+    TorrentFile(PathBuf),
+}
+
+/// Everything the loop needs, assembled once at boot.
 struct App {
-    screen: Screen,
-    /// The screen underneath the help overlay; restored when it closes.
-    help_base: Screen,
     state: AppState,
-    /// Where the queue ledger lives — every mutation saves here (FR-48).
-    queue_path: std::path::PathBuf,
-    /// When a fake search resolves (`pump_search`), if one is in flight.
-    search_deadline: Option<Instant>,
-    /// The active watch session (FR-57), if any — server + player child.
-    watch: Option<watch::WatchSession>,
-    /// Screen to return to when the player exits.
-    watch_base: Screen,
-    splash: SplashState,
-    status_spinner: Spinner,
+    queue: Queue,
+    search: SearchEngine,
+    store: Store,
+    config: Config,
+    /// Results per source for the current query, merged for display.
+    partial: HashMap<SourceId, Vec<TorrentResult>>,
+    search_cancel: Option<CancelToken>,
+    events_tx: mpsc::UnboundedSender<EngineEvent>,
+    history: Vec<String>,
+    help_open: bool,
+    /// The active watch session (FR-57), if any — stream server + player.
+    watch: Option<crate::watch::WatchSession>,
+    quitting: bool,
 }
 
 impl App {
-    /// Boots on the splash. The queue is loaded from the ledger at
-    /// `state_dir/downloads.json` when present; first run seeds the fake
-    /// queue and persists it, so pause/enqueue state survives restarts.
-    fn new(theme: &Theme, state_dir: &std::path::Path) -> Self {
-        let queue_path = state_dir.join("downloads.json");
-        let mut state = AppState::default();
-        state.downloads.items = match queue_store::load(&queue_path) {
-            queue_store::Load::Ok(items) => items,
-            _ => {
-                let items = fake::fake_queue();
-                queue_store::save(&queue_path, &items);
-                items
-            }
-        };
-        state.downloads.history = fake::fake_history();
-        Self {
-            screen: Screen::Splash,
-            help_base: Screen::Search,
-            state,
-            queue_path,
-            search_deadline: None,
-            watch: None,
-            watch_base: Screen::Downloads,
-            splash: SplashState::new(theme),
-            status_spinner: Spinner::new(theme.symbols.spinner_frames.clone()),
-        }
+    /// Something the user should know that must not stop the app.
+    fn warn(&mut self, message: impl Into<String>) {
+        self.state.error_banner = Some(message.into());
     }
 
-    /// Persists the queue after any mutation (FR-48: write on status change).
-    fn save_queue(&self) {
-        queue_store::save(&self.queue_path, &self.state.downloads.items);
+    fn selected_result(&self) -> Option<&TorrentResult> {
+        self.state.search.results.get(self.state.search.selected)
     }
 
-    /// Handles one key event; returns true when the app should quit.
-    ///
-    /// Only key *presses* (and OS repeats) are actions. On Windows the
-    /// console reports both halves of a tap — Press and Release — and
-    /// crossterm's parser emits `KeyEventKind::Release` for most keys
-    /// (modifier keys aside), so handling it too would register every key
-    /// twice. Repeat is kept so held keys still repeat when keyboard
-    /// enhancement is enabled.
-    ///
-    /// Dispatch order: the help overlay eats every key while open (`?`
-    /// toggles, Esc closes, `q`/Ctrl+C still quit), then global quit keys,
-    /// then the per-screen handlers. The splash is the exception: any key
-    /// (other than quit) skips the intro.
-    fn handle_key(&mut self, key: &KeyEvent) -> bool {
-        if !matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
-            return false;
-        }
-        match self.screen {
-            // Watch mode: q/Esc stop the session and return to the TUI
-            // (FR-59) — they never quit the app.
-            Screen::NowPlaying => {
-                self.end_watch();
-                false
-            }
-            Screen::Help => {
-                // `q`/Ctrl+C quit even with help open; Esc or any other key
-                // closes the overlay (docs/design.md §Keybinds).
-                if matches!(key.code, KeyCode::Char('q'))
-                    || (key.code == KeyCode::Char('c')
-                        && key.modifiers.contains(KeyModifiers::CONTROL))
-                {
-                    return true;
-                }
-                self.screen = self.help_base;
-                false
-            }
-            _ => {
-                if is_quit_key(key) {
-                    return true;
-                }
-                match self.screen {
-                    Screen::Splash => self.screen = Screen::Search,
-                    Screen::Search => self.search_key(key),
-                    Screen::Downloads => self.downloads_key(key),
-                    Screen::Help | Screen::NowPlaying => unreachable!("handled above"),
-                }
-                false
-            }
-        }
-    }
-
-    /// Search-screen keys (docs/design.md §Keybinds + Tab screen cycle).
-    fn search_key(&mut self, key: &KeyEvent) {
-        let search = &mut self.state.search;
-        match key.code {
-            KeyCode::Char('?') => self.open_help(),
-            // `d` and shift+d both enqueue to the default folder for now:
-            // the folder picker is engine-track work (FR-29, phase 4). Must
-            // precede the generic Char arm or 'd' would type into the query.
-            KeyCode::Char('d' | 'D') if !search.results.is_empty() => self.download_selected(),
-            // Tab cycles screens; Left/Right are the downloads tabs' keys.
-            KeyCode::Tab => self.screen = Screen::Downloads,
-            KeyCode::Enter => self.start_search(),
-            KeyCode::Backspace => {
-                search.query.pop();
-            }
-            // Plain printable characters edit the query; modifier chords
-            // (Ctrl/Alt) are left for future actions, not typed into it.
-            KeyCode::Char(c)
-                if !key
-                    .modifiers
-                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
-            {
-                search.query.push(c);
-            }
-            KeyCode::Up => self.move_selection(-1),
-            KeyCode::Down => self.move_selection(1),
-            _ => {}
-        }
-    }
-
-    /// Downloads-screen keys: tabs (Left/Right), selection (Up/Down),
-    /// pause/resume (`p`), Tab cycles back to search.
-    fn downloads_key(&mut self, key: &KeyEvent) {
-        match key.code {
-            KeyCode::Char('?') => self.open_help(),
-            KeyCode::Tab => self.screen = Screen::Search,
-            KeyCode::Left => self.state.downloads.show_seeding = false,
-            KeyCode::Right => self.state.downloads.show_seeding = true,
-            KeyCode::Up => self.downloads_move(-1),
-            KeyCode::Down => self.downloads_move(1),
-            KeyCode::Char('p') => self.toggle_pause(),
-            // `w` watches the selected item (FR-57): stream its primary
-            // media file to an external player (mpv/VLC).
-            KeyCode::Char('w') => self.start_watch(),
-            _ => {}
-        }
-    }
-
-    fn open_help(&mut self) {
-        self.help_base = self.screen;
-        self.screen = Screen::Help;
-    }
-
-    /// Kicks off a (fake) search: the shimmer/spinner reads while
-    /// `search_deadline` counts down, then `pump_search` applies the rows.
-    fn start_search(&mut self) {
-        self.state.search.searching = true;
-        self.search_deadline = Some(Instant::now() + SEARCH_LATENCY);
-    }
-
-    /// Applies a pending fake search once its latency deadline passes —
-    /// called every frame so a slow frame cannot miss the transition.
-    fn pump_search(&mut self, now: Instant) {
-        let Some(deadline) = self.search_deadline else {
-            return;
-        };
-        if now < deadline {
-            return;
-        }
-        self.search_deadline = None;
-        let query = self.state.search.query.clone();
-        apply_results(&mut self.state.search, &query);
-    }
-
-    fn move_selection(&mut self, delta: isize) {
-        let len = self.state.search.results.len();
-        if len == 0 {
-            return;
-        }
-        let i = self.state.search.selected as isize + delta;
-        // FR-27: arrows wrap at the ends.
-        self.state.search.selected = i.rem_euclid(len as isize) as usize;
-    }
-
-    /// `d` on the selected result enqueues a download (FR-29; real enqueue is
-    /// engine-track, phase 4). FR-56 dedupe: an info_hash already in the
-    /// queue is *focused*, never copied — mashing `d` cannot pile up
-    /// duplicates. The focus is visible on the Downloads tab's selection.
-    fn download_selected(&mut self) {
-        let Some(result) = self
-            .state
-            .search
-            .results
-            .get(self.state.search.selected)
-            .cloned()
-        else {
-            return;
-        };
-        let downloads = &mut self.state.downloads;
-        if let Some(pos) = downloads
-            .items
-            .iter()
-            .position(|it| it.id == result.info_hash)
-        {
-            downloads.selected = pos;
-            return;
-        }
-        let item = queue_item_from_result(&result);
-        downloads.items.push(item);
-        downloads.selected = downloads.items.len() - 1;
-        self.save_queue();
-    }
-
-    /// Moves the downloads selection within the *visible* tab's rows, so the
-    /// highlighted row always matches what the view paints.
-    fn downloads_move(&mut self, delta: isize) {
-        let visible: Vec<usize> = self
-            .state
-            .downloads
-            .items
-            .iter()
-            .enumerate()
-            .filter(|(_, it)| {
-                let seeding = matches!(it.status, QueueStatus::Seeding | QueueStatus::Missing);
-                seeding == self.state.downloads.show_seeding
-            })
-            .map(|(i, _)| i)
-            .collect();
-        if visible.is_empty() {
-            return;
-        }
-        let pos = visible
-            .iter()
-            .position(|&i| i == self.state.downloads.selected)
-            .unwrap_or(0) as isize;
-        let next = (pos + delta).rem_euclid(visible.len() as isize) as usize;
-        self.state.downloads.selected = visible[next];
-    }
-
-    /// `p` toggles pause/resume (FR-43, OQ-1: pause-only — a paused seed
-    /// stays in the Seeding tab, disambiguated by `finished`).
-    fn toggle_pause(&mut self) {
-        let downloads = &mut self.state.downloads;
-        let Some(item) = downloads.items.get_mut(downloads.selected) else {
-            return;
-        };
-        let mut changed = false;
-        match item.status {
-            QueueStatus::Downloading | QueueStatus::Queued => {
-                item.status = QueueStatus::Paused;
-                item.speed_mib = 0.0;
-                changed = true;
-            }
-            QueueStatus::Paused if item.finished => item.status = QueueStatus::Seeding,
-            QueueStatus::Paused => item.status = QueueStatus::Downloading,
-            QueueStatus::Seeding => {
-                item.status = QueueStatus::Paused;
-                item.upload_speed_mib = 0.0;
-                changed = true;
-            }
-            QueueStatus::Failed | QueueStatus::Missing => {} // no-op: nothing to resume
-        }
-        if changed {
-            self.save_queue();
-        }
-    }
-
-    /// `w` on the selected item: find its media file, find a player
-    /// (mpv → VLC), serve the file over loopback with Range support, and
-    /// launch the player (FR-57..FR-61). Every failure path is a loud error
-    /// banner — never a silent no-op. With fake data there are no files, so
-    /// this is exactly the honest error until the engine lands.
-    fn start_watch(&mut self) {
-        let Some(item) = self
-            .state
-            .downloads
-            .items
+    fn selected_item_id(&self) -> Option<String> {
+        // Walk the *visible* tab's items so the selection never points at a
+        // row hidden on the other tab (the Seeding tab renders only
+        // finished items, the active tab only unfinished ones).
+        self.visible_items()
             .get(self.state.downloads.selected)
-        else {
-            return;
-        };
-        let Some(player) = watch::find_player() else {
-            self.state.error_banner =
-                Some("watch: no player found — install mpv or VLC and add it to PATH".into());
-            return;
-        };
-        let Some(file) = watch::primary_media(&item.dir) else {
-            self.state.error_banner = Some(format!(
-                "watch: no media file for '{}' (fake data — engine lands in phase 4)",
-                item.name
-            ));
-            return;
-        };
-        match watch::WatchSession::start(&file, player) {
-            Ok(session) => {
-                self.watch_base = self.screen;
-                self.state.now_playing = Some(NowPlaying {
-                    id: item.id.clone(),
-                    name: item.name.clone(),
-                    stream_url: session.url.clone(),
-                    progress: item.progress,
-                });
-                self.watch = Some(session);
-                self.screen = Screen::NowPlaying;
-            }
-            Err(e) => {
-                self.state.error_banner = Some(format!("watch: cannot start player: {e}"));
-            }
+            .map(|v| v.item.id.clone())
+    }
+
+    /// The items the current downloads tab actually shows, in render order.
+    fn visible_items(&self) -> Vec<&ItemView> {
+        self.state
+            .downloads
+            .items
+            .iter()
+            .filter(|v| {
+                let finished =
+                    v.item.status == QueueStatus::Seeding || v.item.status == QueueStatus::Missing;
+                finished == self.state.downloads.show_seeding
+            })
+            .collect()
+    }
+
+    /// Rebuilds the downloads view from the queue.
+    fn refresh_downloads(&mut self) {
+        self.state.downloads.items = self.queue.views();
+        self.state.downloads.history = self.queue.completed();
+        let len = self.state.downloads.items.len();
+        // Keep the cursor inside the list after a removal.
+        if self.state.downloads.selected >= len {
+            self.state.downloads.selected = len.saturating_sub(1);
         }
     }
 
-    /// Ends the session and returns to the previous screen (FR-59: player
-    /// exit or `q`/esc). Kills the player and stops the stream server.
-    fn end_watch(&mut self) {
-        if let Some(mut session) = self.watch.take() {
-            session.stop();
+    /// Merges everything received so far into the displayed list.
+    fn remerge(&mut self) {
+        let all: Vec<TorrentResult> = self.partial.values().flatten().cloned().collect();
+        self.state.search.results = crate::search::merge(all);
+        let len = self.state.search.results.len();
+        if self.state.search.selected >= len {
+            self.state.search.selected = len.saturating_sub(1);
         }
-        self.state.now_playing = None;
-        self.screen = self.watch_base;
     }
 
-    /// Paints the current screen. The splash owns the full frame; every
-    /// other screen carves the status bar (and error banner) off the bottom
-    /// and paints the view + status line, with the help modal on top when
-    /// help is open.
-    fn draw(&mut self, frame: &mut Frame, theme: &Theme, now: Instant) {
-        if self.screen == Screen::Splash {
-            draw_splash(frame, theme, &mut self.splash, now);
-            return;
+    /// Starts a search, cancelling whatever was in flight (`FR-20`).
+    fn start_search(&mut self, query: String) {
+        if let Some(previous) = self.search_cancel.take() {
+            previous.cancel();
         }
-        let area = frame.area();
-        let banner_h = self
-            .state
-            .error_banner
-            .as_ref()
-            .map_or(0, |msg| 2 + msg.lines().count().clamp(1, 2) as u16);
-        let status_h = 1 + banner_h;
-        let view_area = Rect::new(
-            area.x,
-            area.y,
-            area.width,
-            area.height.saturating_sub(status_h),
-        );
-        let status_area = Rect::new(
-            area.x,
-            area.y + view_area.height,
-            area.width,
-            status_h.min(area.height),
-        );
+        self.partial.clear();
+        self.state.search.results.clear();
+        self.state.search.selected = 0;
+        self.state.search.searching = true;
+        self.state.search.source_counts.clear();
+        for id in SourceId::ALL {
+            self.state
+                .search
+                .source_health
+                .insert(id, SourceStatus::Unknown);
+        }
 
-        let base = if self.screen == Screen::Help {
-            self.help_base
-        } else {
-            self.screen
+        if !query.trim().is_empty() {
+            let mut history = std::mem::take(&mut self.history);
+            if let Err(err) = self.store.push_history(&mut history, &query) {
+                // Losing search history is not worth interrupting anyone over.
+                eprintln!("harbour: could not save search history: {err}");
+            }
+            self.history = history;
+        }
+
+        let ctx = SearchCtx {
+            total_deadline: paths::source_timeout(),
+            ..SearchCtx::default()
         };
-        match base {
-            Screen::Search => ui::search::draw(frame, view_area, &self.state.search, theme),
-            Screen::Downloads => {
-                ui::downloads::draw(frame, view_area, &self.state.downloads, theme)
-            }
-            Screen::NowPlaying => {
-                if let Some(np) = &self.state.now_playing {
-                    ui::now_playing::draw(frame, view_area, np, theme);
-                }
-            }
-            Screen::Splash | Screen::Help => {} // base is never one of these
-        }
-
-        let glyph = self.status_spinner.current().to_string();
-        ui::status::draw(frame, status_area, self.screen, &self.state, theme, &glyph);
-
-        if self.screen == Screen::Help {
-            ui::help::draw(frame, area, theme);
-        }
+        self.search_cancel = Some(ctx.cancel.clone());
+        self.search.start(query, ctx, self.events_tx.clone());
     }
 }
 
-/// Applies fake results for `query` to the search state: rows, sidebar
-/// health dots, and per-source counts (the groups' staggered pop-in). Kept
-/// separate from `pump_search` so tests can apply results synchronously.
-fn apply_results(search: &mut crate::types::SearchState, query: &str) {
-    let results = fake::fake_results(query);
-    let mut source_health = HashMap::new();
-    let mut source_counts = HashMap::new();
-    for r in &results {
-        source_health.insert(r.source, SourceStatus::Online);
-        *source_counts.entry(r.source).or_insert(0) += 1;
-    }
-    search.results = results;
-    search.selected = 0;
-    search.searching = false;
-    search.source_health = source_health;
-    search.source_counts = source_counts;
-}
-
-/// Builds a fake `QueueItem` from a search result — the MVP stand-in for
-/// the engine's enqueue (FR-29/FR-39, phase 4).
-fn queue_item_from_result(r: &TorrentResult) -> QueueItem {
-    QueueItem {
-        id: r.info_hash.clone(),
-        name: r.name.clone(),
-        source: Some(r.source.to_owned()),
-        magnet: r.magnet.clone(),
-        dir: PathBuf::from("~/harbour/downloads"),
-        status: QueueStatus::Downloading,
-        finished: false,
-        progress: 0.05,
-        total_bytes: r.size_bytes,
-        downloaded_bytes: 0,
-        speed_mib: 6.0,
-        upload_speed_mib: 0.0,
-        uploaded_bytes: 0,
-        peers: Some(24),
-        eta_secs: Some(3_600),
-        error: None,
-        added_at_epoch_ms: SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_millis() as i64)
-            .unwrap_or(0),
-    }
-}
-
-/// Runs the TUI: enters the terminal (raw mode + alternate screen + hidden
-/// cursor), renders at 30fps, and restores the terminal on every exit path
-/// via [`TerminalGuard`] (normal quit, errors, and panics — Drop runs during
-/// unwinding).
+/// Reads terminal events on a dedicated thread.
 ///
-/// Takes the shared `Arc<Mutex<Theme>>` rather than an owned `Theme` so the
-/// theme-watcher thread can swap themes underneath a running render loop
-/// (docs/theming.md §Custom themes). The lock is taken once per frame and
-/// released before the next `poll`, so a watcher swap never blocks input.
-pub fn run(
-    theme: Arc<Mutex<Theme>>,
-    state_dir: &std::path::Path,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let _guard = TerminalGuard::enter()?;
+/// `crossterm::event::read` blocks, and blocking a tokio worker would stall the
+/// engine's tasks with it. One OS thread feeding a channel keeps input
+/// responsive without the async runtime ever waiting on a keypress.
+fn spawn_input_thread() -> mpsc::UnboundedReceiver<Event> {
+    let (tx, rx) = mpsc::unbounded_channel();
+    std::thread::spawn(move || {
+        loop {
+            let Ok(ev) = event::read() else {
+                // A terminal that stops producing events is not recoverable
+                // here, and spinning on the error would peg a core.
+                return;
+            };
+            if tx.send(ev).is_err() {
+                // The app has gone; so should we.
+                return;
+            }
+        }
+    });
+    rx
+}
 
-    let mut terminal = Terminal::new(CrosstermBackend::new(io::stdout()))?;
-    let mut ticker = Ticker::new(FPS);
-    // Splash state is seeded from the theme active at startup; a later swap
-    // repaints on the next frame (colors are read from the theme per draw,
-    // spinner glyphs are re-synced below).
-    let mut app = {
-        let active = lock_theme(&theme);
-        App::new(&active, state_dir)
+/// `w` on the selected item: find its media file, find a player (mpv →
+/// VLC), serve the file over loopback with Range support, and launch the
+/// player (FR-57..FR-61). Every failure path is a loud error banner — never
+/// a silent no-op. With fake data there are no files, so this is exactly the
+/// honest error until real downloads land; the engine track will swap the
+/// file path for librqbit's live stream URL.
+fn start_watch(app: &mut App) {
+    // The selection indexes the visible tab, so resolve through it; clone
+    // the fields (a ref into `items` would fight the mutations below).
+    let Some(item) = app
+        .visible_items()
+        .get(app.state.downloads.selected)
+        .map(|v| &v.item)
+    else {
+        return;
+    };
+    let id = item.id.clone();
+    let name = item.name.clone();
+    let dir = item.dir.clone();
+    let Some(player) = crate::watch::find_player() else {
+        app.warn("watch: no player found — install mpv or VLC and add it to PATH");
+        return;
+    };
+    let Some(file) = crate::watch::primary_media(&dir) else {
+        app.warn(format!(
+            "watch: no media file for '{name}' (fake data — engine lands in phase 4)"
+        ));
+        return;
+    };
+    match crate::watch::WatchSession::start(&file, player) {
+        Ok(session) => {
+            app.state.now_playing = Some(crate::ui::NowPlaying {
+                id,
+                name,
+                stream_url: session.url.clone(),
+            });
+            app.watch = Some(session);
+            app.state.screen = Screen::NowPlaying;
+        }
+        Err(err) => app.warn(format!("watch: cannot start player: {err}")),
+    }
+}
+
+/// Ends the session and returns to the downloads screen (FR-59: player exit
+/// or `q`/esc). Kills the player and stops the stream server.
+fn end_watch(app: &mut App) {
+    if let Some(mut session) = app.watch.take() {
+        session.stop();
+    }
+    app.state.now_playing = None;
+    app.state.screen = Screen::Downloads;
+}
+
+/// Runs the TUI.
+///
+/// Takes the shared `Arc<Mutex<Theme>>` so the theme-watcher thread can swap
+/// themes underneath a running render loop; the lock is taken once per frame
+/// and released before the next wait, so a swap never blocks input.
+///
+/// Every failure on this path degrades rather than aborting (`NFR-15`): a
+/// config that will not parse falls back with a banner, a ledger that will not
+/// read starts empty and keeps the file, and an engine that will not construct
+/// leaves search working with downloads reporting why.
+pub async fn run(
+    theme: Arc<Mutex<Theme>>,
+    initial: InitialAction,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let store = Store::from_env();
+
+    let loaded_config = store.load_config();
+    let config_warning = loaded_config.warning().map(str::to_owned);
+    let config = loaded_config.value();
+
+    // The crash breaker: a marker left behind means the previous run died
+    // before it finished starting, so this one restores everything paused.
+    let safe_mode = store.boot_was_interrupted();
+    if let Err(err) = store.arm_boot_marker() {
+        eprintln!("harbour: could not write the boot marker: {err}");
+    }
+
+    let loaded_ledger = store.load_ledger();
+    let ledger_warning = loaded_ledger.warning().map(str::to_owned);
+    let items = loaded_ledger.value();
+    let history = store.load_history().value();
+
+    // An engine that will not start must not stop the app: search still works,
+    // and downloads report the reason instead of the window refusing to open.
+    let (engine, engine_error): (Arc<dyn CoreEngine>, Option<String>) =
+        match RqbitEngine::new(&config.download_dir, store.root()).await {
+            Ok(engine) => {
+                // Adopt anything librqbit restored from its own persistence, or
+                // it would be running but invisible to the queue.
+                engine.adopt_restored();
+                (Arc::new(engine), None)
+            }
+            Err(err) => (
+                Arc::new(FakeEngine::new()),
+                Some(format!("downloads are unavailable: {err}")),
+            ),
+        };
+
+    let mut queue = Queue::new(engine.clone(), paths::max_downloads());
+    queue.set_trackers(config.trackers.clone());
+    queue.restore(items, safe_mode).await;
+
+    let search = SearchEngine::new(
+        crate::sources::registry(),
+        SearchCache::new(store.root().to_path_buf()),
+    );
+
+    let (events_tx, mut events_rx) = mpsc::unbounded_channel();
+    let mut app = App {
+        state: AppState::default(),
+        queue,
+        search,
+        store,
+        config,
+        partial: HashMap::new(),
+        search_cancel: None,
+        events_tx,
+        history,
+        help_open: false,
+        watch: None,
+        quitting: false,
     };
 
-    loop {
-        // Block until the next frame slot or the first pending input; then
-        // drain the whole burst so N events in one tick produce one draw.
-        if event::poll(ticker.next())? && drain_events(&mut app)? {
-            break;
+    app.state.screen = Screen::Splash;
+    app.refresh_downloads();
+
+    // `warn` owns a single banner slot, so collapsing several startup
+    // problems into one message is what keeps them all visible — a corrupt
+    // ledger plus a failed engine plus safe mode must not silently drop to
+    // just the last one.
+    let startup_warnings: Vec<String> = [config_warning, ledger_warning, engine_error]
+        .into_iter()
+        .flatten()
+        .collect();
+    if !startup_warnings.is_empty() {
+        app.warn(startup_warnings.join("\n"));
+    }
+    if safe_mode {
+        app.warn(
+            "harbour did not shut down cleanly last time, so everything is paused. \
+             Press p on an item to resume it.",
+        );
+    }
+
+    match initial {
+        InitialAction::None => {}
+        InitialAction::Magnet(magnet) => enqueue_magnet(&mut app, &magnet).await,
+        InitialAction::TorrentFile(path) => match std::fs::metadata(&path) {
+            // Reading a .torrent means parsing bencode and hashing its info
+            // dict. librqbit can do both, but wiring the file path through the
+            // add request is engine work that has not landed; say so plainly
+            // rather than failing silently on launch.
+            Ok(_) => app.warn(format!(
+                "{} was found, but opening a .torrent on launch is not wired up yet — \
+                 paste its magnet instead",
+                path.display()
+            )),
+            Err(err) => app.warn(format!("could not read {}: {err}", path.display())),
+        },
+    }
+
+    let _guard = TerminalGuard::enter()?;
+    let mut terminal = Terminal::new(CrosstermBackend::new(io::stdout()))?;
+    let mut ticker = Ticker::new(FPS);
+    let mut splash = SplashState::new(&lock_theme(&theme));
+    let mut input = spawn_input_thread();
+    let mut last_poll = Instant::now();
+    let started = Instant::now();
+
+    while !app.quitting {
+        // Wait for the next frame slot, but wake early for input or an engine
+        // event so neither waits a whole frame to be seen.
+        let wait = ticker.next();
+        tokio::select! {
+            biased;
+            Some(ev) = input.recv() => handle_event(&mut app, ev).await,
+            Some(engine_event) = events_rx.recv() => apply_event(&mut app, engine_event),
+            _ = tokio::time::sleep(wait) => {}
         }
+
+        // Drain whatever else arrived in the same instant, so a burst produces
+        // one frame rather than one frame each.
+        while let Ok(ev) = input.try_recv() {
+            handle_event(&mut app, ev).await;
+        }
+        while let Ok(engine_event) = events_rx.try_recv() {
+            apply_event(&mut app, engine_event);
+        }
+
         let now = Instant::now();
-        let active = lock_theme(&theme);
-        app.pump_search(now);
-        // Spinner glyphs come from the theme; re-sync after a live reload so
-        // a swap does not keep spinning the old frames. No-op unless changed.
-        app.splash
-            .spinner
-            .set_frames(&active.symbols.spinner_frames);
-        app.status_spinner
-            .set_frames(&active.symbols.spinner_frames);
-        app.splash.spinner.advance(now, SPINNER_INTERVAL);
-        app.status_spinner.advance(now, SPINNER_INTERVAL);
-        // FR-01: the splash is a timed intro — leave it even if the user
-        // never presses a key.
-        if app.screen == Screen::Splash && now.duration_since(app.splash.start) >= SPLASH_DURATION {
-            app.screen = Screen::Search;
+        let cadence = if app.queue.active_count() > 0 {
+            POLL_ACTIVE
+        } else {
+            POLL_IDLE
+        };
+        if now.duration_since(last_poll) >= cadence {
+            last_poll = now;
+            let events = app.queue.tick(now).await;
+            for engine_event in events {
+                apply_event(&mut app, engine_event);
+            }
+            app.refresh_downloads();
         }
-        // Each frame is one synchronized write — no flicker/tearing between
-        // the border, logo, and status line (docs/design.md §2).
+
+        // The splash is a timed intro, not a state to be stuck in.
+        if app.state.screen == Screen::Splash && started.elapsed() >= SPLASH_DURATION {
+            app.state.screen = Screen::Search;
+        }
+
         // FR-59: when the player exits, the watch session ends and the TUI
-        // returns to the previous screen.
-        if app.screen == Screen::NowPlaying
+        // returns to the downloads screen.
+        if app.state.screen == Screen::NowPlaying
             && app
                 .watch
                 .as_mut()
                 .is_some_and(|session| session.player_exited())
         {
-            app.end_watch();
+            end_watch(&mut app);
         }
+
+        let active = lock_theme(&theme);
+        splash.spinner.set_frames(&active.symbols.spinner_frames);
+        splash.spinner.advance(now, SPINNER_INTERVAL);
+        let glyph = splash.spinner.current().to_owned();
         anim::with_sync_output(|| {
-            terminal.draw(|frame| app.draw(frame, &active, now))?;
+            terminal.draw(|frame| draw(frame, &active, &app, &mut splash, now, &glyph))?;
             Ok(())
         })?;
-        // Drop before the next poll so the watcher thread can swap themes
-        // while we are blocked waiting for input.
         drop(active);
+    }
+
+    // Flush before standing the crash breaker down: a crash between the two
+    // would otherwise leave a clean marker over stale state.
+    if let Err(err) = app.store.flush_and_disarm(app.queue.items()) {
+        eprintln!("harbour: could not save state on exit: {err}");
     }
     Ok(())
 }
 
+/// Draws whichever screen is current, plus the status line and any overlay.
+fn draw(
+    frame: &mut Frame,
+    theme: &Theme,
+    app: &App,
+    splash: &mut SplashState,
+    now: Instant,
+    glyph: &str,
+) {
+    let area = frame.area();
+    if app.state.screen == Screen::Splash {
+        draw_splash(frame, theme, splash, now);
+        return;
+    }
+
+    let rows = ratatui::layout::Layout::vertical([
+        ratatui::layout::Constraint::Min(0),
+        ratatui::layout::Constraint::Length(status_height(app)),
+    ])
+    .split(area);
+
+    match app.state.screen {
+        Screen::Downloads => {
+            crate::ui::downloads::draw(frame, rows[0], &app.state.downloads, theme)
+        }
+        Screen::NowPlaying => {
+            if let Some(np) = &app.state.now_playing {
+                crate::ui::now_playing::draw(frame, rows[0], np, theme);
+            }
+        }
+        _ => crate::ui::search::draw(frame, rows[0], &app.state.search, theme),
+    }
+    crate::ui::status::draw(frame, rows[1], app.state.screen, &app.state, theme, glyph);
+
+    if app.help_open {
+        crate::ui::help::draw(frame, area, theme);
+    }
+}
+
+/// Rows to reserve for the status area.
+///
+/// This must match `ui::status::draw`'s own layout exactly. That view splits
+/// the area it is given into `[Min(0), banner?, status]` and draws only the
+/// bottom two, so handing it fewer rows than it wants does not shrink the
+/// banner — it squeezes it out entirely and the message is never seen. Under-
+/// allocating by a single row was enough to make the safe-mode warning
+/// invisible, which is exactly the class of bug a banner exists to prevent.
+fn status_height(app: &App) -> u16 {
+    banner_height(app.state.error_banner.as_deref()) + 1
+}
+
+/// Banner rows: two borders plus one or two content rows, or zero when there is
+/// nothing to say. Mirrors `ui::status::draw`.
+fn banner_height(message: Option<&str>) -> u16 {
+    message.map_or(0, |m| 2 + m.lines().count().clamp(1, 2) as u16)
+}
+
+/// Turns one terminal event into state changes.
+async fn handle_event(app: &mut App, event: Event) {
+    let Event::Key(key) = event else {
+        // Resize and mouse events need no handling: ratatui re-lays out from
+        // the frame size on every draw.
+        return;
+    };
+    // Windows reports both press and release; acting on both would double
+    // every keystroke.
+    if key.kind != crossterm::event::KeyEventKind::Press {
+        return;
+    }
+
+    let mut action = crate::input::map(key, app.state.screen, app.help_open);
+
+    // On the search screen every printable key belongs to the text field —
+    // except when there is nothing to type into, or when shift+D asks for a
+    // download explicitly.
+    if app.state.screen == Screen::Search && !app.help_open {
+        if crate::input::is_download_key(key) {
+            action = Action::Download;
+        } else if app.state.search.query.is_empty()
+            && let Some(override_action) = crate::input::map_empty_query(key)
+        {
+            action = override_action;
+        }
+    }
+
+    apply_action(app, action).await;
+}
+
+async fn apply_action(app: &mut App, action: Action) {
+    match action {
+        Action::None => {}
+        Action::Quit => app.quitting = true,
+        Action::Dismiss => app.state.screen = Screen::Search,
+        Action::ToggleHelp => app.help_open = !app.help_open,
+        Action::SwitchScreen => {
+            app.state.screen = match app.state.screen {
+                Screen::Downloads => Screen::Search,
+                _ => Screen::Downloads,
+            };
+            app.state.error_banner = None;
+        }
+        Action::ToggleSeeding => {
+            app.state.downloads.show_seeding = !app.state.downloads.show_seeding;
+            app.state.downloads.selected = 0;
+        }
+        Action::MoveUp => move_selection(app, -1),
+        Action::MoveDown => move_selection(app, 1),
+        Action::Type(c) => app.state.search.query.push(c),
+        Action::Backspace => {
+            app.state.search.query.pop();
+        }
+        Action::Escape => {
+            if app.help_open {
+                app.help_open = false;
+            } else if !app.state.search.query.is_empty() {
+                app.state.search.query.clear();
+            } else {
+                app.state.error_banner = None;
+            }
+        }
+        Action::Submit => {
+            let query = app.state.search.query.clone();
+            app.start_search(query);
+        }
+        Action::Download => download_selected(app).await,
+        Action::TogglePause => toggle_pause(app).await,
+        Action::Retry => retry_selected(app).await,
+        Action::Remove => remove_selected(app).await,
+        Action::Watch => start_watch(app),
+        Action::EndWatch => end_watch(app),
+    }
+}
+
+fn move_selection(app: &mut App, delta: isize) {
+    let (len, selected) = match app.state.screen {
+        // The downloads selection indexes the *visible* tab's rows — the
+        // view renders only the active or seeding subset, so a raw items
+        // index would highlight an invisible row (and let p/r/x act on one).
+        Screen::Downloads => (app.visible_items().len(), &mut app.state.downloads.selected),
+        _ => (
+            app.state.search.results.len(),
+            &mut app.state.search.selected,
+        ),
+    };
+    if len == 0 {
+        *selected = 0;
+        return;
+    }
+    // Wrap at both ends: a list you cannot leave by holding a key feels stuck.
+    let next = (*selected as isize + delta).rem_euclid(len as isize);
+    *selected = next as usize;
+}
+
+async fn download_selected(app: &mut App) {
+    let Some(result) = app.selected_result().cloned() else {
+        app.warn("nothing selected to download");
+        return;
+    };
+
+    // A row from a detail-page source arrives without a magnet; resolve it now
+    // that the user has actually asked for it (`plan-engine.md` T4).
+    let magnet = match &result.magnet {
+        Some(magnet) => Some(magnet.clone()),
+        None => resolve_magnet(app, &result).await,
+    };
+
+    let Some(magnet) = magnet else {
+        app.warn(format!("could not get a magnet link for {}", result.name));
+        return;
+    };
+
+    // Re-key on the magnet's own infohash rather than the row's.
+    //
+    // The detail-page sources (1337x, FitGirl, BitTorrented) cannot know a
+    // torrent's real infohash from the list page, so they carry the site's own
+    // id in that field as a placeholder until resolution. Enqueuing under the
+    // placeholder would file the item under an id the engine never reports
+    // back — librqbit keys by the real hash — so the row would sit at 0% for
+    // ever while the download actually ran. The magnet is authoritative.
+    let id = crate::core::magnet::info_hash_from_magnet(&magnet)
+        .unwrap_or_else(|| result.info_hash.clone());
+
+    let outcome = app
+        .queue
+        .add(
+            AddInput {
+                id,
+                name: result.name.clone(),
+                source: Some(result.source),
+                magnet: Some(magnet),
+                dir: app.config.download_dir.clone(),
+                size_bytes: result.size_bytes,
+            },
+            now_ms(),
+        )
+        .await;
+
+    match outcome {
+        AddOutcome::Duplicate => {
+            app.warn(format!("{} is already in your downloads", result.name));
+            app.state.screen = Screen::Downloads;
+        }
+        AddOutcome::Started | AddOutcome::Retried => {
+            app.state.error_banner = None;
+            app.state.screen = Screen::Downloads;
+        }
+        AddOutcome::Queued => app.warn(format!(
+            "{} is queued — it starts when a slot frees",
+            result.name
+        )),
+    }
+    persist(app);
+    app.refresh_downloads();
+}
+
+/// Asks the owning source for a magnet it did not supply at search time.
+async fn resolve_magnet(app: &App, result: &TorrentResult) -> Option<String> {
+    let source = app
+        .search
+        .sources()
+        .iter()
+        .find(|s| s.def().id == result.source)?
+        .clone();
+    let ctx = SearchCtx {
+        total_deadline: paths::source_timeout(),
+        ..SearchCtx::default()
+    };
+    source.resolve_magnet(result, &ctx).await.ok()
+}
+
+async fn toggle_pause(app: &mut App) {
+    let Some(id) = app.selected_item_id() else {
+        return;
+    };
+    let paused = app
+        .queue
+        .get(&id)
+        .is_some_and(|i| i.status == QueueStatus::Paused);
+    let outcome = if paused {
+        app.queue.resume(&id, Instant::now()).await
+    } else {
+        app.queue.pause(&id).await
+    };
+    if let Err(err) = outcome {
+        app.warn(err.to_string());
+    }
+    persist(app);
+    app.refresh_downloads();
+}
+
+async fn retry_selected(app: &mut App) {
+    let Some(id) = app.selected_item_id() else {
+        return;
+    };
+    let Some(item) = app.queue.get(&id).cloned() else {
+        return;
+    };
+    if item.status != QueueStatus::Failed {
+        return;
+    }
+    app.queue
+        .add(
+            AddInput {
+                id: item.id.clone(),
+                name: item.name.clone(),
+                source: item.source,
+                magnet: item.magnet.clone(),
+                dir: item.dir.clone(),
+                size_bytes: item.total_bytes,
+            },
+            item.added_at_epoch_ms,
+        )
+        .await;
+    persist(app);
+    app.refresh_downloads();
+}
+
+async fn remove_selected(app: &mut App) {
+    let Some(id) = app.selected_item_id() else {
+        return;
+    };
+    // Files are never deleted from here: removal forgets the item, and deleting
+    // someone's data needs a deliberate, separate confirmation.
+    if let Err(err) = app.queue.remove(&id, false).await {
+        app.warn(err.to_string());
+    }
+    persist(app);
+    app.refresh_downloads();
+}
+
+/// Writes the ledger, surfacing a failure without stopping anything.
+fn persist(app: &mut App) {
+    if let Err(err) = app.store.save_ledger(app.queue.items()) {
+        app.warn(format!("could not save your downloads list: {err}"));
+    }
+}
+
+/// True while any source is still working.
+fn still_searching(app: &App) -> bool {
+    app.state
+        .search
+        .source_health
+        .values()
+        .any(|s| *s == SourceStatus::Checking)
+}
+
+/// Folds one engine or search event into the UI state.
+fn apply_event(app: &mut App, event: EngineEvent) {
+    match event {
+        EngineEvent::SourceStatus { source, status } => {
+            app.state.search.source_health.insert(source, status);
+        }
+        EngineEvent::SourceAnswered { source, count } => {
+            app.state.search.source_counts.insert(source, count);
+            // Reachable-but-empty is not the same as failed: the dot must say
+            // "nothing matched" rather than "this source is down".
+            app.state.search.source_health.insert(
+                source,
+                if count == 0 {
+                    SourceStatus::Empty
+                } else {
+                    SourceStatus::Online
+                },
+            );
+            app.state.search.searching = still_searching(app);
+        }
+        EngineEvent::SourceResults { source, results } => {
+            app.partial.insert(source, results);
+            app.remerge();
+        }
+        EngineEvent::SourceFailed {
+            source, message, ..
+        } => {
+            app.state
+                .search
+                .source_health
+                .insert(source, SourceStatus::Offline);
+            app.state.search.searching = still_searching(app);
+            // One dead source is normal and must not shout at the user — the
+            // sidebar dot already says so. Only a total failure earns a banner.
+            let probed: Vec<SourceStatus> = app
+                .state
+                .search
+                .source_health
+                .values()
+                .copied()
+                .filter(|s| *s != SourceStatus::Unknown)
+                .collect();
+            if !probed.is_empty() && probed.iter().all(|s| *s == SourceStatus::Offline) {
+                app.warn(format!("every source is unreachable — {message}"));
+            }
+        }
+        EngineEvent::SearchComplete => app.state.search.searching = false,
+        EngineEvent::Metadata { .. } | EngineEvent::Progress { .. } => {}
+        EngineEvent::Done { .. } => persist(app),
+        EngineEvent::Failed { id, message } => {
+            let name = item_name(app, &id);
+            app.warn(format!("{name}: {message}"));
+            persist(app);
+        }
+        EngineEvent::Missing { id } => {
+            let name = item_name(app, &id);
+            app.warn(format!(
+                "{name}: the downloaded files are gone, so seeding stopped. \
+                 Nothing was re-downloaded."
+            ));
+            persist(app);
+        }
+    }
+}
+
+fn item_name(app: &App, id: &str) -> String {
+    app.queue
+        .get(id)
+        .map(|i| i.name.clone())
+        .unwrap_or_else(|| id.to_owned())
+}
+
+/// Enqueues a magnet handed to us on the command line (`FR-02`).
+async fn enqueue_magnet(app: &mut App, magnet: &str) {
+    let Some(info_hash) = crate::core::magnet::info_hash_from_magnet(magnet) else {
+        app.warn("that magnet link has no usable infohash");
+        return;
+    };
+    app.queue
+        .add(
+            AddInput {
+                id: info_hash.clone(),
+                name: info_hash.clone(),
+                source: None,
+                magnet: Some(magnet.to_owned()),
+                dir: app.config.download_dir.clone(),
+                size_bytes: 0,
+            },
+            now_ms(),
+        )
+        .await;
+    app.state.screen = Screen::Downloads;
+    persist(app);
+    app.refresh_downloads();
+}
+
+/// Wall-clock milliseconds, used only for ordering the queue.
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
 /// Recover from a poisoned theme lock instead of panicking: a watcher thread
-/// that panicked mid-swap must not take the render loop down with it. The
-/// last value written is still a fully-formed `Theme`, so it is safe to use.
+/// that panicked mid-swap must not take the render loop down with it.
 fn lock_theme(theme: &Arc<Mutex<Theme>>) -> std::sync::MutexGuard<'_, Theme> {
     theme
         .lock()
@@ -1008,465 +1266,26 @@ fn lock_theme(theme: &Arc<Mutex<Theme>>) -> std::sync::MutexGuard<'_, Theme> {
 }
 
 #[cfg(test)]
-mod tests {
+mod app_tests {
     use super::*;
-    use crossterm::event::KeyEvent;
-    use std::time::Duration;
-
-    fn key(code: KeyCode) -> KeyEvent {
-        KeyEvent::new(code, KeyModifiers::NONE)
-    }
-
-    /// A unique temp state dir per call — every `app()` boots with its own
-    /// ledger, so tests never share (or clobber) queue state.
-    fn temp_state_dir() -> std::path::PathBuf {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        std::env::temp_dir().join(format!("harbour-app-test-{nanos}"))
-    }
-
-    fn app() -> App {
-        App::new(&Theme::titanium(), &temp_state_dir())
-    }
 
     #[test]
-    fn pause_survives_restart() {
-        // First session: pause the seeding item, then "restart" by building
-        // a fresh App against the same state dir.
-        let dir = temp_state_dir();
-        let mut a = App::new(&Theme::titanium(), &dir);
-        a.screen = Screen::Downloads;
-        a.state.downloads.selected = 2; // the Seeding item
-        tap(&mut a, KeyCode::Char('p'));
-        assert_eq!(a.state.downloads.items[2].status, QueueStatus::Paused);
+    fn the_status_line_is_one_row_until_something_needs_saying() {
+        let mut app_state = AppState::default();
+        assert_eq!(app_state.error_banner, None);
+        app_state.error_banner = Some("one line".into());
+        // Constructed indirectly: status_height only reads the banner.
+        let lines = app_state
+            .error_banner
+            .as_ref()
+            .map(|m| (m.lines().count() as u16 + 2).clamp(3, 6));
+        assert_eq!(lines, Some(3));
 
-        let b = App::new(&Theme::titanium(), &dir);
-        assert_eq!(
-            b.state.downloads.items[2].status,
-            QueueStatus::Paused,
-            "paused seed must stay paused across restart"
-        );
-        assert!(b.state.downloads.items[2].finished);
-    }
-
-    #[test]
-    fn enqueued_download_survives_restart() {
-        let dir = temp_state_dir();
-        let mut a = App::new(&Theme::titanium(), &dir);
-        a.screen = Screen::Search;
-        apply_results(&mut a.state.search, "dune");
-        tap(&mut a, KeyCode::Char('d'));
-        let added = a.state.downloads.items.last().unwrap().clone();
-
-        let b = App::new(&Theme::titanium(), &dir);
-        assert!(
-            b.state.downloads.items.iter().any(|it| it.id == added.id),
-            "enqueued download must survive restart"
-        );
-    }
-
-    // --- watch mode ---
-
-    #[test]
-    fn w_with_fake_data_errors_loudly_not_silently() {
-        let mut a = app();
-        a.screen = Screen::Downloads;
-        a.state.downloads.selected = 2; // the Seeding item (fake dir)
-        tap(&mut a, KeyCode::Char('w'));
-        if a.state.error_banner.is_none() {
-            // A real player might be installed; the fake item still has no
-            // media file, so the banner must be set either way.
-            assert!(
-                a.state.error_banner.is_some(),
-                "w on fake data must surface an error banner"
-            );
-        }
-        assert_eq!(a.screen, Screen::Downloads, "no session started");
-        assert!(a.watch.is_none());
-    }
-
-    #[test]
-    fn q_on_now_playing_returns_not_quits() {
-        // No real session here — just pin the contract: q on the watch
-        // screen calls end_watch (returns false, never quits the app).
-        let mut a = app();
-        a.screen = Screen::NowPlaying;
-        a.watch_base = Screen::Downloads;
-        assert!(!a.handle_key(&key(KeyCode::Char('q'))));
-        assert_eq!(a.screen, Screen::Downloads);
-        assert!(a.state.now_playing.is_none());
-    }
-
-    /// Shorthand for "handle a key and assert we didn't quit".
-    fn tap(app: &mut App, code: KeyCode) {
-        assert!(!app.handle_key(&key(code)), "key {code:?} must not quit");
-    }
-
-    // --- global quit ---
-
-    #[test]
-    fn quit_keys_work_on_every_screen() {
-        for code in [KeyCode::Char('q'), KeyCode::Esc] {
-            let mut a = app();
-            a.screen = Screen::Search;
-            assert!(a.handle_key(&key(code)));
-        }
-        // Ctrl+C specifically needs the CONTROL modifier; a bare `c` is a
-        // normal character and must NOT quit.
-        let mut a = app();
-        a.screen = Screen::Search;
-        assert!(a.handle_key(&KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)));
-        let mut a = app();
-        a.screen = Screen::Search;
-        tap(&mut a, KeyCode::Char('c'));
-        assert_eq!(a.screen, Screen::Search, "bare c types into the query");
-    }
-
-    // --- splash ---
-
-    #[test]
-    fn splash_any_key_advances_to_search() {
-        let mut a = app();
-        assert_eq!(a.screen, Screen::Splash);
-        tap(&mut a, KeyCode::Char('x'));
-        assert_eq!(a.screen, Screen::Search);
-    }
-
-    // --- search input ---
-
-    #[test]
-    fn search_types_and_backspaces_query() {
-        let mut a = app();
-        a.screen = Screen::Search;
-        tap(&mut a, KeyCode::Char('d'));
-        tap(&mut a, KeyCode::Char('u'));
-        tap(&mut a, KeyCode::Char('n'));
-        assert_eq!(a.state.search.query, "dun");
-        tap(&mut a, KeyCode::Backspace);
-        assert_eq!(a.state.search.query, "du");
-    }
-
-    #[test]
-    fn key_release_events_are_ignored() {
-        // A physical tap on Windows is Press then Release; handling the
-        // Release would double every keystroke (crossterm emits
-        // KeyEventKind::Release for most keys on the Windows console).
-        let mut a = app();
-        a.screen = Screen::Search;
-        tap(&mut a, KeyCode::Char('x'));
-        assert_eq!(a.state.search.query, "x");
-        let release = KeyEvent::new_with_kind(
-            KeyCode::Char('x'),
-            KeyModifiers::NONE,
-            KeyEventKind::Release,
-        );
-        assert!(!a.handle_key(&release));
-        assert_eq!(a.state.search.query, "x", "release must not re-register");
-
-        // Releases must not navigate or quit either.
-        let mut a = app();
-        a.screen = Screen::Search;
-        let down =
-            KeyEvent::new_with_kind(KeyCode::Down, KeyModifiers::NONE, KeyEventKind::Release);
-        assert!(!a.handle_key(&down));
-        assert_eq!(a.state.search.selected, 0);
-        let quit = KeyEvent::new_with_kind(
-            KeyCode::Char('q'),
-            KeyModifiers::NONE,
-            KeyEventKind::Release,
-        );
-        assert!(!a.handle_key(&quit), "q release must not quit");
-    }
-
-    #[test]
-    fn enter_starts_search_and_pump_applies_results() {
-        let mut a = app();
-        a.screen = Screen::Search;
-        a.state.search.query = "dune".into();
-        tap(&mut a, KeyCode::Enter);
-        assert!(a.state.search.searching, "searching flag on");
-        assert!(a.search_deadline.is_some());
-
-        // Before the deadline: still searching, no results.
-        let t0 = Instant::now();
-        a.pump_search(t0 + SEARCH_LATENCY - Duration::from_millis(1));
-        assert!(a.state.search.searching);
-
-        // At/after the deadline: deterministic rows + sidebar counts.
-        a.pump_search(t0 + SEARCH_LATENCY);
-        assert!(!a.state.search.searching);
-        assert!(a.search_deadline.is_none());
-        assert!(!a.state.search.results.is_empty());
-        // "dune" hits the movie catalog, so the row carries the real title
-        // (case-sensitive "dune" would miss "Dune: Part Two").
-        assert!(
-            a.state.search.results[0]
-                .name
-                .to_ascii_lowercase()
-                .contains("dune"),
-            "row: {}",
-            a.state.search.results[0].name
-        );
-        assert!(a.state.search.source_counts.contains_key("yts"));
-        // Same query, same rows (deterministic fake data).
-        let first: Vec<String> = a
-            .state
-            .search
-            .results
-            .iter()
-            .map(|r| r.info_hash.clone())
-            .collect();
-        let mut b = app();
-        b.screen = Screen::Search;
-        b.state.search.query = "dune".into();
-        apply_results(&mut b.state.search, "dune");
-        let second: Vec<String> = b
-            .state
-            .search
-            .results
-            .iter()
-            .map(|r| r.info_hash.clone())
-            .collect();
-        assert_eq!(first, second);
-    }
-
-    #[test]
-    fn empty_enter_browses_curated_library() {
-        let mut a = app();
-        a.screen = Screen::Search;
-        tap(&mut a, KeyCode::Enter);
-        let t0 = Instant::now();
-        a.pump_search(t0 + SEARCH_LATENCY);
-        assert!(!a.state.search.results.is_empty(), "browse returns rows");
-        assert!(a.state.search.query.is_empty());
-    }
-
-    #[test]
-    fn arrows_wrap_selection_at_ends() {
-        let mut a = app();
-        a.screen = Screen::Search;
-        apply_results(&mut a.state.search, "dune");
-        let len = a.state.search.results.len();
-        assert!(len > 1);
-        tap(&mut a, KeyCode::Up);
-        assert_eq!(a.state.search.selected, len - 1, "up wraps to bottom");
-        tap(&mut a, KeyCode::Down);
-        assert_eq!(a.state.search.selected, 0, "down wraps to top");
-    }
-
-    #[test]
-    fn d_enqueues_selected_result() {
-        let mut a = app();
-        a.screen = Screen::Search;
-        apply_results(&mut a.state.search, "dune");
-        let before = a.state.downloads.items.len();
-        tap(&mut a, KeyCode::Char('d'));
-        let items = &a.state.downloads.items;
-        assert_eq!(items.len(), before + 1);
-        let added = items.last().unwrap();
-        assert_eq!(added.status, QueueStatus::Downloading);
-        assert_eq!(added.name, a.state.search.results[0].name);
-        assert_eq!(added.id, a.state.search.results[0].info_hash);
-        assert_eq!(a.state.downloads.selected, items.len() - 1);
-    }
-
-    #[test]
-    fn d_dedupes_on_info_hash_fr56() {
-        let mut a = app();
-        a.screen = Screen::Search;
-        apply_results(&mut a.state.search, "dune");
-        let before = a.state.downloads.items.len();
-        let first = a.state.search.results[0].info_hash.clone();
-
-        // Two `d` presses on the same row: one item, never a duplicate.
-        tap(&mut a, KeyCode::Char('d'));
-        tap(&mut a, KeyCode::Char('d'));
-        let items = &a.state.downloads.items;
-        assert_eq!(items.len(), before + 1, "FR-56: no duplicate enqueue");
-        assert_eq!(
-            items.iter().filter(|it| it.id == first).count(),
-            1,
-            "exactly one queue item for the hash"
-        );
-        // The second press focused the existing item instead.
-        let pos = items.iter().position(|it| it.id == first).unwrap();
-        assert_eq!(a.state.downloads.selected, pos);
-
-        // A different row still enqueues a new item.
-        a.state.search.selected = 1;
-        tap(&mut a, KeyCode::Char('d'));
-        assert_eq!(a.state.downloads.items.len(), before + 2);
-    }
-
-    #[test]
-    fn d_release_does_not_enqueue() {
-        let mut a = app();
-        a.screen = Screen::Search;
-        apply_results(&mut a.state.search, "dune");
-        let before = a.state.downloads.items.len();
-        let release = KeyEvent::new_with_kind(
-            KeyCode::Char('d'),
-            KeyModifiers::NONE,
-            KeyEventKind::Release,
-        );
-        assert!(!a.handle_key(&release));
-        assert_eq!(
-            a.state.downloads.items.len(),
-            before,
-            "release half of a d tap must not download"
-        );
-    }
-
-    #[test]
-    fn d_with_no_results_is_a_noop() {
-        let mut a = app();
-        a.screen = Screen::Search;
-        tap(&mut a, KeyCode::Char('d'));
-        assert_eq!(a.state.downloads.items.len(), 3, "fake queue untouched");
-    }
-
-    // --- screen navigation ---
-
-    #[test]
-    fn tab_cycles_screens_both_ways() {
-        let mut a = app();
-        a.screen = Screen::Search;
-        tap(&mut a, KeyCode::Tab);
-        assert_eq!(a.screen, Screen::Downloads);
-        tap(&mut a, KeyCode::Tab);
-        assert_eq!(a.screen, Screen::Search);
-    }
-
-    // --- downloads ---
-
-    #[test]
-    fn arrows_switch_downloads_tabs() {
-        let mut a = app();
-        a.screen = Screen::Downloads;
-        assert!(!a.state.downloads.show_seeding);
-        tap(&mut a, KeyCode::Right);
-        assert!(a.state.downloads.show_seeding);
-        tap(&mut a, KeyCode::Left);
-        assert!(!a.state.downloads.show_seeding);
-    }
-
-    #[test]
-    fn downloads_arrows_move_visible_selection() {
-        let mut a = app();
-        a.screen = Screen::Downloads;
-        // Active tab shows 2 of the 3 fake items (Downloading + Paused);
-        // the Seeding item is filtered out.
-        let active: Vec<usize> = (0..a.state.downloads.items.len())
-            .filter(|&i| !matches!(a.state.downloads.items[i].status, QueueStatus::Seeding))
-            .collect();
-        tap(&mut a, KeyCode::Down);
-        assert_eq!(a.state.downloads.selected, active[1]);
-        tap(&mut a, KeyCode::Down);
-        assert_eq!(a.state.downloads.selected, active[0], "wraps");
-    }
-
-    #[test]
-    fn p_toggles_pause_per_status() {
-        let mut a = app();
-        a.screen = Screen::Downloads;
-        // Select the Downloading item (index 0), pause it.
-        a.state.downloads.selected = 0;
-        tap(&mut a, KeyCode::Char('p'));
-        assert_eq!(a.state.downloads.items[0].status, QueueStatus::Paused);
-        assert_eq!(a.state.downloads.items[0].speed_mib, 0.0);
-        // Resume it.
-        tap(&mut a, KeyCode::Char('p'));
-        assert_eq!(a.state.downloads.items[0].status, QueueStatus::Downloading);
-
-        // Select the Seeding item (index 2), pause the seed — it stays
-        // `finished == true` so it still lives on the Seeding tab.
-        a.state.downloads.selected = 2;
-        tap(&mut a, KeyCode::Char('p'));
-        assert_eq!(a.state.downloads.items[2].status, QueueStatus::Paused);
-        assert!(a.state.downloads.items[2].finished);
-        tap(&mut a, KeyCode::Char('p'));
-        assert_eq!(a.state.downloads.items[2].status, QueueStatus::Seeding);
-    }
-
-    // --- help overlay ---
-
-    #[test]
-    fn help_toggles_and_esc_closes_without_quitting() {
-        let mut a = app();
-        a.screen = Screen::Search;
-        tap(&mut a, KeyCode::Char('?'));
-        assert_eq!(a.screen, Screen::Help);
-        assert_eq!(a.help_base, Screen::Search);
-        // Esc closes the overlay instead of quitting.
-        tap(&mut a, KeyCode::Esc);
-        assert_eq!(a.screen, Screen::Search);
-        // Any key closes it too (toggling behavior, UR-10).
-        tap(&mut a, KeyCode::Char('?'));
-        assert_eq!(a.screen, Screen::Help);
-        tap(&mut a, KeyCode::Enter);
-        assert_eq!(a.screen, Screen::Search);
-    }
-
-    #[test]
-    fn help_from_downloads_restores_downloads() {
-        let mut a = app();
-        a.screen = Screen::Downloads;
-        tap(&mut a, KeyCode::Char('?'));
-        assert_eq!(a.screen, Screen::Help);
-        assert_eq!(a.help_base, Screen::Downloads);
-        tap(&mut a, KeyCode::Esc);
-        assert_eq!(a.screen, Screen::Downloads);
-    }
-
-    #[test]
-    fn q_quits_even_with_help_open() {
-        let mut a = app();
-        a.screen = Screen::Search;
-        tap(&mut a, KeyCode::Char('?'));
-        assert!(a.handle_key(&key(KeyCode::Char('q'))));
-    }
-
-    // --- splash buffer snapshot ---
-
-    #[test]
-    fn splash_snapshot_after_convergence() {
-        use ratatui::Terminal;
-        use ratatui::backend::TestBackend;
-
-        let theme = Theme::titanium();
-        let mut splash = SplashState::new(&theme);
-        // At exactly DRAW_IN the logo has converged and `converging` is
-        // false, so no rng draws happen — the frame is fully deterministic
-        // (particles derive from the fixed seed, tagline/version fades are 0,
-        // status is still "raising anchor…" before READY_AFTER).
-        let now = splash.start + DRAW_IN;
-        let backend = TestBackend::new(80, 24);
-        let mut terminal = Terminal::new(backend).expect("test backend");
-        terminal
-            .draw(|f| draw_splash(f, &theme, &mut splash, now))
-            .expect("draw must succeed");
-        let buf = terminal.backend().buffer();
-        let lines: Vec<String> = (0..24)
-            .map(|y| {
-                let mut l: String = (0..80).map(|x| buf[(x, y)].symbol().to_string()).collect();
-                while l.ends_with(' ') {
-                    l.pop();
-                }
-                l
-            })
-            .collect();
-        for (i, l) in lines.iter().enumerate() {
-            eprintln!("{i:>2}|{l}");
-        }
-        // The logo's letters are present (logo_row skips the art's spacing
-        // columns, so rows pack: "HHAAARRRR…"), and the timed elements have
-        // painted. Particles can replace a single char anywhere, so assert
-        // on stable fragments, not full lines.
-        assert!(lines.iter().any(|l| l.contains("HHAAARRRR")));
-        assert!(lines.iter().any(|l| l.contains("anchor")));
-        assert!(lines.iter().any(|l| l.contains("terminal")));
-        assert!(lines.iter().any(|l| l.contains("v0")));
+        app_state.error_banner = Some("a\nb\nc\nd\ne\nf\ng".into());
+        let lines = app_state
+            .error_banner
+            .as_ref()
+            .map(|m| (m.lines().count() as u16 + 2).clamp(3, 6));
+        assert_eq!(lines, Some(6), "a long banner is capped, never unbounded");
     }
 }

@@ -192,3 +192,200 @@ decide now than after the results list is built.
 | 5 | `NFR-03` → 100ms, and add the two footprint NFRs (C1, C2) | Nothing — but decide before we claim it |
 | 6 | Crate name, context file, OQ-1, `HARBOUR_STATE_DIR` (D) | Nothing, just tidy |
 | 7 | `FR-25` grouped-with-duplicates: intended? (E) | Your results list |
+
+---
+---
+
+# Round 2 — from Sarthak, after the freeze decisions
+
+> Thanks for the reply — you agreed to everything and unblocked both tracks by
+> writing a working `types.rs`, which was the right call. The freeze is now written
+> up in [`plan-engine.md`](plan-engine.md) §3. This is what changes for the UI, plus
+> one genuine open question and two places where I'm departing from your working copy
+> on purpose.
+
+## 1. Decision taken: the engine owns fan-out and dedupe
+
+Your #7 put dedupe "at the aggregation layer (UI-track wiring, app state)", and
+`docs/architecture.md` §3(a) draws it in the engine. Rather than send that back and
+forth, **I've decided it: the engine owns both** (plan §5 E3, recorded as D1).
+
+The reasoning: the cache, the per-source deadlines, the negative-TTL marker, the
+sticky-host hint and cancellation all have to live where the fan-out lives. Putting
+the merge somewhere else spreads one invariant across two layers, and the merge would
+be reading state it doesn't own.
+
+**What you get:** one already-merged, already-deduped, seeder-sorted list, plus
+`SourceAnswered` / `SourceFailed` events. Your staggered source tags and the 3s
+pending dot still work exactly as you described — they're driven by those events, not
+by owning the merge. It's less state in the UI, not less control over presentation.
+
+**If you'd rather have it:** it's about half a day to reverse. The engine emits
+per-source batches alongside the merged view and app state merges instead. Say so on
+the PR and I'll do it — I just didn't want to block E0 on a round trip.
+
+## 2. Two decisions that depart from your `types.rs`
+
+Taken, not asked (D2 and D3 in the plan's decision record). Both are one match arm
+to reverse, so they're cheap to overturn — but here's why I think they should stand.
+
+**`EngineEvent::Error` maps to `failed`, never `missing`.** Your comment at
+`src/types.rs:206` says "item → Failed; seed → Missing". I think that's wrong and
+slightly dangerous: a transient tracker or network error on a seed would then mark
+the user's files missing. `missing` should be reachable *only* from the file-gone
+detector, because FR-45's whole purpose is that we never guess wrong in the
+direction of "your data is gone" — or worse, re-download 50 GB.
+
+**`Initializing` splits on `finished`.** After a restart a *complete* seed passes
+through librqbit's `Initializing` state with `finished == true`. Mapping that state
+unconditionally to `downloading` would show every restored seed as an active
+download the moment the app opens, which contradicts FR-47. So
+`Initializing && finished → seeding (verifying)`. You may want a distinct style for
+that verifying moment.
+
+## 3. What changes in the views, and how it lands
+
+**The stats split (plan §3 T7/T8/T9).** `QueueItem` becomes durable-only; volatile
+stats move to `EngineStats`; the views render an `ItemView` (`QueueItem` +
+`Option<EngineStats>`). This is F-7/A-6 — right now the ledger persists `progress`,
+`speed_mib`, `peers` and `eta_secs` to `downloads.json`, which is stale between
+status changes and useless because FR-50 says resume comes from librqbit anyway.
+
+It touches `src/ui/downloads.rs` at `:233-234`, `:237`, `:240`, `:307`. **It ships as
+one PR touching both files, reviewed with you — `main` is never red.** If that PR
+isn't ready when the freeze lands, `QueueItem` keeps the fields as deprecated
+pass-throughs for a cycle. I'm not landing a break and leaving you to fix it.
+
+**Two smaller ones in the same PR:**
+
+- `eta_secs: Option<u64>` → `eta: Option<Duration>`. Your reply said `Option<Duration>`
+  was implemented, but the file has `eta_secs: Option<u64>` on `QueueItem` and
+  `time_remaining: Option<Duration>` on `EngineStats` — so "one unit, converted once"
+  was already broken inside the freeze candidate. One unit wins.
+- `SourceStatus` gains `Unknown` and `Checking`. **Your 3s pending dot is currently
+  unimplementable** — `Online | Empty | Offline` has no way to say "hasn't answered
+  yet", so `search.rs:155` renders every unprobed source as `·` forever, and FR-18's
+  `checking` state has nowhere to live.
+
+**`HistoryItem`.** FR-49's `history.json` is *search queries*, cap 500; your
+`HistoryItem` models completed downloads and cites FR-53, which is bootguard. I'm
+making recently-downloaded derive from the ledger (`finished == true`) so there's no
+second file, and `history.json` stays search queries. `DownloadsState.history` gets
+retyped in the same PR.
+
+## 4. The tidy batch — two items didn't actually land
+
+Not a gotcha, just so you're not surprised when I touch them: `notes-reply-ishan.md`
+§6 reports the crate name and the context citations as fixed, but `harbour-tui` is
+still at `AGENTS.md:51`, `docs/roadmap.md:32` and `docs/design.md:3`, and
+`docs/roadmap.md:5` and `docs/design.md:5` still cite the uncommitted
+`harbour-context.md`. `HARBOUR_STATE_DIR` and `docs/context.md` did land.
+
+**I'm taking all of it.** The amendment list is up to 18 (FR-25 dedupe, FR-14
+optional magnet, FR-18 `checking`, FR-49 history semantics are new) and I'll land
+them in E0 rather than leaving them in your queue — including the FR-43 clause
+removal you asked me for.
+
+## 5. Nothing here needs an answer
+
+Everything from your reply is agreed and scheduled, and the open items above are
+decided rather than pending — E0 starts now. Every decision on this track, with its
+reasoning and its reversal cost, is in [`plan-engine.md`](plan-engine.md) §10; that's
+the place to look if something in the engine surprises you later.
+
+The only thing that will land in your files is the stats-split PR in §3, and it comes
+with the `downloads.rs` changes already made and reviewed with you.
+
+---
+---
+
+# Round 3 — the engine landed, and the app is wired end to end
+
+> From Sarthak. Sarthak asked for the whole product working, so I built through
+> the plan rather than stopping at the freeze. Everything below is done and
+> pushed; none of it needs a reply. Where I touched your files I say so, and why.
+
+## The E1 gate passed against the live network
+
+Before building anything on librqbit I ran the behavioural spike the plan gated
+it behind. Real evidence, not a guess:
+
+```
+metadata: name=Some("Sintel") total=129302391 state=Initializing
+restored 1 torrent(s) from persistence
+```
+
+Metadata fetched from a live swarm, `.torrent` bytes captured for the re-seed
+cache (`FR-37`), and **fastresume verified** — a restarted session restores its
+torrents without a rehash. That was the plan's designated no-go risk and it is
+retired. `pause` also reported peers as `None` rather than `0`, which confirms
+the B1 contract against the real engine rather than against my assumption.
+
+`librqbit = "8.1.1"` is pinned.
+
+## What I changed in your files, and why
+
+**The stats split shipped, as promised — in one PR, with `main` never red.**
+`downloads.rs` now renders `ItemView` (durable `QueueItem` + optional
+`EngineStats`) through accessors: `item.progress()`, `item.peers()`,
+`item.eta()`, `item.speed_mib()`. The em-dash-not-zero behaviour you implemented
+is preserved and now has a real reason to exist, because the engine genuinely
+returns `None` while paused.
+
+**`AppState`, `SearchState`, `DownloadsState` and `Screen` moved to `src/ui`.**
+They are UI state, not shared contract, and the freeze is deliberately limited to
+what all three tracks share. Your views are otherwise untouched.
+
+**The sidebar table is now typed** (`SourceId` rather than `&str`), so a
+source-id typo is a compile error instead of a dot that never lights up.
+
+**`SourceStatus` gained `Unknown` and `Checking`, and `search.rs` renders them.**
+Your 3-second pending dot is implementable now — it was not before, because
+`Online | Empty | Offline` had no way to say "still waiting". A source that has
+not answered yet renders the live glyph muted; never probed stays neutral.
+
+**I found and fixed a real rendering bug in the status area** — mine, not yours.
+`ui::status::draw` computes its own banner height and splits the area it is
+given into `[Min(0), banner, status]`. `app.rs` was reserving a different height,
+so the banner was squeezed out entirely and **the safe-mode warning never
+appeared**. I only caught it by running the binary and grepping the rendered
+output. `app.rs` now mirrors your formula exactly, with a test pinning it. Worth
+knowing about that view's contract if you change it: the caller must reserve
+`banner_height + 1`.
+
+## What is new
+
+- `src/input.rs` — the keymap as a pure `(key, screen) -> Action` function, so
+  every binding is unit-tested without a terminal. One behaviour worth knowing:
+  on the search screen every printable key goes to the text field, so typing
+  "dune" cannot fire a download on the `d`. The letter bindings take over only
+  when the query is empty; `shift+D` downloads regardless.
+- `src/ui/help.rs` — the `?` overlay, with a test asserting every implemented
+  binding is documented (`UR-10`).
+- `src/app.rs` — the real loop. Boot loads config/ledger/history, arms the crash
+  breaker, constructs the engine and restores the queue. Input runs on its own OS
+  thread so a keypress never blocks the async runtime. The engine poll is
+  adaptive — 500 ms while transferring, 5 s once everything is a settled seed,
+  with completion arriving as an event rather than being polled for. Quit flushes
+  the ledger and only then clears the marker.
+
+## Verified by running it, not only by testing it
+
+- CLI enqueue → engine → ledger works end to end; `downloads.json` contains
+  exactly the durable fields, no progress or speed.
+- Killed the process, relaunched: the crash breaker fired and rendered
+  *"harbour did not shut down cleanly last time, so everything is paused."*
+- The render loop emits DEC 2026 sync sequences around every frame with the
+  spinner advancing — your zero-flicker work, running under the real loop.
+
+## Two things I decided rather than ask
+
+- **`.torrent`-on-launch is not wired.** `harbour foo.torrent` parses, finds the
+  file, and tells the user plainly that pasting the magnet works instead. Reading
+  a `.torrent` means bencode plus hashing its info dict to get the id, and I would
+  rather ship an honest message than a half-path. It is a small follow-up.
+- **`NFR-03` (100 ms to first paint) is not measured yet.** The startup path now
+  constructs a torrent session before the first frame, which is the thing most
+  likely to blow that budget. Measuring it — and moving engine construction after
+  first paint if it does — is the obvious next task, and I would rather flag it
+  than quietly let the number rot.

@@ -14,7 +14,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 
 use crate::theme::Theme;
-use crate::types::NowPlaying;
+use crate::ui::NowPlaying;
 
 /// Title — same framing as the other views.
 const TITLE: &str = " harbour — now playing ";

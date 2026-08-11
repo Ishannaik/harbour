@@ -1,0 +1,80 @@
+<?xml version="1.0" encoding="utf-8"?>
+<rss version="2.0" xmlns:torrent="http://xmlns.ezrss.it/0.1/" xmlns:atom="http://www.w3.org/2005/Atom">
+  <channel>
+    <title>EZTV - TV Torrents Online</title>
+    <link>https://eztvx.to/</link>
+    <description>TV Torrents Online</description>
+    <language>en-us</language>
+    <atom:link href="https://eztvx.to/ezrss.xml" rel="self" type="application/rss+xml"/>
+
+    <!-- A complete item: every extension element the reference mirror emits. -->
+    <item>
+      <title>Example Show S01E01 1080p WEB h264-HARBOUR</title>
+      <link>https://eztvx.to/ep/1000001/example-show-s01e01-1080p-web-h264-harbour/</link>
+      <category>TV Show</category>
+      <pubDate>Tue, 04 Aug 2026 09:15:00 +0000</pubDate>
+      <description><![CDATA[<img src="https://ezimg.ch/thumbs/example-show.jpg" alt="Example Show"/>]]></description>
+      <enclosure url="magnet:?xt=urn:btih:1111111111111111111111111111111111111111&amp;dn=Example.Show.S01E01" length="1503238553" type="application/x-bittorrent"/>
+      <torrent:filename>example.show.s01e01.1080p.web.h264-harbour.torrent</torrent:filename>
+      <torrent:contentLength>1503238553</torrent:contentLength>
+      <torrent:infoHash>1111111111111111111111111111111111111111</torrent:infoHash>
+      <torrent:magnetURI><![CDATA[magnet:?xt=urn:btih:1111111111111111111111111111111111111111&dn=Example.Show.S01E01]]></torrent:magnetURI>
+      <torrent:seeds>431</torrent:seeds>
+      <torrent:peers>27</torrent:peers>
+      <torrent:verified>1</torrent:verified>
+    </item>
+
+    <!-- A mirror that omits torrent:infoHash and torrent:contentLength: the
+         hash has to come out of the enclosure magnet, the size out of its
+         length attribute, and the hash arrives uppercased. -->
+    <item>
+      <title>Another Series S03E07 720p HDTV x264-GROUP</title>
+      <link>https://eztvx.to/ep/1000002/another-series-s03e07-720p-hdtv-x264-group/</link>
+      <category>TV Show</category>
+      <pubDate>Mon, 03 Aug 2026 22:40:11 +0000</pubDate>
+      <enclosure url="magnet:?xt=urn:btih:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&amp;dn=Another.Series.S03E07" length="734003200" type="application/x-bittorrent"/>
+      <torrent:seeds>88</torrent:seeds>
+      <torrent:peers>4</torrent:peers>
+    </item>
+
+    <!-- An entity in the title, and a mirror that writes contentLength in
+         human units instead of bytes. -->
+    <item>
+      <title>Tom &amp; Jerry Tales S02E05 480p DVDRip x264</title>
+      <link>https://eztvx.to/ep/1000003/tom-and-jerry-tales-s02e05-480p-dvdrip-x264/</link>
+      <category>TV Show</category>
+      <pubDate>Sun, 02 Aug 2026 06:00:00 +0000</pubDate>
+      <torrent:contentLength>700 MB</torrent:contentLength>
+      <torrent:magnetURI><![CDATA[magnet:?xt=urn:btih:3333333333333333333333333333333333333333&dn=Tom.and.Jerry.Tales.S02E05]]></torrent:magnetURI>
+      <torrent:seeds>12</torrent:seeds>
+      <torrent:peers>0</torrent:peers>
+    </item>
+
+    <!-- Truncated infoHash and no magnet anywhere: unusable, must be dropped. -->
+    <item>
+      <title>Broken Row S01E02 1080p WEB</title>
+      <link>https://eztvx.to/ep/1000004/broken-row-s01e02-1080p-web/</link>
+      <pubDate>Sat, 01 Aug 2026 12:00:00 +0000</pubDate>
+      <torrent:infoHash>deadbeef</torrent:infoHash>
+      <torrent:seeds>5</torrent:seeds>
+      <torrent:peers>1</torrent:peers>
+    </item>
+
+    <!-- Downloadable but unnameable: also dropped. -->
+    <item>
+      <title></title>
+      <link>https://eztvx.to/ep/1000005/</link>
+      <pubDate>Fri, 31 Jul 2026 08:30:00 +0000</pubDate>
+      <torrent:infoHash>4444444444444444444444444444444444444444</torrent:infoHash>
+      <torrent:seeds>9</torrent:seeds>
+      <torrent:peers>2</torrent:peers>
+    </item>
+
+    <!-- The bare minimum a mirror can emit and still be usable: no dates, no
+         swarm counts, no size. -->
+    <item>
+      <title>Minimal Mirror Show S05E12 1080p WEB</title>
+      <enclosure url="magnet:?xt=urn:btih:5555555555555555555555555555555555555555&amp;dn=Minimal.Mirror.Show.S05E12" type="application/x-bittorrent"/>
+    </item>
+  </channel>
+</rss>

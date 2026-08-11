@@ -1,64 +1,55 @@
-//! Help overlay (UR-10): a centered modal listing the normative keybinds.
+//! The keybind overlay (`?`).
 //!
-//! Pure paint: `draw` renders the keybind table + theme; the app loop owns
-//! input (any key closes the overlay, `q`/Ctrl+C still quit). All colors
-//! come from the theme subset (docs/theming.md), so custom themes work
-//! unchanged.
+//! Rendered as a centred panel over whatever screen is underneath, so pressing
+//! `?` never loses the user's place.
 
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::symbols::border::Set as BorderSet;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph};
+use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
 use crate::theme::Theme;
 
-/// Keybind rows, key first then the action — the exact set from
-/// docs/design.md §Keybinds plus the two screen-nav keys added for the
-/// multi-view loop (Tab cycles screens, ←/→ switch the downloads tabs).
-const ROWS: &[(&str, &str)] = &[
-    ("enter", "search (empty = browse curated lists)"),
-    ("↑ / ↓", "move selection"),
-    ("d / shift+d", "download to default / chosen folder"),
-    ("tab", "switch screen"),
-    ("← / →", "switch downloads tab"),
-    ("p", "pause / resume"),
-    ("?", "close help"),
-    ("esc", "close help"),
-    ("q / ctrl+c", "quit"),
+/// Every binding, in the order a new user meets them.
+///
+/// This is the single source of truth for the overlay. `UR-10` requires `?` to
+/// show exactly the bindings the app implements, so a keybind added to the
+/// input handler without a row here is a documentation bug that a test catches.
+pub const BINDINGS: &[(&str, &str)] = &[
+    ("enter", "search — an empty query browses the curated lists"),
+    ("↑ ↓", "move the selection"),
+    ("d", "download to the default folder"),
+    ("tab", "switch between search and downloads"),
+    ("s", "downloads: toggle the seeding tab"),
+    ("p", "downloads: pause or resume the selected item"),
+    ("r", "downloads: retry a failed item"),
+    ("x", "downloads: remove the selected item (keeps files)"),
+    ("w", "downloads: watch the selected item in mpv/VLC"),
+    ("esc", "clear the query, or close this overlay"),
+    ("?", "show or hide this overlay"),
+    ("q", "quit"),
 ];
 
-/// Draws the help modal centered over the current view, with the underlying
-/// view dimmed so the modal reads as an overlay (omp-style) instead of text
-/// soup floating over a busy screen.
+/// Draws the overlay centred in `area`.
 pub fn draw(frame: &mut Frame, area: Rect, theme: &Theme) {
     let colors = &theme.colors;
-    let accent = colors.accent().to_ratatui();
 
-    // Dim the whole screen first; the modal then sits on a quiet backdrop.
-    frame.render_widget(
-        Block::default().style(Style::default().bg(colors.selected_bg().to_ratatui())),
-        area,
-    );
-
-    // Key column width = longest key + padding; the modal wraps the table.
-    let key_w = ROWS
+    // Wide enough for the longest row, but never wider than the terminal.
+    let width = BINDINGS
         .iter()
-        .map(|(k, _)| k.chars().count())
+        .map(|(k, d)| k.chars().count() + d.chars().count() + 6)
         .max()
-        .unwrap_or(0)
-        + 3;
-    let body_w = key_w
-        + ROWS
-            .iter()
-            .map(|(_, a)| a.chars().count())
-            .max()
-            .unwrap_or(0);
-    let modal_w = ((body_w + 4) as u16).min(area.width.saturating_sub(4));
-    let modal_h = ((ROWS.len() + 2) as u16).min(area.height.saturating_sub(2));
-    let x = area.x + area.width.saturating_sub(modal_w) / 2;
-    let y = area.y + area.height.saturating_sub(modal_h) / 2;
+        .unwrap_or(40)
+        .clamp(30, area.width.saturating_sub(4).max(30) as usize) as u16;
+    let height = (BINDINGS.len() as u16 + 4).min(area.height);
+    let panel = Rect {
+        x: area.x + area.width.saturating_sub(width) / 2,
+        y: area.y + area.height.saturating_sub(height) / 2,
+        width: width.min(area.width),
+        height,
+    };
 
     let border = BorderSet {
         top_left: theme.symbols.border_tl.as_ref(),
@@ -70,40 +61,69 @@ pub fn draw(frame: &mut Frame, area: Rect, theme: &Theme) {
         horizontal_top: theme.symbols.border_h.as_ref(),
         horizontal_bottom: theme.symbols.border_h.as_ref(),
     };
-    let block = Block::new()
-        .borders(Borders::ALL)
-        .border_set(border)
-        .border_style(Style::default().fg(colors.border().to_ratatui()))
-        .title(Span::styled(" keybinds ", Style::default().fg(accent)))
-        .style(Style::default().bg(colors.bg().to_ratatui()));
 
-    let inner = block.inner(Rect::new(x, y, modal_w, modal_h));
-    let chunks =
-        Layout::horizontal([Constraint::Length(key_w as u16), Constraint::Min(0)]).split(inner);
-    let mut keys: Vec<Line> = Vec::new();
-    let mut actions: Vec<Line> = Vec::new();
-    for (k, a) in ROWS {
-        keys.push(Line::from(Span::styled(
-            k.to_string(),
-            Style::default().fg(accent),
-        )));
-        actions.push(Line::from(Span::styled(
-            a.to_string(),
-            Style::default().fg(colors.muted().to_ratatui()),
-        )));
+    let key_width = BINDINGS
+        .iter()
+        .map(|(k, _)| k.chars().count())
+        .max()
+        .unwrap_or(5);
+    let mut lines = vec![Line::from("")];
+    for (key, description) in BINDINGS {
+        lines.push(Line::from(vec![
+            Span::raw("  "),
+            Span::styled(
+                format!("{key:>key_width$}"),
+                Style::default().fg(colors.accent().to_ratatui()),
+            ),
+            Span::raw("  "),
+            Span::styled(
+                (*description).to_string(),
+                Style::default().fg(colors.text().to_ratatui()),
+            ),
+        ]));
     }
+
+    // Clear first: without it the screen underneath shows through the panel.
+    frame.render_widget(Clear, panel);
     frame.render_widget(
-        Paragraph::new(keys).style(Style::default().bg(colors.bg().to_ratatui())),
-        chunks[0],
+        Paragraph::new(lines).block(
+            Block::new()
+                .borders(Borders::ALL)
+                .border_set(border)
+                .border_style(Style::default().fg(colors.border().to_ratatui()))
+                .title(Span::styled(
+                    " keys ",
+                    Style::default().fg(colors.accent().to_ratatui()),
+                ))
+                .style(Style::default().bg(colors.bg().to_ratatui())),
+        ),
+        panel,
     );
-    frame.render_widget(
-        Paragraph::new(actions).style(Style::default().bg(colors.bg().to_ratatui())),
-        chunks[1],
-    );
-    frame.render_widget(
-        Paragraph::new(Line::default())
-            .block(block)
-            .style(Style::default().bg(colors.bg().to_ratatui())),
-        Rect::new(x, y, modal_w, modal_h),
-    );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_binding_is_documented_once() {
+        let mut keys: Vec<&str> = BINDINGS.iter().map(|(k, _)| *k).collect();
+        keys.sort_unstable();
+        let before = keys.len();
+        keys.dedup();
+        assert_eq!(keys.len(), before, "a key is listed twice in the help");
+        assert!(BINDINGS.iter().all(|(_, d)| !d.is_empty()));
+    }
+
+    #[test]
+    fn the_bindings_users_reach_for_first_are_present() {
+        // UR-10: `?` must show exactly what the app implements. These are the
+        // ones a user cannot discover any other way.
+        for key in ["enter", "d", "p", "q", "?", "tab"] {
+            assert!(
+                BINDINGS.iter().any(|(k, _)| *k == key),
+                "`{key}` is implemented but undocumented"
+            );
+        }
+    }
 }

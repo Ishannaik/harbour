@@ -16,8 +16,9 @@ use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 
+use crate::core::types::{ItemView, QueueStatus};
 use crate::theme::Theme;
-use crate::types::{AppState, QueueItem, QueueStatus, Screen};
+use crate::ui::{AppState, Screen};
 
 /// Left (label, accent) and middle (context, muted) segments for a screen.
 fn segments(screen: Screen, state: &AppState) -> (&'static str, String) {
@@ -47,18 +48,23 @@ fn segments(screen: Screen, state: &AppState) -> (&'static str, String) {
 /// Downloads context mirrors the design's summary ("2 active · 1 seeding ·
 /// 1 failed"): only nonzero segments are printed; an empty queue says so
 /// instead of showing a wall of zeros.
-fn download_context(items: &[QueueItem]) -> String {
+fn download_context(items: &[ItemView]) -> String {
     let active = items
         .iter()
-        .filter(|i| matches!(i.status, QueueStatus::Queued | QueueStatus::Downloading))
+        .filter(|i| {
+            matches!(
+                i.item.status,
+                QueueStatus::Queued | QueueStatus::Downloading
+            )
+        })
         .count();
     let seeding = items
         .iter()
-        .filter(|i| i.status == QueueStatus::Seeding)
+        .filter(|i| i.item.status == QueueStatus::Seeding)
         .count();
     let failed = items
         .iter()
-        .filter(|i| i.status == QueueStatus::Failed)
+        .filter(|i| i.item.status == QueueStatus::Failed)
         .count();
     let mut parts = Vec::new();
     if active > 0 {
