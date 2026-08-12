@@ -32,6 +32,8 @@ pub enum Action {
     Backspace,
     /// Clear the query, or close an overlay.
     Escape,
+    /// Return focus from the search results pane to the input pane.
+    FocusSearchInput,
     /// Download the highlighted result.
     Download,
     /// Pause or resume the highlighted item.
@@ -102,6 +104,9 @@ fn is_hard_quit(key: &KeyEvent) -> bool {
 /// input) or browsing the installed-player list (where `c` switches modes).
 /// The settings overlay (`settings_open`) is the same modal shape again:
 /// `esc`/arrows/enter/typing all belong to it while it is up.
+/// Maps one keypress to an action with the search input pane focused (the
+/// default). Test-only convenience: shipped code calls [`map_with_focus`].
+#[cfg(test)]
 pub fn map(
     key: KeyEvent,
     screen: Screen,
@@ -109,6 +114,28 @@ pub fn map(
     picker_open: bool,
     picker_custom: bool,
     settings_open: bool,
+) -> Action {
+    map_with_focus(
+        key,
+        screen,
+        help_open,
+        picker_open,
+        picker_custom,
+        settings_open,
+        true,
+    )
+}
+
+/// The focus-aware keymap. `search_focus` selects the search screen's input
+/// pane (true: every key types) or results pane (false: plain keys act).
+pub fn map_with_focus(
+    key: KeyEvent,
+    screen: Screen,
+    help_open: bool,
+    picker_open: bool,
+    picker_custom: bool,
+    settings_open: bool,
+    search_focus: bool,
 ) -> Action {
     if is_hard_quit(&key) {
         return Action::Quit;
@@ -165,17 +192,36 @@ pub fn map(
             _ => Action::Dismiss,
         },
 
-        Screen::Search => match key.code {
+        // The search screen is a two-pane focus model (the fzf convention):
+        // the input pane types EVERY key — D, W, S, P and `?` are plain
+        // characters, so no modifier ever hijacks typing "Dune". Enter runs
+        // the search and moves focus to the results pane, where plain keys
+        // act on the selected row: d download, w watch-now, s settings,
+        // ? help. Esc returns focus to the input, and typing any printable
+        // from the results jumps back to the input and types it (instant
+        // refinement, fzf-style).
+        Screen::Search if search_focus => match key.code {
             KeyCode::Enter => Action::Submit,
             KeyCode::Up => Action::MoveUp,
             KeyCode::Down => Action::MoveDown,
             KeyCode::Tab => Action::SwitchScreen,
             KeyCode::Esc => Action::Escape,
             KeyCode::Backspace => Action::Backspace,
-            // `?` opens help only when the query is empty, so it stays typable
-            // in a search term. The same reasoning applies to `d` and `q`: on
-            // the search screen the text field wins, because a user typing
-            // "dune" must not trigger a download on the `d`.
+            KeyCode::Char(c) => Action::Type(c),
+            _ => Action::None,
+        },
+
+        Screen::Search => match key.code {
+            KeyCode::Char('d') => Action::Download,
+            KeyCode::Char('w') => Action::Watch,
+            KeyCode::Char('s') => Action::OpenSettings,
+            KeyCode::Char('?') => Action::ToggleHelp,
+            KeyCode::Char('q') => Action::Quit,
+            KeyCode::Enter => Action::Submit,
+            KeyCode::Up => Action::MoveUp,
+            KeyCode::Down => Action::MoveDown,
+            KeyCode::Tab => Action::SwitchScreen,
+            KeyCode::Esc => Action::FocusSearchInput,
             KeyCode::Char(c) => Action::Type(c),
             _ => Action::None,
         },
@@ -212,35 +258,6 @@ pub fn map(
 
 /// Actions available from the search screen when the query box is empty.
 ///
-/// The search screen gives every printable key to the text field, which would
-/// otherwise make `d`, `?` and `q` unreachable there. With an empty query there
-/// is nothing to type into, so the bindings take over.
-pub fn map_empty_query(key: KeyEvent) -> Option<Action> {
-    match key.code {
-        KeyCode::Char('q') => Some(Action::Quit),
-        KeyCode::Char('?') => Some(Action::ToggleHelp),
-        KeyCode::Char('d') => Some(Action::Download),
-        // Watch-now (2.3): with an empty query `w` streams the selected
-        // result without downloading it to the library. `shift+P` opens the
-        // player picker, mirroring the Downloads screen's binding.
-        KeyCode::Char('w') => Some(Action::Watch),
-        KeyCode::Char('P') => Some(Action::OpenPlayerPicker),
-        // `shift+S` opens the settings overlay (2.5) from an empty query,
-        // mirroring the Downloads screen's binding.
-        KeyCode::Char('S') => Some(Action::OpenSettings),
-        _ => None,
-    }
-}
-
-/// Downloading from the search screen while a query is present.
-///
-/// `shift+D` is the escape hatch: it cannot be confused with typing, because a
-/// capital D in a search term is rare and the user can still type one with the
-/// query box focused via any other capital.
-pub fn is_download_key(key: KeyEvent) -> bool {
-    matches!(key.code, KeyCode::Char('D'))
-}
-
 /// Maps a left click at terminal coordinates `(col, row)` inside `view_area`
 /// to an action, or `Action::None` when the click lands on nothing clickable.
 ///
@@ -364,8 +381,10 @@ mod tests {
 
     #[test]
     fn typing_on_the_search_screen_never_triggers_an_action() {
-        // The bug this prevents: typing "dune" firing a download on the `d`.
-        for c in "dunepqrsx?".chars() {
+        // Input pane: EVERY printable key types — including `?`, capitals,
+        // and letters that act elsewhere. No modifier is ever needed to type
+        // "Dune" or "warcraft".
+        for c in "dunepqrsx?DWS".chars() {
             assert_eq!(
                 map(
                     key(KeyCode::Char(c)),
@@ -376,47 +395,49 @@ mod tests {
                     false
                 ),
                 Action::Type(c),
-                "`{c}` must reach the text field"
+                "`{c}` must reach the text field in the input pane"
             );
         }
     }
 
     #[test]
-    fn an_empty_query_frees_the_letter_bindings() {
-        // With nothing to type into, the keys become useful again.
-        assert_eq!(map_empty_query(key(KeyCode::Char('q'))), Some(Action::Quit));
+    fn the_results_pane_binds_plain_letters() {
+        // After Enter, the results pane maps plain keys to actions on the
+        // selected row — no shift-anything needed.
+        let r = |code| map_with_focus(key(code), Screen::Search, false, false, false, false, false);
+        assert_eq!(r(KeyCode::Char('d')), Action::Download);
+        assert_eq!(r(KeyCode::Char('w')), Action::Watch);
+        assert_eq!(r(KeyCode::Char('s')), Action::OpenSettings);
+        assert_eq!(r(KeyCode::Char('?')), Action::ToggleHelp);
+        assert_eq!(r(KeyCode::Char('q')), Action::Quit);
         assert_eq!(
-            map_empty_query(key(KeyCode::Char('?'))),
-            Some(Action::ToggleHelp)
+            map_with_focus(
+                key(KeyCode::Esc),
+                Screen::Search,
+                false,
+                false,
+                false,
+                false,
+                false
+            ),
+            Action::FocusSearchInput
         );
+        // Any other printable returns to the input and types there.
+        assert_eq!(r(KeyCode::Char('x')), Action::Type('x'));
         assert_eq!(
-            map_empty_query(key(KeyCode::Char('d'))),
-            Some(Action::Download)
+            r(KeyCode::Char('D')),
+            Action::Type('D'),
+            "capitals still type"
         );
-        assert_eq!(map_empty_query(key(KeyCode::Char('z'))), None);
+        // Enter re-runs, arrows navigate, Tab switches — same as input pane.
+        assert_eq!(r(KeyCode::Enter), Action::Submit);
+        assert_eq!(r(KeyCode::Up), Action::MoveUp);
+        assert_eq!(r(KeyCode::Down), Action::MoveDown);
+        assert_eq!(r(KeyCode::Tab), Action::SwitchScreen);
     }
 
     #[test]
-    fn empty_query_w_watches_and_shift_p_opens_the_picker() {
-        // Watch-now (2.3): `w` with an empty query streams the selected
-        // result; `shift+P` opens the player picker like on Downloads.
-        assert_eq!(
-            map_empty_query(key(KeyCode::Char('w'))),
-            Some(Action::Watch)
-        );
-        assert_eq!(
-            map_empty_query(key(KeyCode::Char('P'))),
-            Some(Action::OpenPlayerPicker)
-        );
-        assert_eq!(
-            map_empty_query(key(KeyCode::Char('W'))),
-            None,
-            "shift+W is not bound — only lowercase w"
-        );
-    }
-
-    #[test]
-    fn shift_s_opens_settings_from_downloads_and_empty_query() {
+    fn shift_s_opens_settings_from_downloads_only() {
         assert_eq!(
             map(
                 key(KeyCode::Char('S')),
@@ -427,10 +448,6 @@ mod tests {
                 false
             ),
             Action::OpenSettings
-        );
-        assert_eq!(
-            map_empty_query(key(KeyCode::Char('S'))),
-            Some(Action::OpenSettings)
         );
         // Lowercase s stays the seeding-tab toggle.
         assert_eq!(
@@ -444,8 +461,7 @@ mod tests {
             ),
             Action::ToggleSeeding
         );
-        // shift+S with a query present still types into the field — the
-        // empty-query rule mirrors `d`/`w`/`P`.
+        // On Search, shift+S is just a capital S — the input pane types it.
         assert_eq!(
             map(
                 key(KeyCode::Char('S')),
@@ -712,9 +728,32 @@ mod tests {
     }
 
     #[test]
-    fn shift_d_downloads_even_mid_query() {
-        assert!(is_download_key(key(KeyCode::Char('D'))));
-        assert!(!is_download_key(key(KeyCode::Char('d'))));
+    fn typing_a_capital_d_never_downloads() {
+        // The regression this guards: "Dune" starts with a capital D. In the
+        // input pane it must type; only the results pane's plain `d` acts.
+        assert_eq!(
+            map(
+                key(KeyCode::Char('D')),
+                Screen::Search,
+                false,
+                false,
+                false,
+                false
+            ),
+            Action::Type('D')
+        );
+        assert_eq!(
+            map_with_focus(
+                key(KeyCode::Char('d')),
+                Screen::Search,
+                false,
+                false,
+                false,
+                false,
+                false
+            ),
+            Action::Download
+        );
     }
 
     #[test]

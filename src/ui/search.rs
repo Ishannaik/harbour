@@ -40,7 +40,10 @@ const CURSOR: &str = "▌";
 /// Every printable key types on this screen (so "dune" can never fire a
 /// download on the `d`); downloading is shift+D mid-query, or plain `d`
 /// with an empty query.
-const HINT: &str = "enter search · shift+d download · tab downloads · ? help · q quit";
+const HINT: &str = "type to search · enter run/browse · tab downloads · ctrl+c quit";
+/// The results pane owns the keyboard: plain keys act on the selected row.
+const RESULTS_HINT: &str =
+    "d download · w watch now · s settings · ? help · type to refine · esc input";
 /// Placeholder while the query is empty and idle.
 const PLACEHOLDER: &str = "search torrents…";
 /// Bar label while searching on an empty query — the curated-browse mode
@@ -260,9 +263,10 @@ fn draw_main(frame: &mut Frame, area: Rect, state: &SearchState, theme: &Theme) 
     draw_search_bar(frame, rows[0], state, theme, elapsed);
     draw_header(frame, rows[1], state, theme);
     draw_results(frame, rows[2], state, theme);
+    let hint = if state.focus { HINT } else { RESULTS_HINT };
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
-            HINT,
+            hint,
             Style::default().fg(theme.colors.muted().to_ratatui()),
         ))),
         rows[3],

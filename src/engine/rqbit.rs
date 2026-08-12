@@ -18,6 +18,7 @@
 //!   conversion happens here so no second converter exists in the UI.
 
 use std::collections::HashMap;
+use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
@@ -129,7 +130,14 @@ impl RqbitEngine {
     /// restart resume work without a rehash (`FR-35`/`FR-50`). We deliberately
     /// keep it in *our* state directory rather than librqbit's default, so
     /// `HARBOUR_STATE_DIR` relocates everything a user has, not just our half.
-    pub async fn new(download_dir: &Path, state_dir: &Path) -> Result<Self, EngineError> {
+    ///
+    /// `opts` carries the boot-time knobs from settings (listen port, UPnP,
+    /// DHT, proxy) — librqbit reads them once, at session construction.
+    pub async fn new(
+        download_dir: &Path,
+        state_dir: &Path,
+        opts: &EngineLaunchOptions,
+    ) -> Result<Self, EngineError> {
         let persistence = state_dir.join("engine");
         // A missing directory is not fatal on its own — librqbit will report it
         // — but creating it here gives a clearer error than a failed session.
@@ -140,7 +148,7 @@ impl RqbitEngine {
             )));
         }
 
-        let opts = SessionOptions {
+        let mut session_opts = SessionOptions {
             // Restores piece state from disk instead of rehashing every file on
             // every launch — the difference between a two-second start and a
             // ten-minute one for a large library.
@@ -148,10 +156,16 @@ impl RqbitEngine {
             persistence: Some(SessionPersistenceConfig::Json {
                 folder: Some(persistence),
             }),
+            disable_dht: !opts.enable_dht,
+            enable_upnp_port_forwarding: opts.enable_upnp,
+            socks_proxy_url: opts.socks_proxy_url.clone(),
             ..Default::default()
         };
+        if let Some(port) = opts.listen_port {
+            session_opts.listen_port_range = Some(port..port);
+        }
 
-        let session = Session::new_with_opts(download_dir.to_path_buf(), opts)
+        let session = Session::new_with_opts(download_dir.to_path_buf(), session_opts)
             .await
             .map_err(|e| EngineError::Unavailable(e.to_string()))?;
 
@@ -368,6 +382,51 @@ impl Engine for RqbitEngine {
 
     fn stream_url<'a>(&'a self, id: &'a str) -> EngineFuture<'a, Option<String>> {
         Box::pin(async move { self.stream_url_for(id).await })
+    }
+
+    fn set_speed_limits(&self, download_mib: Option<u64>, upload_mib: Option<u64>) {
+        // librqbit's session limiter swaps the rate-limiter atomically —
+        // active transfers pick it up immediately, no restart.
+        self.session
+            .ratelimits
+            .set_download_bps(mib_to_bps(download_mib));
+        self.session
+            .ratelimits
+            .set_upload_bps(mib_to_bps(upload_mib));
+    }
+}
+
+/// MiB/s to librqbit's bytes-per-second limiter input. librqbit uses
+/// `NonZeroU32`, so values above ~4 GiB/s clamp to the ceiling; a `None`
+/// means unlimited.
+fn mib_to_bps(mib: Option<u64>) -> Option<NonZeroU32> {
+    mib.and_then(|m| {
+        let bps = m.saturating_mul(1024 * 1024);
+        NonZeroU32::new(bps.min(u32::MAX as u64) as u32)
+    })
+}
+
+/// Boot-time engine knobs from settings (qBittorrent's connection page).
+/// librqbit reads them once at session construction — changing them in the
+/// TUI persists to config.toml and applies on the next launch, which the
+/// settings rows say explicitly.
+#[derive(Debug, Clone, Default)]
+pub struct EngineLaunchOptions {
+    pub listen_port: Option<u16>,
+    pub enable_upnp: bool,
+    pub enable_dht: bool,
+    pub socks_proxy_url: Option<String>,
+}
+
+impl EngineLaunchOptions {
+    /// From the user config; `enable_upnp`/`enable_dht` default true.
+    pub fn from_config(cfg: &crate::persist::Config) -> Self {
+        Self {
+            listen_port: cfg.listen_port,
+            enable_upnp: cfg.enable_upnp,
+            enable_dht: cfg.enable_dht,
+            socks_proxy_url: cfg.socks_proxy_url.clone(),
+        }
     }
 }
 
