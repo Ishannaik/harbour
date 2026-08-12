@@ -7,11 +7,9 @@
 //! durations are explicit (`EasedValue::update`, `eased`), never read from a
 //! hidden clock.
 //!
-//! `dead_code` is allowed module-wide: `Ticker::elapsed`, `EasedValue`, and
-//! `eased` are staged API — consumed by the download-progress bars and status
-//! line in slice 2+. Remove the allow as views land.
-
-#![allow(dead_code)]
+//! `EasedValue`/`eased` and `Ticker::elapsed` are staged API — consumed by
+//! the queue layer's progress easing when the engine lands (phase 4). Only
+//! those items carry the allow; everything else is live.
 
 use std::io;
 use std::time::{Duration, Instant};
@@ -70,6 +68,7 @@ impl Ticker {
     /// the true inter-frame period (≈ 1/fps), which is the `dt` eased values
     /// should be advanced by. Call it at the top of the frame loop, before
     /// `next()`.
+    #[allow(dead_code)] // staged: consumed by the queue's eased progress (phase 4)
     pub fn elapsed(&self) -> Duration {
         // Saturating on both sides: `last` predates the first boundary (the
         // `checked_sub` fallback keeps `last` when we are still inside the
@@ -87,6 +86,7 @@ impl Ticker {
 /// `1 - exp(-dt / tau)` per [`update`](EasedValue::update), so the step size
 /// shrinks as the value approaches the target — a display bar eases in and
 /// settles instead of snapping. The app uses a `tau` of 200ms.
+#[allow(dead_code)] // staged: the queue layer eases progress once the engine lands
 pub struct EasedValue {
     /// The smoothed (displayed) value.
     current: f64,
@@ -96,6 +96,7 @@ pub struct EasedValue {
     tau: Duration,
 }
 
+#[allow(dead_code)] // staged with the struct (phase 4)
 impl EasedValue {
     /// Starts at `initial` with the given smoothing time constant.
     ///
@@ -137,6 +138,7 @@ impl EasedValue {
 /// `tau` is the filter time constant (200ms in the app). The blend factor
 /// `1 - exp(-dt / tau)` lies in `[0, 1)`, so the result never overshoots the
 /// target and converges as `dt` accumulates.
+#[allow(dead_code)] // staged with EasedValue (phase 4)
 pub fn eased(current: f64, target: f64, dt: Duration, tau: Duration) -> f64 {
     // A zero tau would be a division by zero; treat it as "instant snap"
     // rather than producing NaN.

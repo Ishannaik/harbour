@@ -35,7 +35,9 @@ Seeding tab) → now-playing (phase 6, libmpv).
 
 **Keybinds** (normative): `Enter` search · `d` download to default folder ·
 `Shift+d` download to chosen folder · `o` change output folder · `p`
-pause/stop seeding · `?` help · `q` quit · `w` watch (phase 6).
+pause/stop seeding · `?` help · `q` quit · `w` watch (phase 6). Screen
+navigation: `Tab` cycles search ⇄ downloads, `←`/`→` switch the downloads
+tabs (Downloads/Seeding), `esc` closes the help overlay.
 
 Terminal lifecycle: alt-screen, hardware cursor hidden (the TUI draws its
 own), synchronous exit (never wait on engine sockets — OS reclaims them),
