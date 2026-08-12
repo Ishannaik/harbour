@@ -14,4 +14,11 @@ allow = [
     "Unlicense",
     "CC0-1.0",
     "Unicode-3.0",
+    # MPL-2.0: weak/file-level copyleft (not project-infecting). Required by
+    # the pre-existing scraper → cssparser chain (Servo lineage, the CSS
+    # selector engine); refusing it would make the deny gate permanently red
+    # on a core dependency. Standard in Rust ecosystems (Firefox/Servo).
+    "MPL-2.0",
+    # CDLA-Permissive-2.0: OSI-approved permissive license (data-focused).
+    "CDLA-Permissive-2.0",
 ]
