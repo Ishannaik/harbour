@@ -31,8 +31,8 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui::{Frame, Terminal};
 
-use std::collections::HashMap;
-use std::path::PathBuf;
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use tokio::sync::mpsc;
@@ -41,8 +41,8 @@ use crate::anim::{self, Spinner, Ticker};
 use crate::core::cancel::CancelToken;
 use crate::core::paths;
 use crate::core::types::{
-    Engine as CoreEngine, EngineEvent, ItemView, QueueStatus, SearchCtx, SourceId, SourceStatus,
-    TorrentResult,
+    AddRequest, Engine as CoreEngine, EngineEvent, ItemView, QueueStatus, SearchCtx, SourceId,
+    SourceStatus, TorrentResult,
 };
 use crate::engine::fake::FakeEngine;
 use crate::engine::rqbit::RqbitEngine;
@@ -52,6 +52,8 @@ use crate::queue::{AddInput, AddOutcome, Queue};
 use crate::search::SearchEngine;
 use crate::sources::cache::SearchCache;
 use crate::theme::{Color, Theme};
+use crate::ui::player::{PickerMode, PlayerPicker};
+use crate::ui::settings::{RowKind, SettingsState, TextField};
 use crate::ui::{AppState, Screen};
 
 /// Base render cadence (docs/design.md §Animation): the loop redraws at most
@@ -494,6 +496,18 @@ pub enum InitialAction {
     TorrentFile(PathBuf),
 }
 
+/// A watch deferred until the user picks a player (2.1): `start_watch` (or
+/// `start_watch_ephemeral`) found no player, so the picker opened with this
+/// waiting — the picker IS the guidance, not an error banner.
+struct PendingWatch {
+    id: String,
+    name: String,
+    dir: PathBuf,
+    /// True for a watch-now (2.3) session: launched against the engine's
+    /// live stream, never a queue item, and cleaned up when it ends.
+    ephemeral: bool,
+}
+
 /// Everything the loop needs, assembled once at boot.
 struct App {
     state: AppState,
@@ -501,14 +515,30 @@ struct App {
     search: SearchEngine,
     store: Store,
     config: Config,
+    /// Sources the user disabled via the sidebar (2.2). The runtime set is
+    /// the source of truth for search; `Config.disabled_sources` persists it.
+    disabled_sources: HashSet<SourceId>,
     /// Results per source for the current query, merged for display.
     partial: HashMap<SourceId, Vec<TorrentResult>>,
     search_cancel: Option<CancelToken>,
     events_tx: mpsc::UnboundedSender<EngineEvent>,
     history: Vec<String>,
     help_open: bool,
+    /// The settings overlay (2.5): everything in Config editable from the
+    /// TUI. `settings_open` mirrors `help_open` — the overlay floats above
+    /// whatever screen is underneath.
+    settings_open: bool,
+    /// Settings-overlay state: row selection, inline edit buffer, theme list.
+    settings: SettingsState,
+    /// The shared theme handle, so a settings theme change swaps in at the
+    /// next frame (the same live-reload path as the file watcher).
+    theme: Arc<Mutex<Theme>>,
     /// The active watch session (FR-57), if any — stream server + player.
     watch: Option<crate::watch::WatchSession>,
+    /// The player-picker overlay (2.1): choose/override the watch player.
+    picker: PlayerPicker,
+    /// A watch waiting on a player choice, if any.
+    picker_pending: Option<PendingWatch>,
     quitting: bool,
 }
 
@@ -556,9 +586,16 @@ impl App {
         }
     }
 
-    /// Merges everything received so far into the displayed list.
+    /// Merges everything received so far into the displayed list. Batches
+    /// from a disabled source are dropped before the merge, so a stale answer
+    /// can never re-enter the list (2.2).
     fn remerge(&mut self) {
-        let all: Vec<TorrentResult> = self.partial.values().flatten().cloned().collect();
+        let all: Vec<TorrentResult> = self
+            .partial
+            .iter()
+            .filter(|(source, _)| !self.disabled_sources.contains(source))
+            .flat_map(|(_, results)| results.iter().cloned())
+            .collect();
         self.state.search.results = crate::search::merge(all);
         let len = self.state.search.results.len();
         if self.state.search.selected >= len {
@@ -607,6 +644,9 @@ impl App {
             total_deadline: paths::source_timeout(),
             ..SearchCtx::default()
         };
+        // The engine skips disabled sources before they are spawned, so a
+        // disabled source is never queried and never merges results (2.2).
+        self.search.set_disabled(self.disabled_sources.clone());
         self.search_cancel = Some(ctx.cancel.clone());
         self.search.start(query, ctx, self.events_tx.clone());
     }
@@ -635,14 +675,80 @@ fn spawn_input_thread() -> mpsc::UnboundedReceiver<Event> {
     rx
 }
 
-/// `w` on the selected item: find its media file, find a player (mpv →
-/// VLC), serve the file over loopback with Range support, and launch the
-/// player (FR-57..FR-61). Every failure path is a loud error banner — never
-/// a silent no-op. With fake data there are no files, so this is exactly the
-/// honest error until real downloads land; the engine track will swap the
-/// file path for librqbit's live stream URL.
-/// `w` on the selected item: stream it to an external player (mpv → VLC,
-/// or `config.player`). Two paths, engine-first (FR-57):
+/// The player to use for watch mode: the configured one when set, else the
+/// first installed player. None means "no player at all" — the caller opens
+/// the picker instead of guessing.
+fn resolve_player(app: &App) -> Option<String> {
+    match &app.config.player {
+        Some(p) if !p.trim().is_empty() => Some(p.clone()),
+        _ => crate::watch::find_player(),
+    }
+}
+
+/// Opens the player-picker overlay, listing every installed player and
+/// highlighting the current `config.player` choice.
+fn open_player_picker(app: &mut App) {
+    app.picker.options = crate::watch::find_players();
+    app.picker.mode = PickerMode::List;
+    app.picker.selected = app
+        .picker
+        .options
+        .iter()
+        .position(|(_, command)| app.config.player.as_deref() == Some(command.as_str()))
+        .unwrap_or(0);
+    app.picker.custom.clear();
+    app.picker.message = None;
+    app.picker.open = true;
+}
+
+/// Applies a picker choice: persists it to `config.player` (the config stays
+/// the fallback/override), then launches any watch that was waiting on the
+/// choice. A custom path must be absolute and exist — a failure is a loud
+/// picker message, never a silent fallback.
+async fn choose_player(app: &mut App) {
+    let player = match app.picker.mode {
+        PickerMode::List => {
+            let Some((_, command)) = app.picker.options.get(app.picker.selected) else {
+                app.picker.message =
+                    Some("no players found — press c to enter a player path".into());
+                return;
+            };
+            command.clone()
+        }
+        PickerMode::Custom => {
+            let path = app.picker.custom.trim().to_string();
+            if path.is_empty() {
+                app.picker.message =
+                    Some("enter an absolute path to a player, then press enter".into());
+                return;
+            }
+            let candidate = Path::new(&path);
+            if !candidate.is_absolute() || !candidate.exists() {
+                app.picker.message = Some(format!("'{path}' is not an existing absolute path"));
+                return;
+            }
+            path
+        }
+    };
+
+    app.config.player = Some(player.clone());
+    if let Err(err) = app.store.save_config(&app.config) {
+        app.warn(format!("could not save player setting: {err}"));
+    }
+    app.picker.open = false;
+
+    let Some(pending) = app.picker_pending.take() else {
+        return;
+    };
+    if pending.ephemeral {
+        launch_ephemeral_session(app, pending.id, pending.name, &player).await;
+    } else {
+        launch_watch(app, pending.id, pending.name, pending.dir, player).await;
+    }
+}
+
+/// `w` on the selected downloads item: stream it to an external player (mpv
+/// → VLC, or `config.player`). Two paths, engine-first (FR-57):
 ///
 /// 1. **Swarm streaming** — the engine serves the torrent's largest video
 ///    file over its loopback HTTP API while pieces arrive (Stremio-style:
@@ -651,7 +757,9 @@ fn spawn_input_thread() -> mpsc::UnboundedReceiver<Event> {
 ///    live session (or a fake/queued item) fall back to the local Range
 ///    server.
 ///
-/// Every failure is a loud error banner — never a silent no-op.
+/// With no player at all, the picker opens with this watch pending — the
+/// picker IS the guidance, not an error banner. Every launch failure is a
+/// loud error banner — never a silent no-op.
 async fn start_watch(app: &mut App) {
     // The selection indexes the visible tab, so resolve through it; clone
     // the fields (a ref into `items` would fight the mutations below).
@@ -665,34 +773,28 @@ async fn start_watch(app: &mut App) {
     let id = item.id.clone();
     let name = item.name.clone();
     let dir = item.dir.clone();
-    let player = match &app.config.player {
-        Some(p) if !p.trim().is_empty() => p.clone(),
-        _ => match crate::watch::find_player() {
-            Some(p) => p,
-            None => {
-                app.warn(
-                    "watch: no player found — set `player` in %USERPROFILE%\\.harbour\\config.toml \
-                     (e.g. player = \"C:\\\\Program Files\\\\VideoLAN\\\\VLC\\\\vlc.exe\"), \
-                     or install mpv/VLC so it's on PATH (winget install mpv / VideoLAN.VLC)",
-                );
-                return;
-            }
-        },
+    let Some(player) = resolve_player(app) else {
+        app.picker_pending = Some(PendingWatch {
+            id,
+            name,
+            dir,
+            ephemeral: false,
+        });
+        open_player_picker(app);
+        return;
     };
+    launch_watch(app, id, name, dir, player).await;
+}
 
+/// Launches a watch session for `id`/`name`/`dir` with `player`: swarm
+/// streaming first, then the file-serving fallback. Shared by `start_watch`
+/// and the player picker's pending launch.
+async fn launch_watch(app: &mut App, id: String, name: String, dir: PathBuf, player: String) {
     // Path 1: stream from the swarm while it downloads. librqbit blocks on
     // missing pieces and prioritizes the requested ones — seek works.
     if let Some(url) = app.queue.engine().stream_url(&id).await {
         match crate::watch::WatchSession::launch_remote(&player, &url) {
-            Ok(session) => {
-                app.state.now_playing = Some(crate::ui::NowPlaying {
-                    id,
-                    name,
-                    stream_url: session.url.clone(),
-                });
-                app.watch = Some(session);
-                app.state.screen = Screen::NowPlaying;
-            }
+            Ok(session) => enter_watch(app, id, name, session, false),
             Err(err) => app.warn(format!("watch: cannot start player: {err}")),
         }
         return;
@@ -706,27 +808,123 @@ async fn start_watch(app: &mut App) {
         return;
     };
     match crate::watch::WatchSession::start(&file, &player) {
-        Ok(session) => {
-            app.state.now_playing = Some(crate::ui::NowPlaying {
-                id,
-                name,
-                stream_url: session.url.clone(),
-            });
-            app.watch = Some(session);
-            app.state.screen = Screen::NowPlaying;
-        }
+        Ok(session) => enter_watch(app, id, name, session, false),
+        Err(err) => app.warn(format!("watch: cannot start player: {err}")),
+    }
+}
+
+/// Enters watch mode with an already-launched session: records it on the app
+/// state and flips the screen. `ephemeral` marks a watch-now (2.3) session.
+fn enter_watch(
+    app: &mut App,
+    id: String,
+    name: String,
+    session: crate::watch::WatchSession,
+    ephemeral: bool,
+) {
+    app.state.now_playing = Some(crate::ui::NowPlaying {
+        id,
+        name,
+        stream_url: session.url.clone(),
+        ephemeral,
+    });
+    app.watch = Some(session);
+    app.state.screen = Screen::NowPlaying;
+}
+
+/// `w` on the search screen with an empty query (2.3): watch-now. The magnet
+/// goes straight to the engine — no queue item, no ledger, no download
+/// slot — so the files live under the cache dir and die with the session.
+/// That is the stream-and-delete contract: a real download of the same
+/// infohash is never touched (its `engine.add` would be a no-op re-add).
+async fn start_watch_ephemeral(app: &mut App) {
+    let Some(result) = app.selected_result().cloned() else {
+        app.warn("nothing selected to watch");
+        return;
+    };
+    let Some(magnet) = result.magnet.clone() else {
+        app.warn(format!(
+            "{}: this source hides its magnet behind a detail page — watch-now needs \
+             the magnet link; press d to download it instead",
+            result.name
+        ));
+        return;
+    };
+    // Re-key on the magnet's own infohash, exactly like `download_selected`.
+    let id = crate::core::magnet::info_hash_from_magnet(&magnet)
+        .unwrap_or_else(|| result.info_hash.clone());
+    let dir = app.store.root().join("cache").join(&id);
+    if let Err(err) = app
+        .queue
+        .engine()
+        .add(AddRequest {
+            id: id.clone(),
+            magnet,
+            dir: dir.clone(),
+            trackers: app.config.trackers.clone(),
+        })
+        .await
+    {
+        app.warn(format!("watch: cannot start streaming: {err}"));
+        return;
+    }
+    let Some(player) = resolve_player(app) else {
+        app.picker_pending = Some(PendingWatch {
+            id,
+            name: result.name.clone(),
+            dir,
+            ephemeral: true,
+        });
+        open_player_picker(app);
+        return;
+    };
+    launch_ephemeral_session(app, id, result.name.clone(), &player).await;
+}
+
+/// Launches the remote stream session for a watch-now (2.3): the torrent is
+/// already added to the engine, so only the live stream URL is needed.
+async fn launch_ephemeral_session(app: &mut App, id: String, name: String, player: &str) {
+    let Some(url) = app.queue.engine().stream_url(&id).await else {
+        app.warn(format!("watch: the swarm cannot stream '{name}' yet"));
+        return;
+    };
+    match crate::watch::WatchSession::launch_remote(player, &url) {
+        Ok(session) => enter_watch(app, id, name, session, true),
         Err(err) => app.warn(format!("watch: cannot start player: {err}")),
     }
 }
 
 /// Ends the session and returns to the downloads screen (FR-59: player exit
-/// or `q`/esc). Kills the player and stops the stream server.
-fn end_watch(app: &mut App) {
+/// or `q`/esc). Kills the player and stops the stream server. A watch-now
+/// session (2.3) also drops its torrent and cache dir — the stream-and-delete
+/// contract — but never when the same infohash is a real queue item, whose
+/// files the ephemeral re-add must not touch.
+async fn end_watch(app: &mut App) {
     if let Some(mut session) = app.watch.take() {
         session.stop();
     }
+    let ephemeral = app
+        .state
+        .now_playing
+        .as_ref()
+        .is_some_and(|np| np.ephemeral);
+    let id = app.state.now_playing.as_ref().map(|np| np.id.clone());
     app.state.now_playing = None;
     app.state.screen = Screen::Downloads;
+
+    let Some(id) = id else {
+        return;
+    };
+    if !ephemeral {
+        return;
+    }
+    // The dedupe guard: a queue item with this infohash owns its files.
+    if app.queue.get(&id).is_some() {
+        return;
+    }
+    if let Err(err) = app.queue.engine().remove(&id, true).await {
+        app.warn(format!("watch: could not clean up the cache: {err}"));
+    }
 }
 
 /// Runs the TUI.
@@ -792,13 +990,19 @@ pub async fn run(
         queue,
         search,
         store,
+        disabled_sources: config.disabled_sources.iter().copied().collect(),
         config,
         partial: HashMap::new(),
         search_cancel: None,
         events_tx,
         history,
         help_open: false,
+        settings_open: false,
+        settings: SettingsState::default(),
+        theme: theme.clone(),
         watch: None,
+        picker: PlayerPicker::default(),
+        picker_pending: None,
         quitting: false,
     };
 
@@ -896,7 +1100,7 @@ pub async fn run(
                 .as_mut()
                 .is_some_and(|session| session.player_exited())
         {
-            end_watch(&mut app);
+            end_watch(&mut app).await;
         }
 
         let active = lock_theme(&theme);
@@ -948,12 +1152,37 @@ fn draw(
                 crate::ui::now_playing::draw(frame, rows[0], np, theme);
             }
         }
-        _ => crate::ui::search::draw(frame, rows[0], &app.state.search, theme),
+        _ => crate::ui::search::draw(
+            frame,
+            rows[0],
+            &app.state.search,
+            &app.disabled_sources,
+            theme,
+        ),
     }
     crate::ui::status::draw(frame, rows[1], app.state.screen, &app.state, theme, glyph);
 
     if app.help_open {
         crate::ui::help::draw(frame, area, theme);
+    }
+    if app.picker.open {
+        crate::ui::player::draw(
+            frame,
+            area,
+            theme,
+            &app.picker,
+            app.config.player.as_deref(),
+        );
+    }
+    if app.settings_open {
+        crate::ui::settings::draw(
+            frame,
+            area,
+            &app.config,
+            &app.disabled_sources,
+            &app.settings,
+            theme,
+        );
     }
 }
 
@@ -992,6 +1221,11 @@ async fn handle_event(app: &mut App, event: Event) {
     // buttons carry no selection intent; ignoring them keeps a scroll wheel
     // from firing row selections while the user browses.
     if let Event::Mouse(mouse) = event {
+        // The settings overlay is modal: while it is up, a click must not
+        // reach the screen underneath (the overlay is painted over it).
+        if app.settings_open {
+            return;
+        }
         if mouse.kind == MouseEventKind::Down(MouseButton::Left) {
             // Build the action first: `mouse_to_action` borrows `app.state`
             // only to read the screen, and the awaited apply takes `app`
@@ -1019,12 +1253,21 @@ async fn handle_event(app: &mut App, event: Event) {
         return;
     }
 
-    let mut action = crate::input::map(key, app.state.screen, app.help_open);
+    let mut action = crate::input::map(
+        key,
+        app.state.screen,
+        app.help_open,
+        app.picker.open,
+        app.picker.mode == PickerMode::Custom,
+        app.settings_open,
+    );
 
     // On the search screen every printable key belongs to the text field —
     // except when there is nothing to type into, or when shift+D asks for a
-    // download explicitly.
-    if app.state.screen == Screen::Search && !app.help_open {
+    // download explicitly. The help, picker, and settings overlays win while
+    // they are up, exactly like the keymap's own overlay branches.
+    let overlays_up = app.help_open || app.picker.open || app.settings_open;
+    if app.state.screen == Screen::Search && !overlays_up {
         if crate::input::is_download_key(key) {
             action = Action::Download;
         } else if app.state.search.query.is_empty()
@@ -1090,7 +1333,21 @@ async fn apply_action(app: &mut App, action: Action) {
             app.state.search.query.pop();
         }
         Action::Escape => {
-            if app.help_open {
+            if app.settings_open {
+                // First Esc exits an inline edit, the second closes the
+                // overlay — the hint's "esc back" is two steps, never a
+                // lost edit.
+                if app.settings.editing {
+                    app.settings.editing = false;
+                    app.settings.edit_buffer.clear();
+                } else {
+                    app.settings_open = false;
+                }
+            } else if app.picker.open {
+                // Closing the picker also drops a watch waiting on it.
+                app.picker.open = false;
+                app.picker_pending = None;
+            } else if app.help_open {
                 app.help_open = false;
             } else if !app.state.search.query.is_empty() {
                 app.state.search.query.clear();
@@ -1106,9 +1363,241 @@ async fn apply_action(app: &mut App, action: Action) {
         Action::TogglePause => toggle_pause(app).await,
         Action::Retry => retry_selected(app).await,
         Action::Remove => remove_selected(app).await,
-        Action::Watch => start_watch(app).await,
-        Action::EndWatch => end_watch(app),
+        Action::Watch => match app.state.screen {
+            // Watch-now (2.3): stream the selected result without
+            // downloading it to the library.
+            Screen::Search => start_watch_ephemeral(app).await,
+            _ => start_watch(app).await,
+        },
+        Action::EndWatch => end_watch(app).await,
+        Action::OpenPlayerPicker => open_player_picker(app),
+        Action::PlayerUp => {
+            if app.picker.open && !app.picker.options.is_empty() {
+                let len = app.picker.options.len();
+                app.picker.selected = (app.picker.selected + len - 1) % len;
+            }
+        }
+        Action::PlayerDown => {
+            if app.picker.open && !app.picker.options.is_empty() {
+                let len = app.picker.options.len();
+                app.picker.selected = (app.picker.selected + 1) % len;
+            }
+        }
+        Action::PlayerCustom => {
+            if app.picker.open {
+                app.picker.mode = PickerMode::Custom;
+            }
+        }
+        Action::PlayerType(c) => {
+            if app.picker.open && app.picker.mode == PickerMode::Custom {
+                app.picker.custom.push(c);
+            }
+        }
+        Action::PlayerBackspace => {
+            if app.picker.open && app.picker.mode == PickerMode::Custom {
+                app.picker.custom.pop();
+            }
+        }
+        Action::PlayerChoose => choose_player(app).await,
+        Action::ToggleSource(id) => {
+            // Flip the runtime bit; `insert` reports whether the id was new.
+            if !app.disabled_sources.insert(id) {
+                app.disabled_sources.remove(&id);
+            }
+            // Persist the same choice — the config is the fallback on boot.
+            app.config.disabled_sources = app.disabled_sources.iter().copied().collect();
+            if let Err(err) = app.store.save_config(&app.config) {
+                app.warn(format!("could not save source toggle: {err}"));
+            }
+            // Drop the disabled source's rows from the visible list right
+            // away, then re-run the current query (or the browse) so enabled
+            // sources answer fresh and the just-disabled one is not queried.
+            app.partial
+                .retain(|source, _| !app.disabled_sources.contains(source));
+            app.remerge();
+            let query = app.state.search.query.clone();
+            app.start_search(query);
+        }
+        Action::OpenSettings => {
+            app.settings_open = !app.settings_open;
+            if app.settings_open {
+                // Refresh the theme list so the theme row cycles over what
+                // is actually installed right now.
+                app.settings.themes = crate::ui::settings::installed_themes();
+            }
+        }
+        Action::SettingsMoveUp => {
+            // Moving the selection discards an inline edit — the buffer
+            // belongs to the row it was started on.
+            app.settings.editing = false;
+            app.settings.edit_buffer.clear();
+            app.settings.selected = app.settings.selected.saturating_sub(1);
+        }
+        Action::SettingsMoveDown => {
+            app.settings.editing = false;
+            app.settings.edit_buffer.clear();
+            let last = crate::ui::settings::row_count().saturating_sub(1);
+            app.settings.selected = (app.settings.selected + 1).min(last);
+        }
+        Action::SettingsActivate => settings_activate(app),
+        Action::SettingsType(c) => {
+            if app.settings.editing {
+                app.settings.edit_buffer.push(c);
+            }
+        }
+        Action::SettingsBackspace => {
+            if app.settings.editing {
+                app.settings.edit_buffer.pop();
+            }
+        }
     }
+}
+
+/// The settings overlay's Enter: per row kind, either enter/commit an
+/// inline text edit, cycle the theme, or flip a toggle immediately.
+fn settings_activate(app: &mut App) {
+    let Some(kind) = crate::ui::settings::row_kind(app.settings.selected) else {
+        return;
+    };
+    match kind {
+        RowKind::Text => settings_edit_text(app),
+        RowKind::Theme => settings_cycle_theme(app),
+        RowKind::Toggle => {
+            app.config.seed_by_default = !app.config.seed_by_default;
+            save_settings(app);
+        }
+        RowKind::Source => {
+            if let Some(id) = crate::ui::settings::source_at(app.settings.selected) {
+                settings_toggle_source(app, id);
+            }
+        }
+    }
+}
+
+/// Text-row Enter: the first press starts an inline edit seeded with the
+/// field's current value, the second commits the buffer into the config and
+/// saves. Committing an empty player path means auto-detect; an empty
+/// tracker list is no trackers.
+fn settings_edit_text(app: &mut App) {
+    let Some(field) = crate::ui::settings::text_field(app.settings.selected) else {
+        return;
+    };
+    if !app.settings.editing {
+        app.settings.edit_buffer = match field {
+            TextField::Player => app.config.player.clone().unwrap_or_default(),
+            TextField::DownloadDir => app.config.download_dir.display().to_string(),
+            TextField::Trackers => app.config.trackers.join(", "),
+        };
+        app.settings.editing = true;
+        return;
+    }
+    let value = app.settings.edit_buffer.trim();
+    match field {
+        TextField::Player => {
+            app.config.player = if value.is_empty() {
+                None
+            } else {
+                Some(value.to_string())
+            };
+        }
+        TextField::DownloadDir => app.config.download_dir = PathBuf::from(value),
+        TextField::Trackers => {
+            app.config.trackers = value
+                .split(',')
+                .map(str::trim)
+                .filter(|t| !t.is_empty())
+                .map(str::to_string)
+                .collect();
+        }
+    }
+    app.settings.editing = false;
+    app.settings.edit_buffer.clear();
+    save_settings(app);
+}
+
+/// The theme row's Enter: advance to the next installed theme, apply it
+/// live, and persist. The cycle wraps around; a theme file that fails to
+/// parse keeps the current theme (and the config) unchanged, loudly.
+fn settings_cycle_theme(app: &mut App) {
+    if app.settings.themes.is_empty() {
+        // The overlay usually fills this at open; a directory that vanished
+        // mid-session must not strand the row.
+        app.settings.themes = crate::ui::settings::installed_themes();
+    }
+    let position = app
+        .settings
+        .themes
+        .iter()
+        .position(|name| *name == app.config.theme)
+        .unwrap_or(0);
+    let next = app.settings.themes[(position + 1) % app.settings.themes.len()].clone();
+    if apply_theme_live(app, &next) {
+        app.config.theme = next;
+        save_settings(app);
+    }
+}
+
+/// Swaps the shared theme to `name` so a settings change applies at the
+/// next frame — the same load path the file watcher uses (theme_watch), so
+/// a settings change and a file edit behave identically. Returns `false`
+/// (keeping the current theme and saying so loudly) when the theme fails to
+/// parse.
+fn apply_theme_live(app: &mut App, name: &str) -> bool {
+    let fresh = match name {
+        "titanium" => Ok(Theme::titanium()),
+        name => Theme::load_custom(&crate::theme_watch::theme_dir(), name),
+    };
+    let fresh = match fresh {
+        Ok(theme) => theme,
+        Err(err) => {
+            app.warn(format!("settings: theme '{name}' failed to load: {err}"));
+            return false;
+        }
+    };
+    match app.theme.lock() {
+        Ok(mut guard) => *guard = fresh,
+        Err(poisoned) => {
+            let mut guard = poisoned.into_inner();
+            *guard = fresh;
+        }
+    }
+    true
+}
+
+/// Toggles one source in the disabled set and persists it. The runtime
+/// `disabled_sources` set is re-derived from the saved config so the
+/// sidebar, the settings view, and search filtering never disagree.
+fn settings_toggle_source(app: &mut App, id: SourceId) {
+    if let Some(pos) = app.config.disabled_sources.iter().position(|s| *s == id) {
+        app.config.disabled_sources.remove(pos);
+    } else {
+        app.config.disabled_sources.push(id);
+    }
+    // Deterministic config output: the persisted list is always sorted.
+    app.config.disabled_sources.sort_by_key(|s| s.as_str());
+    save_settings(app);
+    refresh_search_after_sources(app);
+}
+
+/// Re-runs the current search (or browse) so results reflect the new
+/// enabled-source set — a settings toggle and the sidebar toggle behave
+/// identically. No-op when nothing has been searched yet.
+fn refresh_search_after_sources(app: &mut App) {
+    if !app.state.search.searching && app.partial.is_empty() && app.state.search.query.is_empty() {
+        return;
+    }
+    let query = app.state.search.query.clone();
+    app.start_search(query);
+}
+
+/// Persists `app.config` through the existing store, then re-derives the
+/// enabled-source set from what was saved. A failed save is a loud banner —
+/// the in-memory config stays as the user set it.
+fn save_settings(app: &mut App) {
+    if let Err(err) = app.store.save_config(&app.config) {
+        app.warn(format!("settings: could not save config: {err}"));
+    }
+    app.disabled_sources = app.config.disabled_sources.iter().copied().collect();
 }
 
 fn move_selection(app: &mut App, delta: isize) {
@@ -1305,8 +1794,12 @@ fn apply_event(app: &mut App, event: EngineEvent) {
             app.state.search.searching = still_searching(app);
         }
         EngineEvent::SourceResults { source, results } => {
-            app.partial.insert(source, results);
-            app.remerge();
+            // A disabled source's late answer is dropped, never merged: the
+            // toggle already re-ran the query, so its batch has no place here.
+            if !app.disabled_sources.contains(&source) {
+                app.partial.insert(source, results);
+                app.remerge();
+            }
         }
         EngineEvent::SourceFailed {
             source, message, ..

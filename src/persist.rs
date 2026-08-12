@@ -30,7 +30,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::core::paths;
-use crate::core::types::QueueItem;
+use crate::core::types::{QueueItem, SourceId};
 
 /// Hard cap on remembered search queries (`FR-49`).
 pub const HISTORY_CAP: usize = 500;
@@ -50,6 +50,10 @@ pub struct Config {
     /// External player for watch mode (`w`): an explicit path or command
     /// name (mpv/VLC). None = auto-detect on PATH (mpv first, then VLC).
     pub player: Option<String>,
+    /// Sources the user disabled via the sidebar; they are never queried or
+    /// merged. Empty = everything enabled (additive: configs written by
+    /// older builds keep working).
+    pub disabled_sources: Vec<SourceId>,
 }
 
 impl Default for Config {
@@ -60,6 +64,7 @@ impl Default for Config {
             seed_by_default: true,
             trackers: Vec::new(),
             player: None,
+            disabled_sources: Vec::new(),
         }
     }
 }
@@ -510,6 +515,7 @@ mod tests {
             seed_by_default: false,
             trackers: vec!["udp://tracker.example:80".into()],
             player: Some("mpv".into()),
+            disabled_sources: vec![SourceId::FitGirl, SourceId::Nyaa],
         };
         store.save_config(&cfg).expect("save");
         assert_eq!(store.load_config(), Loaded::Ok(cfg));
@@ -553,6 +559,10 @@ mod tests {
         let cfg = store.load_config().value();
         assert_eq!(cfg.theme, "midnight");
         assert!(cfg.seed_by_default, "unspecified keys keep their default");
+        assert!(
+            cfg.disabled_sources.is_empty(),
+            "a config without the key keeps every source enabled"
+        );
     }
 
     #[test]

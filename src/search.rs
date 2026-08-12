@@ -20,7 +20,7 @@
 //! 5. At the list deadline the UI stops waiting; sources still running stay
 //!    `Checking`, **not** `Offline`, and their results still land if they arrive.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
 use tokio::sync::mpsc::UnboundedSender;
@@ -71,6 +71,9 @@ pub struct SearchEngine {
     /// Which mirror last answered, per source. This is the session state that
     /// keeps the sources themselves stateless (`docs/sources.md` §1.1).
     host_hints: Arc<Mutex<HashMap<SourceId, String>>>,
+    /// Sources the user disabled in the sidebar: never queried, never merged.
+    /// Empty = everything enabled.
+    disabled: HashSet<SourceId>,
 }
 
 impl SearchEngine {
@@ -79,7 +82,15 @@ impl SearchEngine {
             sources,
             cache,
             host_hints: Arc::new(Mutex::new(HashMap::new())),
+            disabled: HashSet::new(),
         }
+    }
+
+    /// Replaces the disabled-source set before a search. The app owns the
+    /// truth (`Config.disabled_sources`); this is the engine's read-only view
+    /// so `start` can skip a disabled source before it is spawned.
+    pub fn set_disabled(&mut self, disabled: HashSet<SourceId>) {
+        self.disabled = disabled;
     }
 
     /// The registry, so a caller can ask the owning source to resolve a magnet
@@ -115,6 +126,11 @@ impl SearchEngine {
         for source in &self.sources {
             let source = source.clone();
             let id = source.def().id;
+            // A source the user disabled is not queried at all — no fetch, no
+            // cache probe, no events, so its sidebar dot stays unknown.
+            if self.disabled.contains(&id) {
+                continue;
+            }
             let query = query.clone();
             let cache = self.cache.clone();
             let hints = self.host_hints.clone();
@@ -438,6 +454,49 @@ mod tests {
                 if *source == SourceId::TpbMovies && *class == "blocked")
             ),
             "and the blocked one reported why"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_disabled_source_is_never_queried() {
+        let yts = Arc::new(ScriptedSource {
+            def: &YTS_DEF,
+            rows: vec![result("aaa", 10, SourceId::Yts, 1)],
+            error: None,
+            delay: Duration::ZERO,
+            calls: Arc::new(AtomicU32::new(0)),
+        });
+        let tpb = Arc::new(ScriptedSource {
+            def: &TPB_DEF,
+            rows: vec![result("bbb", 5, SourceId::TpbMovies, 1)],
+            error: None,
+            delay: Duration::ZERO,
+            calls: Arc::new(AtomicU32::new(0)),
+        });
+
+        let mut engine = SearchEngine::new(vec![yts, tpb.clone()], temp_cache("disabled"));
+        engine.set_disabled(HashSet::from([SourceId::TpbMovies]));
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        engine.start(String::new(), SearchCtx::default(), tx);
+        let events = drain_until(&mut rx, 3, Duration::from_secs(5)).await;
+        assert_eq!(
+            tpb.calls.load(Ordering::SeqCst),
+            0,
+            "a disabled source is never asked, not even once"
+        );
+        assert!(
+            !events.iter().any(|e| matches!(
+                e,
+                EngineEvent::SourceResults { source, .. } if *source == SourceId::TpbMovies
+            )),
+            "a disabled source must not merge results"
+        );
+        assert!(
+            events.iter().any(|e| matches!(
+                e,
+                EngineEvent::SourceResults { source, .. } if *source == SourceId::Yts
+            )),
+            "the enabled source still answers"
         );
     }
 

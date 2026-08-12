@@ -7,10 +7,12 @@
 //! snapshotted idle (not searching) so the clock-driven shimmer/spinner
 //! cannot make the test timing-dependent.
 
+use std::collections::HashSet;
+
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 
-use crate::core::types::{SourceStatus, TorrentResult};
+use crate::core::types::{SourceId, SourceStatus, TorrentResult};
 use crate::fake;
 use crate::theme::Theme;
 use crate::ui::{
@@ -72,7 +74,7 @@ fn search_snapshot_idle_with_results() {
     let state = search_state("dune");
     let theme = Theme::titanium();
     let out = render(|f| {
-        search::draw(f, f.area(), &state, &theme);
+        search::draw(f, f.area(), &state, &HashSet::new(), &theme);
     });
     // "dune" hits the movie catalog: real title in the rows, sidebar visible.
     assert!(out.contains("harbour — search") || out.contains("search"));
@@ -82,10 +84,40 @@ fn search_snapshot_idle_with_results() {
 }
 
 #[test]
+fn a_disabled_source_renders_dim_in_the_sidebar() {
+    // FitGirl is the only Games source: sidebar inner row 2 (title row 0,
+    // Games divider row 1), which the 1-cell panel border pushes to frame
+    // row 3. Disabled wins over health, so the whole row must be dim.
+    let theme = Theme::titanium();
+    let state = search_state("dune");
+    let mut disabled = HashSet::new();
+    disabled.insert(SourceId::FitGirl);
+    let backend = TestBackend::new(W, H);
+    let mut terminal = Terminal::new(backend).expect("test backend");
+    terminal
+        .draw(|f| search::draw(f, f.area(), &state, &disabled, &theme))
+        .expect("draw");
+    let buf = terminal.backend().buffer();
+    let dim = theme.colors.dim().to_ratatui();
+    let row = 3;
+    let dim_cells = (0..W).filter(|&x| buf[(x, row)].fg == dim).count();
+    assert!(
+        dim_cells >= 7,
+        "FitGirl label must render dim, got {dim_cells} cells"
+    );
+}
+
+#[test]
 fn search_snapshot_empty_state() {
     let theme = Theme::titanium();
     let out = render(|f| {
-        search::draw(f, f.area(), &SearchState::default(), &theme);
+        search::draw(
+            f,
+            f.area(),
+            &SearchState::default(),
+            &HashSet::new(),
+            &theme,
+        );
     });
     assert!(
         out.contains("no results") || out.contains("nothing"),
@@ -149,7 +181,35 @@ fn help_snapshot_modal() {
     });
     assert!(out.contains(" keys ") || out.contains("keybinds"));
     assert!(out.contains("quit"));
-    assert!(out.contains("watch the selected item"), "w binding listed");
+    assert!(out.contains("watch in your player"), "w binding listed");
+}
+
+#[test]
+fn player_picker_snapshot_modal() {
+    let theme = Theme::titanium();
+    let picker = crate::ui::player::PlayerPicker {
+        open: true,
+        mode: crate::ui::player::PickerMode::List,
+        selected: 0,
+        options: vec![
+            ("mpv".to_string(), "mpv".to_string()),
+            (
+                "Windows Media Player".to_string(),
+                "C:\\wmplayer.exe".to_string(),
+            ),
+        ],
+        custom: String::new(),
+        message: Some("not an existing absolute path".into()),
+    };
+    let out = render(|f| {
+        crate::ui::player::draw(f, f.area(), &theme, &picker, Some("mpv"));
+    });
+    assert!(out.contains(" player "), "panel title shown");
+    assert!(out.contains('●'), "config choice marked");
+    assert!(out.contains("mpv"));
+    assert!(out.contains("Windows Media Player"));
+    assert!(out.contains("custom path"));
+    assert!(out.contains("not an existing absolute path"));
 }
 
 #[test]
@@ -159,6 +219,7 @@ fn now_playing_snapshot() {
         id: "abc".into(),
         name: "Frieren - 01 [1080p]".into(),
         stream_url: "http://127.0.0.1:4567/stream".into(),
+        ephemeral: false,
     };
     let out = render(|f| {
         now_playing::draw(f, f.area(), &np, &theme);
@@ -177,7 +238,7 @@ fn selected_row_uses_selected_bg() {
     let backend = TestBackend::new(W, H);
     let mut terminal = Terminal::new(backend).expect("test backend");
     terminal
-        .draw(|f| search::draw(f, f.area(), &state, &theme))
+        .draw(|f| search::draw(f, f.area(), &state, &HashSet::new(), &theme))
         .expect("draw");
     let buf = terminal.backend().buffer();
     let selected_bg = theme.colors.selected_bg().to_ratatui();

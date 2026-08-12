@@ -26,24 +26,41 @@ pub const BINDINGS: &[(&str, &str)] = &[
     ("p", "downloads: pause or resume the selected item"),
     ("r", "downloads: retry a failed item"),
     ("x", "downloads: remove the selected item (keeps files)"),
-    ("w", "downloads: watch the selected item in mpv/VLC"),
+    ("w", "watch in your player (shift+P to choose)"),
+    (
+        "shift+P",
+        "choose the watch player (mpv/VLC/Windows Media Player)",
+    ),
     ("esc", "clear the query, or close this overlay"),
     ("?", "show or hide this overlay"),
     ("q", "quit"),
+];
+
+/// One ELI5 line per field in a search result row — the "reading results"
+/// half of the overlay. Keys mirror the header labels and the row's chips.
+pub const READING_RESULTS: &[(&str, &str)] = &[
+    ("seeds", "people sharing the file — more = faster"),
+    ("leeches", "people downloading from them — more = slower"),
+    ("size", "how big the download is (GB/MB)"),
+    ("quality", "[1080p] [4k] tags read from the release name"),
+    ("[source]", "which site the result came from"),
+    ("dot", "health: green = up, red = down, · = unknown"),
 ];
 
 /// Draws the overlay centred in `area`.
 pub fn draw(frame: &mut Frame, area: Rect, theme: &Theme) {
     let colors = &theme.colors;
 
-    // Wide enough for the longest row, but never wider than the terminal.
+    // Wide enough for the longest row (bindings or legend), but never wider
+    // than the terminal.
     let width = BINDINGS
         .iter()
+        .chain(READING_RESULTS)
         .map(|(k, d)| k.chars().count() + d.chars().count() + 6)
         .max()
         .unwrap_or(40)
         .clamp(30, area.width.saturating_sub(4).max(30) as usize) as u16;
-    let height = (BINDINGS.len() as u16 + 4).min(area.height);
+    let height = (BINDINGS.len() + READING_RESULTS.len() + 5).min(area.height as usize) as u16;
     let panel = Rect {
         x: area.x + area.width.saturating_sub(width) / 2,
         y: area.y + area.height.saturating_sub(height) / 2,
@@ -64,11 +81,39 @@ pub fn draw(frame: &mut Frame, area: Rect, theme: &Theme) {
 
     let key_width = BINDINGS
         .iter()
+        .chain(READING_RESULTS)
         .map(|(k, _)| k.chars().count())
         .max()
         .unwrap_or(5);
     let mut lines = vec![Line::from("")];
     for (key, description) in BINDINGS {
+        lines.push(Line::from(vec![
+            Span::raw("  "),
+            Span::styled(
+                format!("{key:>key_width$}"),
+                Style::default().fg(colors.accent().to_ratatui()),
+            ),
+            Span::raw("  "),
+            Span::styled(
+                (*description).to_string(),
+                Style::default().fg(colors.text().to_ratatui()),
+            ),
+        ]));
+    }
+    // The "reading results" half: a divider, then one ELI5 line per field.
+    let div = " reading results ";
+    let fill = theme.symbols.border_h.as_ref().repeat(
+        panel
+            .width
+            .saturating_sub(2)
+            .saturating_sub(div.chars().count() as u16)
+            .max(1) as usize,
+    );
+    lines.push(Line::from(Span::styled(
+        format!("{div}{fill}"),
+        Style::default().fg(colors.muted().to_ratatui()),
+    )));
+    for (key, description) in READING_RESULTS {
         lines.push(Line::from(vec![
             Span::raw("  "),
             Span::styled(
@@ -123,6 +168,22 @@ mod tests {
             assert!(
                 BINDINGS.iter().any(|(k, _)| *k == key),
                 "`{key}` is implemented but undocumented"
+            );
+        }
+    }
+
+    #[test]
+    fn reading_results_legend_lists_every_field_once() {
+        let mut keys: Vec<&str> = READING_RESULTS.iter().map(|(k, _)| *k).collect();
+        keys.sort_unstable();
+        let before = keys.len();
+        keys.dedup();
+        assert_eq!(keys.len(), before, "a legend key is listed twice");
+        assert!(READING_RESULTS.iter().all(|(_, d)| !d.is_empty()));
+        for key in ["seeds", "leeches", "size", "quality", "[source]", "dot"] {
+            assert!(
+                READING_RESULTS.iter().any(|(k, _)| *k == key),
+                "legend missing `{key}`"
             );
         }
     }

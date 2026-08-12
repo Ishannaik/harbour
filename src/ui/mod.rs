@@ -32,6 +32,11 @@ pub enum Screen {
     Search,
     Downloads,
     Help,
+    /// The settings overlay (2.5): a modal over the current screen, so
+    /// closing it returns the user exactly where they were. The app loop
+    /// tracks it with `settings_open`; this variant exists for the shared
+    /// screen contract and the exhaustive matches.
+    Settings,
     /// Watch mode (FR-57): an external player owns the screen until it exits.
     NowPlaying,
 }
@@ -83,12 +88,18 @@ pub struct NowPlaying {
     pub id: String,
     pub name: String,
     pub stream_url: String,
+    /// True for a watch-now session (2.3): the torrent was added straight to
+    /// the engine (no queue item, no ledger) and its cache dir is deleted
+    /// when the session ends — the stream-and-delete contract.
+    pub ephemeral: bool,
 }
 
 pub mod downloads;
 pub mod help;
 pub mod now_playing;
+pub mod player;
 pub mod search;
+pub mod settings;
 pub mod status;
 
 #[cfg(test)]

@@ -8,8 +8,9 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::{Margin, Rect};
 
+use crate::core::types::SourceId;
 use crate::ui::Screen;
-use crate::ui::search::{SEARCH_BAR_H, SIDEBAR_WIDTH};
+use crate::ui::search::{SEARCH_BAR_H, SIDEBAR_WIDTH, sidebar_source_at};
 
 /// Everything the user can ask for.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -43,6 +44,21 @@ pub enum Action {
     Watch,
     /// Leave the now-playing screen back to the TUI (FR-59).
     EndWatch,
+    // --- Player picker (2.1): choose/override the watch player in the TUI ---
+    /// Open the player picker overlay.
+    OpenPlayerPicker,
+    /// Move the picker selection up.
+    PlayerUp,
+    /// Move the picker selection down.
+    PlayerDown,
+    /// Use the selected (list mode) or entered (custom mode) player.
+    PlayerChoose,
+    /// Switch the picker to custom-path entry.
+    PlayerCustom,
+    /// Append a character to the custom player path.
+    PlayerType(char),
+    /// Backspace the custom player path.
+    PlayerBackspace,
     /// Select the visible row under a left click — a search result or a
     /// downloads item (UR-13). The index is clamped by the app loop, which
     /// knows the real list length; a click past the last row is a no-op.
@@ -50,6 +66,23 @@ pub enum Action {
     /// Toggle the downloads seeding tab from a click (same effect as
     /// `ToggleSeeding`).
     ClickSeedingTab,
+    /// Enable/disable a source from the search sidebar (2.2): disabled
+    /// sources are never queried or merged, and the choice persists.
+    ToggleSource(SourceId),
+    // --- Settings (2.5): everything in Config editable from the TUI ---
+    /// Open or close the settings overlay.
+    OpenSettings,
+    /// Move the settings selection up.
+    SettingsMoveUp,
+    /// Move the settings selection down.
+    SettingsMoveDown,
+    /// Activate the selected row: enter/commit a text edit, cycle the
+    /// theme, or flip a toggle.
+    SettingsActivate,
+    /// Append a character to the settings text-edit buffer.
+    SettingsType(char),
+    /// Delete the last character from the settings text-edit buffer.
+    SettingsBackspace,
 }
 
 /// Ctrl-C always quits, everywhere — a terminal convention users rely on more
@@ -63,8 +96,20 @@ fn is_hard_quit(key: &KeyEvent) -> bool {
 ///
 /// `help_open` is separate from `screen` because the overlay floats above
 /// whatever is underneath: closing it must return the user exactly where they
-/// were rather than to a default screen.
-pub fn map(key: KeyEvent, screen: Screen, help_open: bool) -> Action {
+/// were rather than to a default screen. The player picker (`picker_open`)
+/// floats the same way; `picker_custom` tells the picker branch whether the
+/// user is entering a custom player path (where `c` and other letters are
+/// input) or browsing the installed-player list (where `c` switches modes).
+/// The settings overlay (`settings_open`) is the same modal shape again:
+/// `esc`/arrows/enter/typing all belong to it while it is up.
+pub fn map(
+    key: KeyEvent,
+    screen: Screen,
+    help_open: bool,
+    picker_open: bool,
+    picker_custom: bool,
+    settings_open: bool,
+) -> Action {
     if is_hard_quit(&key) {
         return Action::Quit;
     }
@@ -75,6 +120,41 @@ pub fn map(key: KeyEvent, screen: Screen, help_open: bool) -> Action {
         return match key.code {
             KeyCode::Char('q') => Action::Quit,
             _ => Action::ToggleHelp,
+        };
+    }
+
+    if picker_open {
+        // The picker owns every key while it is up, exactly like help: Esc
+        // closes it (leaving the user where they were), arrows/Enter drive
+        // the list, `c` switches to custom-path entry, and in custom mode
+        // typing and Backspace edit the path. `q` still quits.
+        return match key.code {
+            KeyCode::Char('q') => Action::Quit,
+            KeyCode::Esc => Action::Escape,
+            KeyCode::Up | KeyCode::Char('k') => Action::PlayerUp,
+            KeyCode::Down | KeyCode::Char('j') => Action::PlayerDown,
+            KeyCode::Enter => Action::PlayerChoose,
+            KeyCode::Backspace if picker_custom => Action::PlayerBackspace,
+            KeyCode::Char('c') if !picker_custom => Action::PlayerCustom,
+            KeyCode::Char(c) if picker_custom => Action::PlayerType(c),
+            _ => Action::None,
+        };
+    }
+
+    if settings_open {
+        // The settings overlay owns every key while it is up, exactly like
+        // help and the picker: Esc closes it (returning the user where they
+        // were), arrows/Enter drive the rows, and typing edits the inline
+        // buffer of a text row (the app gates it on edit mode). `q` quits.
+        return match key.code {
+            KeyCode::Char('q') => Action::Quit,
+            KeyCode::Esc => Action::Escape,
+            KeyCode::Up | KeyCode::Char('k') => Action::SettingsMoveUp,
+            KeyCode::Down | KeyCode::Char('j') => Action::SettingsMoveDown,
+            KeyCode::Enter => Action::SettingsActivate,
+            KeyCode::Backspace => Action::SettingsBackspace,
+            KeyCode::Char(c) => Action::SettingsType(c),
+            _ => Action::None,
         };
     }
 
@@ -108,6 +188,8 @@ pub fn map(key: KeyEvent, screen: Screen, help_open: bool) -> Action {
             KeyCode::Down => Action::MoveDown,
             KeyCode::Char('s') => Action::ToggleSeeding,
             KeyCode::Char('p') => Action::TogglePause,
+            KeyCode::Char('P') => Action::OpenPlayerPicker,
+            KeyCode::Char('S') => Action::OpenSettings,
             KeyCode::Char('r') => Action::Retry,
             KeyCode::Char('x') => Action::Remove,
             KeyCode::Char('w') => Action::Watch,
@@ -121,8 +203,10 @@ pub fn map(key: KeyEvent, screen: Screen, help_open: bool) -> Action {
             _ => Action::None,
         },
 
-        // Reachable only as a state; the overlay branch above handles its keys.
+        // Reachable only as a state; the overlay branches above handle its
+        // keys.
         Screen::Help => Action::ToggleHelp,
+        Screen::Settings => Action::None,
     }
 }
 
@@ -136,6 +220,14 @@ pub fn map_empty_query(key: KeyEvent) -> Option<Action> {
         KeyCode::Char('q') => Some(Action::Quit),
         KeyCode::Char('?') => Some(Action::ToggleHelp),
         KeyCode::Char('d') => Some(Action::Download),
+        // Watch-now (2.3): with an empty query `w` streams the selected
+        // result without downloading it to the library. `shift+P` opens the
+        // player picker, mirroring the Downloads screen's binding.
+        KeyCode::Char('w') => Some(Action::Watch),
+        KeyCode::Char('P') => Some(Action::OpenPlayerPicker),
+        // `shift+S` opens the settings overlay (2.5) from an empty query,
+        // mirroring the Downloads screen's binding.
+        KeyCode::Char('S') => Some(Action::OpenSettings),
         _ => None,
     }
 }
@@ -184,10 +276,20 @@ pub fn mouse_to_action(
             // header 1 row, then one result row per line. The hint line
             // owns the last inner row, and the panel's bottom border sits
             // one row below that.
-            let main_col = view_area.x + 1 + SIDEBAR_WIDTH;
+            let inner_x = view_area.x + 1;
+            let main_col = inner_x + SIDEBAR_WIDTH;
             let results_top = view_area.y + 1 + SEARCH_BAR_H + 1;
             let results_bottom = view_area.y + view_area.height.saturating_sub(2);
-            if col < main_col || row < results_top || row >= results_bottom {
+            if col < inner_x {
+                // The panel's left border is not clickable.
+                Action::None
+            } else if col < main_col {
+                // A click on a sidebar source row toggles that source (2.2).
+                // The "Sources" title, group dividers, and rows past the last
+                // source map to None — nothing to toggle there.
+                sidebar_source_at(row.saturating_sub(view_area.y + 1))
+                    .map_or(Action::None, Action::ToggleSource)
+            } else if row < results_top || row >= results_bottom {
                 Action::None
             } else {
                 Action::ClickRow((row - results_top) as usize)
@@ -226,6 +328,9 @@ pub fn mouse_to_action(
         // Reachable only as a state; the `help_open` branch above handles
         // the real overlay. Mirror the keymap: a click closes it.
         Screen::Help => Action::ToggleHelp,
+        // Reachable only as a state; the settings overlay is driven by
+        // `settings_open` (app.rs guards clicks while it is up).
+        Screen::Settings => Action::None,
     }
 }
 
@@ -244,9 +349,13 @@ mod tests {
     #[test]
     fn ctrl_c_quits_from_everywhere_including_the_help_overlay() {
         for screen in [Screen::Splash, Screen::Search, Screen::Downloads] {
-            assert_eq!(map(ctrl('c'), screen, false), Action::Quit, "{screen:?}");
             assert_eq!(
-                map(ctrl('c'), screen, true),
+                map(ctrl('c'), screen, false, false, false, false),
+                Action::Quit,
+                "{screen:?}"
+            );
+            assert_eq!(
+                map(ctrl('c'), screen, true, false, false, false),
                 Action::Quit,
                 "{screen:?} + help"
             );
@@ -258,7 +367,14 @@ mod tests {
         // The bug this prevents: typing "dune" firing a download on the `d`.
         for c in "dunepqrsx?".chars() {
             assert_eq!(
-                map(key(KeyCode::Char(c)), Screen::Search, false),
+                map(
+                    key(KeyCode::Char(c)),
+                    Screen::Search,
+                    false,
+                    false,
+                    false,
+                    false
+                ),
                 Action::Type(c),
                 "`{c}` must reach the text field"
             );
@@ -281,24 +397,316 @@ mod tests {
     }
 
     #[test]
+    fn empty_query_w_watches_and_shift_p_opens_the_picker() {
+        // Watch-now (2.3): `w` with an empty query streams the selected
+        // result; `shift+P` opens the player picker like on Downloads.
+        assert_eq!(
+            map_empty_query(key(KeyCode::Char('w'))),
+            Some(Action::Watch)
+        );
+        assert_eq!(
+            map_empty_query(key(KeyCode::Char('P'))),
+            Some(Action::OpenPlayerPicker)
+        );
+        assert_eq!(
+            map_empty_query(key(KeyCode::Char('W'))),
+            None,
+            "shift+W is not bound — only lowercase w"
+        );
+    }
+
+    #[test]
+    fn shift_s_opens_settings_from_downloads_and_empty_query() {
+        assert_eq!(
+            map(
+                key(KeyCode::Char('S')),
+                Screen::Downloads,
+                false,
+                false,
+                false,
+                false
+            ),
+            Action::OpenSettings
+        );
+        assert_eq!(
+            map_empty_query(key(KeyCode::Char('S'))),
+            Some(Action::OpenSettings)
+        );
+        // Lowercase s stays the seeding-tab toggle.
+        assert_eq!(
+            map(
+                key(KeyCode::Char('s')),
+                Screen::Downloads,
+                false,
+                false,
+                false,
+                false
+            ),
+            Action::ToggleSeeding
+        );
+        // shift+S with a query present still types into the field — the
+        // empty-query rule mirrors `d`/`w`/`P`.
+        assert_eq!(
+            map(
+                key(KeyCode::Char('S')),
+                Screen::Search,
+                false,
+                false,
+                false,
+                false
+            ),
+            Action::Type('S')
+        );
+    }
+
+    #[test]
+    fn the_settings_overlay_binds_its_keys() {
+        for (code, expected) in [
+            (KeyCode::Up, Action::SettingsMoveUp),
+            (KeyCode::Char('k'), Action::SettingsMoveUp),
+            (KeyCode::Down, Action::SettingsMoveDown),
+            (KeyCode::Char('j'), Action::SettingsMoveDown),
+            (KeyCode::Enter, Action::SettingsActivate),
+            (KeyCode::Backspace, Action::SettingsBackspace),
+            (KeyCode::Esc, Action::Escape),
+            (KeyCode::Char('q'), Action::Quit),
+        ] {
+            assert_eq!(
+                map(key(code), Screen::Downloads, false, false, false, true),
+                expected,
+                "{code:?} with settings open"
+            );
+        }
+        // Typing edits the buffer — every printable key, on any screen,
+        // including keys that would otherwise be screen bindings.
+        assert_eq!(
+            map(
+                key(KeyCode::Char('x')),
+                Screen::Downloads,
+                false,
+                false,
+                false,
+                true
+            ),
+            Action::SettingsType('x')
+        );
+        assert_eq!(
+            map(
+                key(KeyCode::Char('?')),
+                Screen::Search,
+                false,
+                false,
+                false,
+                true
+            ),
+            Action::SettingsType('?')
+        );
+        // The overlay never leaks a key to the screen underneath.
+        assert_eq!(
+            map(key(KeyCode::Tab), Screen::Search, false, false, false, true),
+            Action::None
+        );
+        // Help and the picker are checked first: if either is open the key
+        // belongs to it, mirroring the overlay ordering in `map`.
+        assert_eq!(
+            map(
+                key(KeyCode::Char('x')),
+                Screen::Downloads,
+                true,
+                false,
+                false,
+                true
+            ),
+            Action::ToggleHelp
+        );
+    }
+
+    #[test]
+    fn shift_p_opens_the_player_picker_from_downloads() {
+        assert_eq!(
+            map(
+                key(KeyCode::Char('P')),
+                Screen::Downloads,
+                false,
+                false,
+                false,
+                false
+            ),
+            Action::OpenPlayerPicker
+        );
+        // Lowercase p stays the pause binding.
+        assert_eq!(
+            map(
+                key(KeyCode::Char('p')),
+                Screen::Downloads,
+                false,
+                false,
+                false,
+                false
+            ),
+            Action::TogglePause
+        );
+    }
+
+    #[test]
+    fn the_player_picker_binds_list_keys() {
+        // List mode: arrows/Enter drive the list, `c` switches to custom
+        // entry, Esc closes, q quits, and any other letter does nothing
+        // rather than typing into the screen behind the overlay.
+        for (code, expected) in [
+            (KeyCode::Up, Action::PlayerUp),
+            (KeyCode::Char('k'), Action::PlayerUp),
+            (KeyCode::Down, Action::PlayerDown),
+            (KeyCode::Char('j'), Action::PlayerDown),
+            (KeyCode::Enter, Action::PlayerChoose),
+            (KeyCode::Char('c'), Action::PlayerCustom),
+            (KeyCode::Esc, Action::Escape),
+            (KeyCode::Char('q'), Action::Quit),
+        ] {
+            assert_eq!(
+                map(key(code), Screen::Downloads, false, true, false, false),
+                expected,
+                "{code:?} in list mode"
+            );
+        }
+        assert_eq!(
+            map(
+                key(KeyCode::Char('x')),
+                Screen::Downloads,
+                false,
+                true,
+                false,
+                false
+            ),
+            Action::None,
+            "a letter other than c does nothing in list mode"
+        );
+    }
+
+    #[test]
+    fn the_player_picker_binds_custom_mode_keys() {
+        // Custom mode: typing edits the path (`c` included — the path can
+        // legitimately contain the letter), Backspace deletes, Enter
+        // validates and uses it, Esc closes.
+        assert_eq!(
+            map(
+                key(KeyCode::Char('c')),
+                Screen::Downloads,
+                false,
+                true,
+                true,
+                false
+            ),
+            Action::PlayerType('c')
+        );
+        assert_eq!(
+            map(
+                key(KeyCode::Char('C')),
+                Screen::Downloads,
+                false,
+                true,
+                true,
+                false
+            ),
+            Action::PlayerType('C')
+        );
+        assert_eq!(
+            map(
+                key(KeyCode::Backspace),
+                Screen::Downloads,
+                false,
+                true,
+                true,
+                false
+            ),
+            Action::PlayerBackspace
+        );
+        assert_eq!(
+            map(
+                key(KeyCode::Enter),
+                Screen::Downloads,
+                false,
+                true,
+                true,
+                false
+            ),
+            Action::PlayerChoose
+        );
+        assert_eq!(
+            map(
+                key(KeyCode::Esc),
+                Screen::Downloads,
+                false,
+                true,
+                true,
+                false
+            ),
+            Action::Escape
+        );
+        // `c` is typed, never a mode switch, in custom mode.
+        assert_ne!(
+            map(
+                key(KeyCode::Char('c')),
+                Screen::Downloads,
+                false,
+                true,
+                true,
+                false
+            ),
+            Action::PlayerCustom
+        );
+    }
+
+    #[test]
     fn w_watches_and_q_ends_watch() {
         assert_eq!(
-            map(key(KeyCode::Char('w')), Screen::Downloads, false),
+            map(
+                key(KeyCode::Char('w')),
+                Screen::Downloads,
+                false,
+                false,
+                false,
+                false
+            ),
             Action::Watch
         );
         assert_eq!(
-            map(key(KeyCode::Char('q')), Screen::NowPlaying, false),
+            map(
+                key(KeyCode::Char('q')),
+                Screen::NowPlaying,
+                false,
+                false,
+                false,
+                false
+            ),
             Action::EndWatch
         );
         assert_eq!(
-            map(key(KeyCode::Esc), Screen::NowPlaying, false),
+            map(
+                key(KeyCode::Esc),
+                Screen::NowPlaying,
+                false,
+                false,
+                false,
+                false
+            ),
             Action::EndWatch
         );
         // Ctrl+C still quits from the watch screen.
-        assert_eq!(map(ctrl('c'), Screen::NowPlaying, false), Action::Quit);
+        assert_eq!(
+            map(ctrl('c'), Screen::NowPlaying, false, false, false, false),
+            Action::Quit
+        );
         // q must not quit from now-playing — it ends the session.
         assert_ne!(
-            map(key(KeyCode::Char('q')), Screen::NowPlaying, false),
+            map(
+                key(KeyCode::Char('q')),
+                Screen::NowPlaying,
+                false,
+                false,
+                false,
+                false
+            ),
             Action::Quit
         );
     }
@@ -318,7 +726,7 @@ mod tests {
             KeyCode::Up,
         ] {
             assert_eq!(
-                map(key(code), Screen::Downloads, true),
+                map(key(code), Screen::Downloads, true, false, false, false),
                 Action::ToggleHelp,
                 "{code:?} should dismiss the overlay"
             );
@@ -328,16 +736,37 @@ mod tests {
     #[test]
     fn the_splash_is_dismissed_by_anything() {
         assert_eq!(
-            map(key(KeyCode::Enter), Screen::Splash, false),
+            map(
+                key(KeyCode::Enter),
+                Screen::Splash,
+                false,
+                false,
+                false,
+                false
+            ),
             Action::Dismiss
         );
         assert_eq!(
-            map(key(KeyCode::Char('x')), Screen::Splash, false),
+            map(
+                key(KeyCode::Char('x')),
+                Screen::Splash,
+                false,
+                false,
+                false,
+                false
+            ),
             Action::Dismiss
         );
         // Except `q`, which should still quit rather than making someone wait.
         assert_eq!(
-            map(key(KeyCode::Char('q')), Screen::Splash, false),
+            map(
+                key(KeyCode::Char('q')),
+                Screen::Splash,
+                false,
+                false,
+                false,
+                false
+            ),
             Action::Quit
         );
     }
@@ -357,7 +786,7 @@ mod tests {
         ];
         for (code, expected) in cases {
             assert_eq!(
-                map(key(code), Screen::Downloads, false),
+                map(key(code), Screen::Downloads, false, false, false, false),
                 expected,
                 "{code:?}"
             );
@@ -367,11 +796,25 @@ mod tests {
     #[test]
     fn unbound_keys_do_nothing_rather_than_something_surprising() {
         assert_eq!(
-            map(key(KeyCode::F(5)), Screen::Downloads, false),
+            map(
+                key(KeyCode::F(5)),
+                Screen::Downloads,
+                false,
+                false,
+                false,
+                false
+            ),
             Action::None
         );
         assert_eq!(
-            map(key(KeyCode::Insert), Screen::Search, false),
+            map(
+                key(KeyCode::Insert),
+                Screen::Search,
+                false,
+                false,
+                false,
+                false
+            ),
             Action::None
         );
     }
@@ -421,20 +864,10 @@ mod tests {
     fn a_click_outside_the_search_results_does_nothing() {
         let view = search_view();
         let main_col = 1 + SIDEBAR_WIDTH;
-        // Sidebar and the panel's left border.
+        // The panel's left border is not clickable (sidebar rows now toggle
+        // sources — covered by `a_click_on_a_sidebar_source_toggles_it`).
         assert_eq!(
             mouse_to_action(Screen::Search, view, 0, results_top(), false, false),
-            Action::None
-        );
-        assert_eq!(
-            mouse_to_action(
-                Screen::Search,
-                view,
-                SIDEBAR_WIDTH,
-                results_top(),
-                false,
-                false
-            ),
             Action::None
         );
         // Search bar rows and the results header.
@@ -471,6 +904,52 @@ mod tests {
         // Completely outside the view area.
         assert_eq!(
             mouse_to_action(Screen::Search, view, 200, 200, false, false),
+            Action::None
+        );
+    }
+
+    #[test]
+    fn a_click_on_a_sidebar_source_toggles_it() {
+        let view = search_view();
+        // Sidebar rows (offset 0 = "Sources" title, matching the painter):
+        // title, Games divider, FitGirl, Movies divider, YTS, TPB, 1337x,
+        // BitTorrented, TV divider, EZTV, TPB-TV, 1337x-TV, Anime divider,
+        // Nyaa, SubsPlease.
+        let cases = [
+            (1, None),
+            (2, None),
+            (3, Some(SourceId::FitGirl)),
+            (4, None),
+            (5, Some(SourceId::Yts)),
+            (6, Some(SourceId::TpbMovies)),
+            (7, Some(SourceId::X1337Movies)),
+            (8, Some(SourceId::Bittorrented)),
+            (9, None),
+            (10, Some(SourceId::Eztv)),
+            (11, Some(SourceId::TpbTv)),
+            (12, Some(SourceId::X1337Tv)),
+            (13, None),
+            (14, Some(SourceId::Nyaa)),
+            (15, Some(SourceId::SubsPlease)),
+            (16, None),
+            (29, None),
+        ];
+        for (row, expected) in cases {
+            let action = mouse_to_action(Screen::Search, view, 1, row, false, false);
+            assert_eq!(
+                action,
+                expected.map_or(Action::None, Action::ToggleSource),
+                "sidebar row {row}"
+            );
+        }
+        // Any column inside the sidebar toggles, not just the label column.
+        assert_eq!(
+            mouse_to_action(Screen::Search, view, SIDEBAR_WIDTH, 5, false, false),
+            Action::ToggleSource(SourceId::Yts)
+        );
+        // The panel's top border is not a sidebar row.
+        assert_eq!(
+            mouse_to_action(Screen::Search, view, 1, 0, false, false),
             Action::None
         );
     }

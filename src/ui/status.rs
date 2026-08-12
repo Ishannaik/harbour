@@ -34,6 +34,10 @@ fn segments(screen: Screen, state: &AppState) -> (&'static str, String) {
         }
         Screen::Downloads => ("downloads", download_context(&state.downloads.items)),
         Screen::Help => ("help", "press ? to close".to_string()),
+        // The settings view is a modal over the current screen (2.5); this
+        // arm exists for the exhaustive match — the status bar shows the
+        // screen underneath while the overlay is up.
+        Screen::Settings => ("settings", "esc to close".to_string()),
         Screen::NowPlaying => (
             "now playing",
             state

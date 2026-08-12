@@ -273,27 +273,42 @@ fn content_type(ext: Option<&str>) -> &'static str {
     }
 }
 
-/// Finds an installed player: mpv (the spec's renderer) first, then VLC, then
-/// Windows Media Player (ships on every Windows box, so a bare install always
-/// has a working default). Returns a command path, not a display name —
-/// `Command::new` needs the executable.
-pub fn find_player() -> Option<String> {
+/// Every installed player, in preference order: mpv, VLC, then Windows Media
+/// Player (ships on every Windows box, so a bare install always has a working
+/// default). Each entry is a (display label, command path) pair — the command
+/// is what `Command::new` needs, the label is what the TUI picker shows.
+/// Listing all three instead of stopping at the first lets the user choose.
+pub fn find_players() -> Vec<(String, String)> {
+    let mut players = Vec::new();
     if command_exists("mpv") {
-        Some("mpv".into())
-    } else if command_exists("vlc") {
-        Some("vlc".into())
-    } else {
-        // wmplayer is rarely on PATH; check the standard install roots.
-        // 64-bit wmplayer lives under Program Files; the x86 root is a
-        // fallback for 32-bit Windows.
-        [
-            r"C:\Program Files\Windows Media Player\wmplayer.exe",
-            r"C:\Program Files (x86)\Windows Media Player\wmplayer.exe",
-        ]
-        .into_iter()
-        .find(|p| Path::new(p).exists())
-        .map(str::to_string)
+        players.push(("mpv".to_string(), "mpv".to_string()));
     }
+    if command_exists("vlc") {
+        players.push(("VLC".to_string(), "vlc".to_string()));
+    }
+    // wmplayer is rarely on PATH; check the standard install roots.
+    // 64-bit wmplayer lives under Program Files; the x86 root is a
+    // fallback for 32-bit Windows.
+    for path in [
+        r"C:\Program Files\Windows Media Player\wmplayer.exe",
+        r"C:\Program Files (x86)\Windows Media Player\wmplayer.exe",
+    ] {
+        if Path::new(path).exists() {
+            players.push(("Windows Media Player".to_string(), path.to_string()));
+            break;
+        }
+    }
+    players
+}
+
+/// Finds the best installed player: mpv (the spec's renderer) first, then
+/// VLC, then Windows Media Player. Returns a command path, not a display
+/// name — the auto-pick is the first entry of [`find_players`].
+pub fn find_player() -> Option<String> {
+    find_players()
+        .into_iter()
+        .next()
+        .map(|(_, command)| command)
 }
 
 fn command_exists(cmd: &str) -> bool {
