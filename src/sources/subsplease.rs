@@ -14,10 +14,10 @@
 //! The magnet is the item `<link>`, which makes the infohash the one thing this
 //! feed always supplies.
 
-use quick_xml::Reader;
-use quick_xml::escape::resolve_predefined_entity;
-use quick_xml::events::Event;
-use quick_xml::name::QName;
+use oxixml_xml::Reader;
+use oxixml_xml::escape::resolve_predefined_entity;
+use oxixml_xml::events::Event;
+use oxixml_xml::name::QName;
 
 use crate::core::error::SourceError;
 use crate::core::magnet::{build_magnet, info_hash_from_magnet};

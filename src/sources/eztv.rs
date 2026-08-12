@@ -13,10 +13,10 @@
 //! optional and a missing one never fails an item — only a missing infohash or
 //! a missing name does (`FR-14`).
 
-use quick_xml::escape::resolve_predefined_entity;
-use quick_xml::events::{BytesStart, Event};
-use quick_xml::name::QName;
-use quick_xml::{Reader, XmlVersion};
+use oxixml_xml::escape::resolve_predefined_entity;
+use oxixml_xml::events::{BytesStart, Event};
+use oxixml_xml::name::QName;
+use oxixml_xml::{Reader, XmlVersion};
 
 use crate::core::error::SourceError;
 use crate::core::magnet::{build_magnet, info_hash_from_magnet, normalize_info_hash};

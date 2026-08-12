@@ -13,10 +13,10 @@
 //! `nyaa:infoHash`, which is why `reports_health` is true — these are the site's
 //! own swarm numbers, not a guess.
 
-use quick_xml::Reader;
-use quick_xml::escape::resolve_predefined_entity;
-use quick_xml::events::Event;
-use quick_xml::name::QName;
+use oxixml_xml::Reader;
+use oxixml_xml::escape::resolve_predefined_entity;
+use oxixml_xml::events::Event;
+use oxixml_xml::name::QName;
 
 use crate::core::error::SourceError;
 use crate::core::magnet::{build_magnet, info_hash_from_magnet, normalize_info_hash};
