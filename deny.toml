@@ -22,3 +22,11 @@ allow = [
     # CDLA-Permissive-2.0: OSI-approved permissive license (data-focused).
     "CDLA-Permissive-2.0",
 ]
+
+# Major-version duplicates across the transitive tree (thiserror 1/2,
+# getrandom ×3, hashbrown ×3, darling, bincode, hex…) are normal for a
+# binary pulling reqwest+tokio+librqbit+scraper; the crates pin different
+# majors and cannot be unified. Each version is still license-checked and
+# security-audited individually.
+[bans]
+multiple-versions = "allow"
