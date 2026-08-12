@@ -221,7 +221,7 @@ pub fn map_with_focus(
             KeyCode::Up => Action::MoveUp,
             KeyCode::Down => Action::MoveDown,
             KeyCode::Tab => Action::SwitchScreen,
-            KeyCode::Esc => Action::FocusSearchInput,
+            KeyCode::Esc | KeyCode::Backspace => Action::FocusSearchInput,
             KeyCode::Char(c) => Action::Type(c),
             _ => Action::None,
         },
@@ -306,7 +306,11 @@ pub fn mouse_to_action(
                 // source map to None — nothing to toggle there.
                 sidebar_source_at(row.saturating_sub(view_area.y + 1))
                     .map_or(Action::None, Action::ToggleSource)
-            } else if row < results_top || row >= results_bottom {
+            } else if row < results_top {
+                // The panel top border and the search bar: a click here means
+                // "I want to type" — focus the input pane.
+                Action::FocusSearchInput
+            } else if row >= results_bottom {
                 Action::None
             } else {
                 Action::ClickRow((row - results_top) as usize)
@@ -421,6 +425,19 @@ mod tests {
                 false
             ),
             Action::FocusSearchInput
+        );
+        assert_eq!(
+            map_with_focus(
+                key(KeyCode::Backspace),
+                Screen::Search,
+                false,
+                false,
+                false,
+                false,
+                false
+            ),
+            Action::FocusSearchInput,
+            "backspace is the reflexive way out of the results pane"
         );
         // Any other printable returns to the input and types there.
         assert_eq!(r(KeyCode::Char('x')), Action::Type('x'));
@@ -900,7 +917,7 @@ mod tests {
     }
 
     #[test]
-    fn a_click_outside_the_search_results_does_nothing() {
+    fn clicking_the_search_bar_focuses_the_input() {
         let view = search_view();
         let main_col = 1 + SIDEBAR_WIDTH;
         // The panel's left border is not clickable (sidebar rows now toggle
@@ -909,14 +926,27 @@ mod tests {
             mouse_to_action(Screen::Search, view, 0, results_top(), false, false),
             Action::None
         );
-        // Search bar rows and the results header.
+        // The panel top border and the search bar: "I want to type" — every
+        // row above the results header focuses the input pane.
         for row in 0..results_top() {
             assert_eq!(
                 mouse_to_action(Screen::Search, view, main_col + 10, row, false, false),
-                Action::None,
-                "row {row} is above the results"
+                Action::FocusSearchInput,
+                "row {row} is the bar — clicking it focuses the input"
             );
         }
+        // The results header row selects row 0, like any result row.
+        assert_eq!(
+            mouse_to_action(
+                Screen::Search,
+                view,
+                main_col + 10,
+                results_top(),
+                false,
+                false
+            ),
+            Action::ClickRow(0)
+        );
         // Hint line (the last inner row) and the panel's bottom border.
         assert_eq!(
             mouse_to_action(
