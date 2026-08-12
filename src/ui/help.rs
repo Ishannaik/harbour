@@ -19,7 +19,7 @@ use crate::theme::Theme;
 /// input handler without a row here is a documentation bug that a test catches.
 pub const BINDINGS: &[(&str, &str)] = &[
     // Search input pane: every key types; Enter moves to the results pane.
-    ("enter", "run the search, then focus the results"),
+    ("enter", "input: run the search · results: watch now"),
     ("↑ ↓", "move the selection"),
     ("tab", "switch between search and downloads"),
     // Search results pane: plain keys act on the selected row.
