@@ -1,0 +1,49 @@
+# FR-64: dependency license policy. OSI-permissive only — harbour is MIT and
+# copyleft dependencies would leak the license. Extend ONLY with
+# OSI-permissive licenses (see plan Step 6).
+[licenses]
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "0BSD",
+    "Unlicense",
+    "CC0-1.0",
+    "Unicode-3.0",
+    # MPL-2.0: weak/file-level copyleft (not project-infecting). Required by
+    # the pre-existing scraper → cssparser chain (Servo lineage, the CSS
+    # selector engine); refusing it would make the deny gate permanently red
+    # on a core dependency. Standard in Rust ecosystems (Firefox/Servo).
+    "MPL-2.0",
+    # CDLA-Permissive-2.0: OSI-approved permissive license (data-focused).
+    "CDLA-Permissive-2.0",
+]
+
+# Major-version duplicates across the transitive tree (thiserror 1/2,
+# getrandom ×3, hashbrown ×3, darling, bincode, hex…) are normal for a
+# binary pulling reqwest+tokio+librqbit+scraper; the crates pin different
+# majors and cannot be unified. Each version is still license-checked and
+# security-audited individually.
+[bans]
+multiple-versions = "allow"
+
+[advisories]
+# quick-xml DoS pair: the direct dep migrated to oxixml-xml; the vulnerable
+# copy is transitive via librqbit-upnp (hard-pinned to quick-xml 0.37.5, no
+# upstream fix — librqbit 9 is RC). Surface: UPnP responses from trusted
+# local-network devices only. Mirrors the audit-check ignore in ci.yml.
+# Unmaintained transitives (backoff, bincode, crypto-hash, instant) have no
+# maintained replacement in the pinned tree; each is ignored explicitly so a
+# NEW unmaintained crate still fails loudly.
+ignore = [
+    "RUSTSEC-2026-0194",
+    "RUSTSEC-2026-0195",
+    { id = "RUSTSEC-2025-0012", reason = "backoff is transitive (reqwest chain), unmaintained upstream, no replacement in pinned tree" },
+    { id = "RUSTSEC-2025-0141", reason = "bincode is transitive (librqbit), unmaintained upstream, no replacement in pinned tree" },
+    { id = "RUSTSEC-2025-0060", reason = "crypto-hash is transitive (librqbit sha1), unmaintained upstream, no replacement in pinned tree" },
+    { id = "RUSTSEC-2024-0384", reason = "instant is transitive, unmaintained upstream, no replacement in pinned tree" },
+]

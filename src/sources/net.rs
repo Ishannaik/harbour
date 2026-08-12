@@ -90,64 +90,7 @@ impl SourceClient {
 
     /// One URL, with retries. Public so a source can inspect headers.
     pub async fn get(&self, url: &str, ctx: &SearchCtx) -> Result<reqwest::Response, SourceError> {
-        let deadline = tokio::time::Instant::now() + ctx.total_deadline;
-        let mut last: Option<SourceError> = None;
-
-        for attempt in 0..ATTEMPTS_PER_HOST {
-            if ctx.cancel.is_cancelled() {
-                return Err(SourceError::Cancelled);
-            }
-            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-            if remaining.is_zero() {
-                return Err(SourceError::Timeout);
-            }
-
-            let request = self.inner.get(url).timeout(remaining).send();
-            let outcome = tokio::select! {
-                biased;
-                _ = ctx.cancel.cancelled() => return Err(SourceError::Cancelled),
-                res = request => res,
-            };
-
-            match outcome {
-                Ok(response) => {
-                    let status = response.status().as_u16();
-                    if response.status().is_success() {
-                        return Ok(response);
-                    }
-                    if let Some(blocked) = challenge_reason(&response) {
-                        // Never retried: a challenge page does not become a 200
-                        // by asking again.
-                        return Err(SourceError::Blocked(blocked));
-                    }
-                    if !RETRYABLE.contains(&status) {
-                        return Err(if response.status().is_client_error() {
-                            SourceError::Blocked(format!("HTTP {status}"))
-                        } else {
-                            SourceError::Network(format!("HTTP {status}"))
-                        });
-                    }
-                    let wait = retry_after(&response)
-                        .filter(|d| *d <= MAX_RETRY_AFTER)
-                        .unwrap_or_else(|| backoff(attempt));
-                    last = Some(SourceError::Network(format!("HTTP {status}")));
-                    if attempt + 1 < ATTEMPTS_PER_HOST && sleep_within(wait, deadline, ctx).await {
-                        continue;
-                    }
-                    return Err(last.unwrap_or(SourceError::Timeout));
-                }
-                Err(err) if err.is_timeout() => return Err(SourceError::Timeout),
-                Err(err) => {
-                    last = Some(SourceError::Network(err.to_string()));
-                    let wait = backoff(attempt);
-                    if attempt + 1 < ATTEMPTS_PER_HOST && sleep_within(wait, deadline, ctx).await {
-                        continue;
-                    }
-                    return Err(last.unwrap_or_else(|| SourceError::Network("unknown".into())));
-                }
-            }
-        }
-        Err(last.unwrap_or(SourceError::Timeout))
+        fetch_with_retries(&self.inner, url, ctx).await
     }
 
     /// Tries each host in turn until one answers, starting from the sticky hint.
@@ -176,6 +119,70 @@ impl SourceClient {
         }
         Err(last)
     }
+}
+
+/// One URL, with retries. Lives outside the `impl` so the retry ladder's
+/// nesting stays within the budget — every block here is one level shallower
+/// than it would be as a method.
+async fn fetch_with_retries(
+    client: &reqwest::Client,
+    url: &str,
+    ctx: &SearchCtx,
+) -> Result<reqwest::Response, SourceError> {
+    let deadline = tokio::time::Instant::now() + ctx.total_deadline;
+    let mut last: Option<SourceError> = None;
+
+    for attempt in 0..ATTEMPTS_PER_HOST {
+        if ctx.cancel.is_cancelled() {
+            return Err(SourceError::Cancelled);
+        }
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            return Err(SourceError::Timeout);
+        }
+
+        let request = client.get(url).timeout(remaining).send();
+        let outcome = tokio::select! {
+            biased;
+            _ = ctx.cancel.cancelled() => return Err(SourceError::Cancelled),
+            res = request => res,
+        };
+
+        match outcome {
+            Ok(response) => {
+                let status = response.status().as_u16();
+                if response.status().is_success() {
+                    return Ok(response);
+                }
+                if let Some(blocked) = challenge_reason(&response) {
+                    // Never retried: a challenge page does not become a 200
+                    // by asking again.
+                    return Err(SourceError::Blocked(blocked));
+                }
+                if !RETRYABLE.contains(&status) {
+                    return Err(non_retryable_error(&response));
+                }
+                let wait = retry_after(&response)
+                    .filter(|d| *d <= MAX_RETRY_AFTER)
+                    .unwrap_or_else(|| backoff(attempt));
+                last = Some(SourceError::Network(format!("HTTP {status}")));
+                if attempt + 1 < ATTEMPTS_PER_HOST && sleep_within(wait, deadline, ctx).await {
+                    continue;
+                }
+                return Err(last.unwrap_or(SourceError::Timeout));
+            }
+            Err(err) if err.is_timeout() => return Err(SourceError::Timeout),
+            Err(err) => {
+                last = Some(SourceError::Network(err.to_string()));
+                let wait = backoff(attempt);
+                if attempt + 1 < ATTEMPTS_PER_HOST && sleep_within(wait, deadline, ctx).await {
+                    continue;
+                }
+                return Err(last.unwrap_or_else(|| SourceError::Network("unknown".into())));
+            }
+        }
+    }
+    Err(last.unwrap_or(SourceError::Timeout))
 }
 
 impl Default for SourceClient {
@@ -216,6 +223,17 @@ fn challenge_reason(response: &reqwest::Response) -> Option<String> {
         }
     }
     None
+}
+
+/// Names the error for a status we will not retry: a 4xx is a block (the
+/// server rejected us), anything else is network trouble.
+fn non_retryable_error(response: &reqwest::Response) -> SourceError {
+    let status = response.status().as_u16();
+    if response.status().is_client_error() {
+        SourceError::Blocked(format!("HTTP {status}"))
+    } else {
+        SourceError::Network(format!("HTTP {status}"))
+    }
 }
 
 /// Parses `Retry-After` in either of its two legal forms.

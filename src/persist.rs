@@ -30,7 +30,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::core::paths;
-use crate::core::types::QueueItem;
+use crate::core::types::{QueueItem, SourceId};
 
 /// Hard cap on remembered search queries (`FR-49`).
 pub const HISTORY_CAP: usize = 500;
@@ -47,6 +47,13 @@ pub struct Config {
     pub seed_by_default: bool,
     /// Extra announce URLs added to every torrent.
     pub trackers: Vec<String>,
+    /// External player for watch mode (`w`): an explicit path or command
+    /// name (mpv/VLC). None = auto-detect on PATH (mpv first, then VLC).
+    pub player: Option<String>,
+    /// Sources the user disabled via the sidebar; they are never queried or
+    /// merged. Empty = everything enabled (additive: configs written by
+    /// older builds keep working).
+    pub disabled_sources: Vec<SourceId>,
 }
 
 impl Default for Config {
@@ -56,6 +63,8 @@ impl Default for Config {
             theme: "titanium".into(),
             seed_by_default: true,
             trackers: Vec::new(),
+            player: None,
+            disabled_sources: Vec::new(),
         }
     }
 }
@@ -323,6 +332,18 @@ pub fn atomic_write(path: &Path, bytes: &[u8]) -> io::Result<()> {
         let _ = fs::remove_file(&tmp);
         return Err(e);
     }
+    // fsync before rename (FR-55): without it a power loss can make the rename
+    // durable while the data blocks are not, leaving a zero-length or partial
+    // ledger — the exact "no partial file" promise this function makes. The
+    // handle must be opened write-enabled: sync_all on Windows requires it.
+    if let Err(e) = fs::OpenOptions::new()
+        .write(true)
+        .open(&tmp)
+        .and_then(|f| f.sync_all())
+    {
+        let _ = fs::remove_file(&tmp);
+        return Err(e);
+    }
     // rename replaces the destination on both Unix and Windows.
     if let Err(e) = fs::rename(&tmp, path) {
         let _ = fs::remove_file(&tmp);
@@ -493,6 +514,8 @@ mod tests {
             theme: "midnight".into(),
             seed_by_default: false,
             trackers: vec!["udp://tracker.example:80".into()],
+            player: Some("mpv".into()),
+            disabled_sources: vec![SourceId::FitGirl, SourceId::Nyaa],
         };
         store.save_config(&cfg).expect("save");
         assert_eq!(store.load_config(), Loaded::Ok(cfg));
@@ -536,6 +559,10 @@ mod tests {
         let cfg = store.load_config().value();
         assert_eq!(cfg.theme, "midnight");
         assert!(cfg.seed_by_default, "unspecified keys keep their default");
+        assert!(
+            cfg.disabled_sources.is_empty(),
+            "a config without the key keeps every source enabled"
+        );
     }
 
     #[test]

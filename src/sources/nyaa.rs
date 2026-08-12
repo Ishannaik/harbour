@@ -13,10 +13,10 @@
 //! `nyaa:infoHash`, which is why `reports_health` is true — these are the site's
 //! own swarm numbers, not a guess.
 
-use quick_xml::Reader;
-use quick_xml::escape::resolve_predefined_entity;
-use quick_xml::events::Event;
-use quick_xml::name::QName;
+use oxixml_xml::Reader;
+use oxixml_xml::escape::resolve_predefined_entity;
+use oxixml_xml::events::Event;
+use oxixml_xml::name::QName;
 
 use crate::core::error::SourceError;
 use crate::core::magnet::{build_magnet, info_hash_from_magnet, normalize_info_hash};
@@ -135,6 +135,13 @@ impl Item {
     }
 }
 
+/// Ends the open `<item>`, keeping the row when it gathered the fields a row needs.
+fn push_item_row(out: &mut Vec<TorrentResult>, item: &mut Item) {
+    if let Some(row) = std::mem::take(item).finish() {
+        out.push(row);
+    }
+}
+
 /// Turns one feed body into rows.
 ///
 /// Free of I/O so it can be tested against a committed fixture — the pattern
@@ -179,9 +186,7 @@ pub fn parse(body: &str) -> Result<Vec<TorrentResult>, SourceError> {
                 let name = local_name(tag.name());
                 if item_depth == Some(depth) && name == "item" {
                     item_depth = None;
-                    if let Some(row) = std::mem::take(&mut item).finish() {
-                        out.push(row);
-                    }
+                    push_item_row(&mut out, &mut item);
                 } else if item_depth == Some(depth - 1)
                     && let Some(open) = field.take()
                 {
@@ -212,18 +217,19 @@ pub fn parse(body: &str) -> Result<Vec<TorrentResult>, SourceError> {
                 // it into the surrounding text, so a magnet written
                 // `…&amp;dn=…` has to be reassembled here — without this the
                 // hash runs into `dn` and the row is silently dropped.
-                if field.is_some() {
-                    let entity = reference
-                        .decode()
-                        .map_err(|e| SourceError::Parse(e.to_string()))?;
-                    if let Some(resolved) = resolve_predefined_entity(&entity) {
-                        text.push_str(resolved);
-                    } else if let Some(ch) = numeric_char_ref(&entity) {
-                        text.push(ch);
-                    }
-                    // An entity the feed never declared is dropped: a stray
-                    // `&nbsp;` is not worth losing the release over.
+                if field.is_none() {
+                    continue;
                 }
+                let entity = reference
+                    .decode()
+                    .map_err(|e| SourceError::Parse(e.to_string()))?;
+                if let Some(resolved) = resolve_predefined_entity(&entity) {
+                    text.push_str(resolved);
+                } else if let Some(ch) = numeric_char_ref(&entity) {
+                    text.push(ch);
+                }
+                // An entity the feed never declared is dropped: a stray
+                // `&nbsp;` is not worth losing the release over.
             }
             Event::Eof => break,
             _ => {}
@@ -488,7 +494,10 @@ mod tests {
     fn an_empty_feed_is_not_an_error() {
         // A query that matched nothing is a successful empty search and must
         // never mark the source offline.
-        let empty = r#"<?xml version="1.0"?><rss version="2.0"><channel><title>Nyaa</title></channel></rss>"#;
+        let empty = concat!(
+            "<?xml version=\"1.0\"?><rss version=\"2.0\">",
+            "<channel><title>Nyaa</title></channel></rss>"
+        );
         assert_eq!(parse(empty).expect("empty feed parses").len(), 0);
         assert_eq!(parse("").expect("an empty body parses").len(), 0);
     }
