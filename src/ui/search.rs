@@ -289,7 +289,13 @@ fn draw_search_bar(
     }
     let colors = &theme.colors;
     let s = &theme.symbols;
+    // The bar is the mode indicator: accent + cursor means "typing here",
+    // muted + a label means "results focused — esc to type". Clicking the
+    // bar returns focus to the input (mouse_to_action).
+    let input_focused = state.focus;
     let accent = Style::default().fg(colors.accent().to_ratatui());
+    let muted = Style::default().fg(colors.muted().to_ratatui());
+    let border_style = if input_focused { accent } else { muted };
     let inner = (area.width - 2) as usize;
     let fill = s.border_h.as_ref().repeat(inner);
     let (top, bottom) = (
@@ -297,11 +303,11 @@ fn draw_search_bar(
         format!("{}{}{}", s.border_bl.as_ref(), fill, s.border_br.as_ref()),
     );
     frame.render_widget(
-        Paragraph::new(Line::from(Span::styled(top, accent))),
+        Paragraph::new(Line::from(Span::styled(top, border_style))),
         Rect::new(area.x, area.y, area.width, 1),
     );
     frame.render_widget(
-        Paragraph::new(Line::from(Span::styled(bottom, accent))),
+        Paragraph::new(Line::from(Span::styled(bottom, border_style))),
         Rect::new(area.x, area.y + 2, area.width, 1),
     );
 
@@ -310,6 +316,35 @@ fn draw_search_bar(
     } else {
         ""
     };
+
+    let mut spans = vec![
+        Span::styled(s.border_v.as_ref().to_string(), border_style),
+        Span::raw(" "),
+    ];
+
+    if !input_focused {
+        // The results pane owns the keyboard: the bar says so, and says how
+        // to get back to typing. No cursor — nothing is being typed.
+        let label = "results focused — esc or backspace to type";
+        spans.push(Span::styled(
+            truncate(label, inner.saturating_sub(3)),
+            muted,
+        ));
+        let pad = inner.saturating_sub(2 + label.chars().count());
+        if pad > 0 {
+            spans.push(Span::raw(" ".repeat(pad)));
+        }
+        if !spinner.is_empty() {
+            spans.push(Span::styled(spinner, muted));
+        }
+        spans.push(Span::styled(s.border_v.as_ref().to_string(), muted));
+        frame.render_widget(
+            Paragraph::new(Line::from(spans)),
+            Rect::new(area.x, area.y + 1, area.width, 1),
+        );
+        return;
+    }
+
     // Empty query = browse mode (design §2.2), so the bar labels it as such
     // while a search runs instead of pretending there is a query to edit.
     let (text, base) = match (state.query.is_empty(), state.searching) {
