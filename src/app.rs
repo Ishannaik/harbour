@@ -607,13 +607,6 @@ impl App {
     /// screen, so navigation is stable (arrow keys during streaming read as
     /// "let me look at what's here", not "move the cursor under a changing
     /// list").
-    fn stop_search(&mut self) {
-        if let Some(token) = self.search_cancel.take() {
-            token.cancel();
-        }
-        self.state.search.searching = false;
-    }
-
     /// Starts a search, cancelling whatever was in flight (`FR-20`).
     fn start_search(&mut self, query: String) {
         if let Some(previous) = self.search_cancel.take() {
@@ -1324,25 +1317,18 @@ async fn apply_action(app: &mut App, action: Action) {
                 }
             }
         }
-        Action::MoveUp => {
-            // During a streaming search the list shifts under the cursor;
-            // an arrow press reads as "let me look at what's here", so it
-            // stops the search and keeps the partial results stable.
-            if app.state.screen == Screen::Search {
-                app.stop_search();
-            }
-            move_selection(app, -1);
-        }
-        Action::MoveDown => {
-            if app.state.screen == Screen::Search {
-                app.stop_search();
-            }
-            move_selection(app, 1);
-        }
+        Action::MoveUp => move_selection(app, -1),
+        Action::MoveDown => move_selection(app, 1),
         Action::Backspace => {
             app.state.search.query.pop();
         }
         Action::Escape => {
+            // A visible error banner goes away on the first Esc — the user
+            // has seen it; it must never need a screen-switch to clear.
+            if app.state.error_banner.is_some() {
+                app.state.error_banner = None;
+                return;
+            }
             if app.settings_open {
                 // First Esc exits an inline edit, the second closes the
                 // overlay — the hint's "esc back" is two steps, never a
@@ -1372,7 +1358,12 @@ async fn apply_action(app: &mut App, action: Action) {
             // on the selected row from here (d/w/s/?).
             app.state.search.focus = false;
         }
-        Action::FocusSearchInput => app.state.search.focus = true,
+        Action::FocusSearchInput => {
+            app.state.search.focus = true;
+            // Leaving the results pane means the banner has been seen —
+            // one Esc from anywhere dismisses it.
+            app.state.error_banner = None;
+        }
         Action::Type(c) => {
             // Typing from the results pane returns focus to the input and
             // types there (fzf-style refinement).
