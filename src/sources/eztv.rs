@@ -167,6 +167,13 @@ impl Item {
     }
 }
 
+/// Ends the open `<item>`, keeping the row when it gathered the fields a row needs.
+fn push_item_row(out: &mut Vec<TorrentResult>, item: &mut Item) {
+    if let Some(row) = std::mem::take(item).finish() {
+        out.push(row);
+    }
+}
+
 /// Turns one feed body into rows.
 ///
 /// Free of I/O so it can be tested against a committed fixture — the pattern
@@ -202,13 +209,16 @@ pub fn parse(body: &str) -> Result<Vec<TorrentResult>, SourceError> {
                 if item_depth.is_none() && name == "item" {
                     item_depth = Some(depth);
                     item = Item::default();
-                } else if item_depth == Some(depth - 1) {
-                    if name == "enclosure" {
-                        item.absorb_enclosure(&tag)?;
-                    }
-                    field = Some(name);
-                    text.clear();
+                    continue;
                 }
+                if item_depth != Some(depth - 1) {
+                    continue;
+                }
+                if name == "enclosure" {
+                    item.absorb_enclosure(&tag)?;
+                }
+                field = Some(name);
+                text.clear();
             }
             // `<enclosure …/>` is usually self-closing, and self-closing tags
             // change no depth.
@@ -221,9 +231,7 @@ pub fn parse(body: &str) -> Result<Vec<TorrentResult>, SourceError> {
                 let name = local_name(tag.name());
                 if item_depth == Some(depth) && name == "item" {
                     item_depth = None;
-                    if let Some(row) = std::mem::take(&mut item).finish() {
-                        out.push(row);
-                    }
+                    push_item_row(&mut out, &mut item);
                 } else if item_depth == Some(depth - 1)
                     && let Some(open) = field.take()
                 {
@@ -253,18 +261,19 @@ pub fn parse(body: &str) -> Result<Vec<TorrentResult>, SourceError> {
                 // quick-xml reports `&amp;` as its own event instead of folding
                 // it into the surrounding text, so `Tom &amp; Jerry` arrives as
                 // three events and has to be reassembled here.
-                if field.is_some() {
-                    let entity = reference
-                        .decode()
-                        .map_err(|e| SourceError::Parse(e.to_string()))?;
-                    if let Some(resolved) = resolve_predefined_entity(&entity) {
-                        text.push_str(resolved);
-                    } else if let Some(ch) = numeric_char_ref(&entity) {
-                        text.push(ch);
-                    }
-                    // An entity the feed never declared is dropped: a stray
-                    // `&nbsp;` is not worth losing the episode over.
+                if field.is_none() {
+                    continue;
                 }
+                let entity = reference
+                    .decode()
+                    .map_err(|e| SourceError::Parse(e.to_string()))?;
+                if let Some(resolved) = resolve_predefined_entity(&entity) {
+                    text.push_str(resolved);
+                } else if let Some(ch) = numeric_char_ref(&entity) {
+                    text.push(ch);
+                }
+                // An entity the feed never declared is dropped: a stray
+                // `&nbsp;` is not worth losing the episode over.
             }
             Event::Eof => break,
             _ => {}

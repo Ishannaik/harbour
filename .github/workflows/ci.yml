@@ -38,5 +38,13 @@ jobs:
         uses: rustsec/audit-check@v2
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
+          # RUSTSEC-2026-0194/0195: quick-xml <0.41 DoS advisories (quadratic
+          # duplicate-attr scan, unbounded namespace allocation). The direct
+          # dep migrated to oxixml-xml; the vulnerable copy is transitive via
+          # librqbit-upnp (hard-pinned to quick-xml 0.37.5, no upstream fix —
+          # librqbit 9 is the only update path and is a release candidate).
+          # Surface: UPnP responses from trusted local-network devices only;
+          # DoS, no data exposure. Revisit when librqbit ships stable 9.x.
+          ignore: RUSTSEC-2026-0194,RUSTSEC-2026-0195
       - name: deny
         uses: EmbarkStudios/cargo-deny-action@v2

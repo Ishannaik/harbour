@@ -273,15 +273,17 @@ fn draw_search_bar(
             } else {
                 colors.accent()
             };
-            if c != run_color {
-                if !run.is_empty() {
-                    spans.push(Span::styled(
-                        std::mem::take(&mut run),
-                        Style::default().fg(run_color.to_ratatui()),
-                    ));
-                }
-                run_color = c;
+            if c == run_color {
+                run.push(ch);
+                continue;
             }
+            if !run.is_empty() {
+                spans.push(Span::styled(
+                    std::mem::take(&mut run),
+                    Style::default().fg(run_color.to_ratatui()),
+                ));
+            }
+            run_color = c;
             run.push(ch);
         }
         if !run.is_empty() {

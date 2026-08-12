@@ -26,7 +26,7 @@ mod search;
 #[path = "../src/sources/mod.rs"]
 mod sources;
 
-use crate::core::types::{EngineEvent, SearchCtx, SourceId, SourceStatus};
+use crate::core::types::{EngineEvent, SearchCtx, SourceId, SourceStatus, TorrentResult};
 use crate::search::SearchEngine;
 use crate::sources::cache::SearchCache;
 
@@ -99,6 +99,36 @@ fn report(events: &[EngineEvent]) -> (usize, usize) {
     (answered, failed)
 }
 
+/// The per-row contract every parser must satisfy: a 40-char lowercase hex
+/// infohash, a name, the source tag, and — when present — a magnet that
+/// carries its own infohash. Lives in a helper so the event loop stays flat.
+fn validate_row(source: &SourceId, row: &TorrentResult) {
+    assert_eq!(
+        row.info_hash.len(),
+        40,
+        "{source}: infohash is not 40 hex chars: {:?}",
+        row.info_hash
+    );
+    assert!(
+        row.info_hash.chars().all(|c| c.is_ascii_hexdigit()),
+        "{source}: non-hex infohash {:?}",
+        row.info_hash
+    );
+    assert_eq!(
+        row.info_hash,
+        row.info_hash.to_lowercase(),
+        "{source}: infohash must be lowercased at the boundary"
+    );
+    assert!(!row.name.trim().is_empty(), "{source}: row with no name");
+    assert_eq!(row.source, *source, "row tagged with the wrong source");
+    if let Some(magnet) = &row.magnet {
+        assert!(
+            magnet.contains(&row.info_hash),
+            "{source}: magnet does not carry its own infohash"
+        );
+    }
+}
+
 #[tokio::test]
 async fn a_real_query_returns_usable_rows_from_the_live_sites() {
     if !enabled() {
@@ -115,34 +145,12 @@ async fn a_real_query_returns_usable_rows_from_the_live_sites() {
     // sources happen to be up today.
     let mut rows = 0;
     for event in &events {
-        if let EngineEvent::SourceResults { source, results } = event {
-            for row in results {
-                rows += 1;
-                assert_eq!(
-                    row.info_hash.len(),
-                    40,
-                    "{source}: infohash is not 40 hex chars: {:?}",
-                    row.info_hash
-                );
-                assert!(
-                    row.info_hash.chars().all(|c| c.is_ascii_hexdigit()),
-                    "{source}: non-hex infohash {:?}",
-                    row.info_hash
-                );
-                assert_eq!(
-                    row.info_hash,
-                    row.info_hash.to_lowercase(),
-                    "{source}: infohash must be lowercased at the boundary"
-                );
-                assert!(!row.name.trim().is_empty(), "{source}: row with no name");
-                assert_eq!(row.source, *source, "row tagged with the wrong source");
-                if let Some(magnet) = &row.magnet {
-                    assert!(
-                        magnet.contains(&row.info_hash),
-                        "{source}: magnet does not carry its own infohash"
-                    );
-                }
-            }
+        let EngineEvent::SourceResults { source, results } = event else {
+            continue;
+        };
+        for row in results {
+            rows += 1;
+            validate_row(source, row);
         }
     }
     println!("  {rows} rows validated");
@@ -193,16 +201,17 @@ async fn one_dead_source_never_stops_the_rest() {
     // A failed source must be reported as offline rather than silently missing,
     // or the sidebar would show it as still checking forever.
     for event in &events {
-        if let EngineEvent::SourceFailed { source, .. } = event {
-            let marked_offline = events.iter().any(|e| {
-                matches!(e,
-                EngineEvent::SourceStatus { source: s, status }
-                    if s == source && *status == SourceStatus::Checking)
-            });
-            assert!(
-                marked_offline,
-                "{source} failed without ever announcing that it started"
-            );
-        }
+        let EngineEvent::SourceFailed { source, .. } = event else {
+            continue;
+        };
+        let marked_offline = events.iter().any(|e| {
+            matches!(e,
+            EngineEvent::SourceStatus { source: s, status }
+                if s == source && *status == SourceStatus::Checking)
+        });
+        assert!(
+            marked_offline,
+            "{source} failed without ever announcing that it started"
+        );
     }
 }

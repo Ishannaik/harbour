@@ -332,18 +332,13 @@ impl Queue {
 
             // Metadata arriving is the first moment we know the real name/size.
             if let Some(name) = &snap.name {
-                let item = &mut self.items[idx];
-                if item.name != *name || item.total_bytes != snap.stats.total_bytes {
-                    item.name = name.clone();
-                    if snap.stats.total_bytes > 0 {
-                        item.total_bytes = snap.stats.total_bytes;
-                    }
-                    events.push(EngineEvent::Metadata {
-                        id: snap.id.clone(),
-                        name: name.clone(),
-                        total_bytes: item.total_bytes,
-                    });
-                }
+                sync_metadata(
+                    &mut self.items,
+                    idx,
+                    name,
+                    snap.stats.total_bytes,
+                    &mut events,
+                );
             }
 
             let was_finished = self.items[idx].finished;
@@ -376,22 +371,23 @@ impl Queue {
                 freed_slot = true;
             }
 
-            if projected != previous {
-                if previous.is_active_download() && !projected.is_active_download() {
-                    freed_slot = true;
-                }
+            let status_changed = projected != previous;
+            if status_changed && previous.is_active_download() && !projected.is_active_download() {
+                freed_slot = true;
+            }
+            if status_changed {
                 item.status = projected;
-                if projected == QueueStatus::Failed {
-                    let message = snap
-                        .error
-                        .clone()
-                        .unwrap_or_else(|| "the torrent engine reported a failure".into());
-                    item.error = Some(message.clone());
-                    events.push(EngineEvent::Failed {
-                        id: snap.id.clone(),
-                        message,
-                    });
-                }
+            }
+            if status_changed && projected == QueueStatus::Failed {
+                let message = snap
+                    .error
+                    .clone()
+                    .unwrap_or_else(|| "the torrent engine reported a failure".into());
+                item.error = Some(message.clone());
+                events.push(EngineEvent::Failed {
+                    id: snap.id.clone(),
+                    message,
+                });
             }
 
             // Track when a seed started so the detector's grace has an anchor.
@@ -414,12 +410,7 @@ impl Queue {
                 item.status = QueueStatus::Missing;
             }
             if let Some(rt) = self.runtime.get_mut(&id) {
-                rt.stray_hits = 0;
-                rt.seed_started_at = None;
-                if let Some(stats) = rt.stats.as_mut() {
-                    stats.speed_mib = 0.0;
-                    stats.peers = None;
-                }
+                reset_runtime(rt);
             }
             events.push(EngineEvent::Missing { id });
             freed_slot = true;
@@ -479,14 +470,10 @@ impl Queue {
 
         for item in &mut self.items {
             match item.status {
-                // Nothing is live yet after a restart.
-                QueueStatus::Downloading => {
-                    item.status = if safe {
-                        QueueStatus::Paused
-                    } else {
-                        QueueStatus::Queued
-                    }
-                }
+                // Nothing is live yet after a restart: the bootguard parks
+                // everything, otherwise a download waits its turn.
+                QueueStatus::Downloading if !safe => item.status = QueueStatus::Queued,
+                QueueStatus::Downloading => item.status = QueueStatus::Paused,
                 QueueStatus::Queued | QueueStatus::Seeding if safe => {
                     item.status = QueueStatus::Paused
                 }
@@ -531,6 +518,40 @@ impl Queue {
             }
         }
         self.promote().await;
+    }
+}
+
+/// Applies one snapshot's name/size to the queue item, pushing a `Metadata`
+/// event when something actually changed.
+fn sync_metadata(
+    items: &mut [QueueItem],
+    idx: usize,
+    name: &str,
+    total_bytes: u64,
+    events: &mut Vec<EngineEvent>,
+) {
+    let item = &mut items[idx];
+    if item.name != name || item.total_bytes != total_bytes {
+        item.name = name.to_owned();
+        if total_bytes > 0 {
+            item.total_bytes = total_bytes;
+        }
+        events.push(EngineEvent::Metadata {
+            id: item.id.clone(),
+            name: name.to_owned(),
+            total_bytes: item.total_bytes,
+        });
+    }
+}
+
+/// Clears the file-gone detector's state for one runtime entry: the grace
+/// anchor and any stale stats, so a re-add starts from a clean slate.
+fn reset_runtime(rt: &mut Runtime) {
+    rt.stray_hits = 0;
+    rt.seed_started_at = None;
+    if let Some(stats) = rt.stats.as_mut() {
+        stats.speed_mib = 0.0;
+        stats.peers = None;
     }
 }
 

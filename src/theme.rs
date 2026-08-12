@@ -898,54 +898,7 @@ fn parse_symbols(symbols: Option<&serde_json::Value>) -> Result<Symbols, ThemeEr
             .as_object()
             .ok_or_else(|| ThemeError("`symbols` must be an object".into()))?;
         for (key, val) in o {
-            match key.as_str() {
-                "preset" => {
-                    let p = val
-                        .as_str()
-                        .ok_or_else(|| ThemeError("`symbols.preset` must be a string".into()))?;
-                    preset = match p {
-                        "unicode" => Preset::Unicode,
-                        "ascii" => Preset::Ascii,
-                        "nerd" => Preset::Nerd,
-                        other => {
-                            return Err(ThemeError(format!(
-                                "unknown symbol preset `{other}` (expected unicode|nerd|ascii)"
-                            )));
-                        }
-                    };
-                }
-                "spinnerFrames" => {
-                    let frames = val.as_array().ok_or_else(|| {
-                        ThemeError("`symbols.spinnerFrames` must be an array".into())
-                    })?;
-                    if frames.is_empty() {
-                        return Err(ThemeError(
-                            "`symbols.spinnerFrames` must not be empty".into(),
-                        ));
-                    }
-                    spinner = frames
-                        .iter()
-                        .map(|f| {
-                            f.as_str().map(str::to_string).ok_or_else(|| {
-                                ThemeError("`symbols.spinnerFrames` entries must be strings".into())
-                            })
-                        })
-                        .collect::<Result<_, _>>()?;
-                }
-                other if KNOWN_SYMBOL_KEYS.contains(&other) => {
-                    let glyph = val
-                        .as_str()
-                        .ok_or_else(|| ThemeError(format!("`symbols.{other}` must be a string")))?;
-                    if glyph.is_empty() {
-                        return Err(ThemeError(format!("`symbols.{other}` must not be empty")));
-                    }
-                    overrides.insert(other.to_string(), glyph.to_string());
-                }
-                _ => {
-                    // Unknown override keys are ignored per spec (theming.md) —
-                    // a loud error would reject forward-compatible themes.
-                }
-            }
+            apply_symbol_key(key.as_str(), val, &mut preset, &mut overrides, &mut spinner)?;
         }
     }
 
@@ -975,6 +928,68 @@ fn parse_symbols(symbols: Option<&serde_json::Value>) -> Result<Symbols, ThemeEr
         dot_offline: pick("dotOffline", g.dot_offline),
         spinner_frames: spinner,
     })
+}
+
+/// Applies one `symbols` key to the live parse state. Split out of
+/// `parse_symbols` so the object loop stays shallow — every arm either returns
+/// a loud error (theming.md: never silent) or mutates exactly the field it
+/// owns, so a helper reads the same as the inline match did.
+fn apply_symbol_key(
+    key: &str,
+    val: &serde_json::Value,
+    preset: &mut Preset,
+    overrides: &mut HashMap<String, String>,
+    spinner: &mut Vec<String>,
+) -> Result<(), ThemeError> {
+    match key {
+        "preset" => {
+            let p = val
+                .as_str()
+                .ok_or_else(|| ThemeError("`symbols.preset` must be a string".into()))?;
+            *preset = match p {
+                "unicode" => Preset::Unicode,
+                "ascii" => Preset::Ascii,
+                "nerd" => Preset::Nerd,
+                other => {
+                    return Err(ThemeError(format!(
+                        "unknown symbol preset `{other}` (expected unicode|nerd|ascii)"
+                    )));
+                }
+            };
+        }
+        "spinnerFrames" => {
+            let frames = val
+                .as_array()
+                .ok_or_else(|| ThemeError("`symbols.spinnerFrames` must be an array".into()))?;
+            if frames.is_empty() {
+                return Err(ThemeError(
+                    "`symbols.spinnerFrames` must not be empty".into(),
+                ));
+            }
+            *spinner = frames
+                .iter()
+                .map(|f| {
+                    f.as_str().map(str::to_string).ok_or_else(|| {
+                        ThemeError("`symbols.spinnerFrames` entries must be strings".into())
+                    })
+                })
+                .collect::<Result<_, _>>()?;
+        }
+        other if KNOWN_SYMBOL_KEYS.contains(&other) => {
+            let glyph = val
+                .as_str()
+                .ok_or_else(|| ThemeError(format!("`symbols.{other}` must be a string")))?;
+            if glyph.is_empty() {
+                return Err(ThemeError(format!("`symbols.{other}` must not be empty")));
+            }
+            overrides.insert(other.to_string(), glyph.to_string());
+        }
+        _ => {
+            // Unknown override keys are ignored per spec (theming.md) —
+            // a loud error would reject forward-compatible themes.
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]

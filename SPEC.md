@@ -279,14 +279,17 @@ requiring private announces; GPU/ASCII-image rendering.
 - **FR-66** `main` is branch-protected: PR required, ≥1 approval, the `quality` CI check
   green, linear history, no force pushes or deletions. (Enabled via GitHub settings/API —
   an owner action; this FR records that it must stay on.)
-- **FR-67** Size and complexity norms are review pressure, not CI gates: functions ≤30 LOC
-  excellent / 31–50 acceptable / 51–80 review / >80 refactor; cyclomatic ≤10 target,
-  11–15 warn, >15 refactor; cognitive ≤10; nesting ≤3; params ≤4 (5+ review); files ≤500
-  preferred, 500–700 review, 700–1000 strong refactor, >1000 justify. Exceptions: big
-  data/contract tables (e.g. `core/types.rs`, the frozen shared contract), dense
-  protocol/state machines, and co-located test modules (scraper parser + fixtures +
-  tests). Splitting to satisfy a number is forbidden; the per-file signal starts at 700
-  and ratchets down as refactors land.
+- **FR-67** Size and complexity norms: functions ≤30 LOC excellent / 31–50 acceptable /
+  51–80 review / >80 refactor; cyclomatic ≤10 target, 11–15 warn, >15 refactor;
+  cognitive ≤10; nesting ≤3; params ≤4 (5+ review); files ≤500 preferred, 500–700
+  review, 700–1000 strong refactor, >1000 justify. Exceptions: big data/contract tables
+  (e.g. `core/types.rs`, the frozen shared contract), dense protocol/state machines, and
+  co-located test modules (scraper parser + fixtures + tests). Splitting to satisfy a
+  number is forbidden; the per-file signal starts at 700 and ratchets down as refactors
+  land. **Mechanical backstop (live)**: `clippy.toml` sets `excessive-nesting-threshold
+  = 4`, `cognitive-complexity-threshold = 15`, `too-many-lines-threshold = 120`; those
+  config keys enable their lints, so violations fail CI under `-D warnings`. Per-file
+  LOC remains review pressure only.
 - **FR-68** `src/app.rs` (1420 LOC — the one file FR-67's exceptions do not save) is
   decomposed by responsibility (splash / loop / watch / dispatch), boundaries drawn per
   concept, not to a line count; the FR-67 signal tightens after it lands.

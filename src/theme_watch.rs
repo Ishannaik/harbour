@@ -6,7 +6,7 @@
 //! picks it up on its next lock), an invalid edit keeps the last valid theme
 //! and prints a loud error — never a silent partial apply.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 
@@ -71,37 +71,47 @@ pub fn spawn_theme_watcher(theme: Arc<Mutex<Theme>>) {
         while let Ok(Ok(event)) = rx.recv() {
             // Editors rewrite via temp-file + rename; reloading on any
             // create/modify whose path matches the active theme suffices.
-            if !matches!(event.kind, EventKind::Create(_) | EventKind::Modify(_)) {
-                continue;
-            }
-            let current = match theme.lock() {
-                Ok(guard) => guard.name.clone(),
-                // A poisoned mutex means the app panicked elsewhere; reloading
-                // would fight a broken process, so stop watching loudly.
-                Err(_) => {
-                    eprintln!("theme watcher: theme mutex poisoned; reload disabled");
-                    return;
-                }
-            };
-            for path in event.paths {
-                let Some(name) = path.file_stem().and_then(|s| s.to_str()) else {
-                    continue; // no stem or non-UTF-8 name — not a theme file
-                };
-                if name != current {
-                    continue;
-                }
-                match Theme::load_custom(&dir, name) {
-                    Ok(fresh) => {
-                        let Ok(mut guard) = theme.lock() else {
-                            eprintln!("theme watcher: theme mutex poisoned; reload disabled");
-                            return;
-                        };
-                        *guard = fresh;
-                    }
-                    // Loud, and the previous theme stays in place.
-                    Err(e) => eprintln!("theme watcher: {e}"),
-                }
+            if !handle_theme_event(&theme, &dir, &event) {
+                return;
             }
         }
     });
+}
+
+/// Applies one watcher event to the shared theme. Returns `false` only when
+/// the theme mutex is poisoned — reloading would fight a broken process, so
+/// the watcher stops loudly instead of limping on.
+fn handle_theme_event(theme: &Arc<Mutex<Theme>>, dir: &Path, event: &notify::Event) -> bool {
+    if !matches!(event.kind, EventKind::Create(_) | EventKind::Modify(_)) {
+        return true;
+    }
+    let current = match theme.lock() {
+        Ok(guard) => guard.name.clone(),
+        // A poisoned mutex means the app panicked elsewhere; reloading
+        // would fight a broken process, so stop watching loudly.
+        Err(_) => {
+            eprintln!("theme watcher: theme mutex poisoned; reload disabled");
+            return false;
+        }
+    };
+    for path in &event.paths {
+        let Some(name) = path.file_stem().and_then(|s| s.to_str()) else {
+            continue; // no stem or non-UTF-8 name — not a theme file
+        };
+        if name != current {
+            continue;
+        }
+        match Theme::load_custom(dir, name) {
+            Ok(fresh) => {
+                let Ok(mut guard) = theme.lock() else {
+                    eprintln!("theme watcher: theme mutex poisoned; reload disabled");
+                    return false;
+                };
+                *guard = fresh;
+            }
+            // Loud, and the previous theme stays in place.
+            Err(e) => eprintln!("theme watcher: {e}"),
+        }
+    }
+    true
 }

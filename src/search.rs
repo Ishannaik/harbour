@@ -122,40 +122,9 @@ impl SearchEngine {
             let mut ctx = ctx.clone();
             ctx.host_hint = self.hint_for(id);
 
-            tokio::spawn(async move {
-                let _ = events.send(EngineEvent::SourceStatus {
-                    source: id,
-                    status: SourceStatus::Checking,
-                });
-
-                let outcome = run_one(&source, &query, &ctx, &cache, &hints).await;
-
-                if ctx.cancel.is_cancelled() {
-                    // A cancelled search must never touch the UI: its results
-                    // belong to a query the user has already replaced.
-                    return;
-                }
-
-                match outcome {
-                    Ok(results) => {
-                        let _ = events.send(EngineEvent::SourceAnswered {
-                            source: id,
-                            count: results.len(),
-                        });
-                        let _ = events.send(EngineEvent::SourceResults {
-                            source: id,
-                            results,
-                        });
-                    }
-                    Err(err) => {
-                        let _ = events.send(EngineEvent::SourceFailed {
-                            source: id,
-                            class: err.class(),
-                            message: err.to_string(),
-                        });
-                    }
-                }
-            });
+            tokio::spawn(run_source_search(
+                source, id, query, ctx, cache, hints, events,
+            ));
         }
 
         cancel
@@ -201,6 +170,54 @@ async fn run_one(
         }
     }
     result
+}
+
+/// Drives one source's whole search inside its spawn task: the status event,
+/// the fetch (with cache), then the outcome events.
+///
+/// Module-level rather than a closure so the per-source nesting stays within
+/// the budget — the future passed to `tokio::spawn` is a single call.
+async fn run_source_search(
+    source: ArcSource,
+    id: SourceId,
+    query: String,
+    ctx: SearchCtx,
+    cache: SearchCache,
+    hints: Arc<Mutex<HashMap<SourceId, String>>>,
+    events: UnboundedSender<EngineEvent>,
+) {
+    let _ = events.send(EngineEvent::SourceStatus {
+        source: id,
+        status: SourceStatus::Checking,
+    });
+
+    let outcome = run_one(&source, &query, &ctx, &cache, &hints).await;
+
+    if ctx.cancel.is_cancelled() {
+        // A cancelled search must never touch the UI: its results
+        // belong to a query the user has already replaced.
+        return;
+    }
+
+    match outcome {
+        Ok(results) => {
+            let _ = events.send(EngineEvent::SourceAnswered {
+                source: id,
+                count: results.len(),
+            });
+            let _ = events.send(EngineEvent::SourceResults {
+                source: id,
+                results,
+            });
+        }
+        Err(err) => {
+            let _ = events.send(EngineEvent::SourceFailed {
+                source: id,
+                class: err.class(),
+                message: err.to_string(),
+            });
+        }
+    }
 }
 
 #[cfg(test)]
