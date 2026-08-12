@@ -93,25 +93,40 @@ impl RqbitEngine {
     async fn stream_url_for(&self, id: &str) -> Option<String> {
         let server = self.stream_server().await?;
         let handle = self.handles().get(id).cloned()?;
-        // `with_metadata` is Result-returning (metadata may not have arrived);
-        // file 0 is the honest fallback for a still-resolving torrent.
-        let file_id = handle
-            .with_metadata(|meta| {
+        // `with_metadata` errors until the swarm has resolved the torrent's
+        // metadata (it is non-blocking). A live swarm usually answers within
+        // a second or two, so wait briefly; if it never arrives — a dead or
+        // empty swarm — return None and let the caller warn loudly instead
+        // of handing the player a stream URL the API will refuse (which
+        // surfaces as a baffling player-side "unable to open MRL").
+        let deadline = tokio::time::Instant::now() + METADATA_GRACE;
+        let file_id = loop {
+            let found = handle.with_metadata(|meta| {
                 meta.file_infos
                     .iter()
                     .enumerate()
                     .filter(|(_, f)| is_video(&f.relative_filename))
                     .max_by_key(|(_, f)| f.len)
                     .map(|(i, _)| i)
-                    .unwrap_or(0)
-            })
-            .unwrap_or(0);
+            });
+            match found {
+                Ok(Some(i)) => break i,
+                Ok(None) => return None, // resolved, but no video file at all
+                Err(_) if tokio::time::Instant::now() >= deadline => return None,
+                Err(_) => tokio::time::sleep(METADATA_RETRY).await,
+            }
+        };
         Some(format!(
             "{}/torrents/{id}/stream/{file_id}",
             server.base_url
         ))
     }
 }
+
+/// How long watch waits for the swarm to resolve metadata before giving up.
+const METADATA_GRACE: std::time::Duration = std::time::Duration::from_secs(8);
+/// Poll cadence while waiting.
+const METADATA_RETRY: std::time::Duration = std::time::Duration::from_millis(200);
 
 /// Video extensions a torrent file must carry to be stream-watchable.
 fn is_video(path: &std::path::Path) -> bool {
