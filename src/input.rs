@@ -213,11 +213,10 @@ pub fn map_with_focus(
 
         Screen::Search => match key.code {
             KeyCode::Char('d') => Action::Download,
-            KeyCode::Char('w') => Action::Watch,
+            KeyCode::Char('w') | KeyCode::Enter => Action::Watch,
             KeyCode::Char('s') => Action::OpenSettings,
             KeyCode::Char('?') => Action::ToggleHelp,
             KeyCode::Char('q') => Action::Quit,
-            KeyCode::Enter => Action::Submit,
             KeyCode::Up => Action::MoveUp,
             KeyCode::Down => Action::MoveDown,
             KeyCode::Tab => Action::SwitchScreen,
@@ -446,8 +445,9 @@ mod tests {
             Action::Type('D'),
             "capitals still type"
         );
-        // Enter re-runs, arrows navigate, Tab switches — same as input pane.
-        assert_eq!(r(KeyCode::Enter), Action::Submit);
+        // Enter watches the selected row (the Stremio flow); arrows navigate,
+        // Tab switches — same as input pane.
+        assert_eq!(r(KeyCode::Enter), Action::Watch);
         assert_eq!(r(KeyCode::Up), Action::MoveUp);
         assert_eq!(r(KeyCode::Down), Action::MoveDown);
         assert_eq!(r(KeyCode::Tab), Action::SwitchScreen);
