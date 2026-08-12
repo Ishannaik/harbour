@@ -1,4 +1,5 @@
-//! UI views (phase 2): search, downloads, status bar.
+//! UI views: splash (app.rs), search, downloads, status bar, help overlay,
+//! and the now-playing watch screen.
 //!
 //! Each view is a pure `draw(frame, area, state, theme)` function — no input
 //! handling, no state mutation. The app loop (app.rs) owns keybind dispatch
@@ -31,6 +32,13 @@ pub enum Screen {
     Search,
     Downloads,
     Help,
+    /// The settings overlay (2.5): a modal over the current screen, so
+    /// closing it returns the user exactly where they were. The app loop
+    /// tracks it with `settings_open`; this variant exists for the shared
+    /// screen contract and the exhaustive matches.
+    Settings,
+    /// Watch mode (FR-57): an external player owns the screen until it exits.
+    NowPlaying,
 }
 
 /// Search-view state.
@@ -69,9 +77,30 @@ pub struct AppState {
     pub downloads: DownloadsState,
     /// The single channel for engine and config errors (`UR-13`).
     pub error_banner: Option<String>,
+    /// The item being watched, if watch mode is active (FR-57).
+    pub now_playing: Option<NowPlaying>,
+}
+
+/// Watch-mode state (FR-57..FR-59): what the now-playing screen shows while an
+/// external player streams the item.
+#[derive(Debug, Clone)]
+pub struct NowPlaying {
+    pub id: String,
+    pub name: String,
+    pub stream_url: String,
+    /// True for a watch-now session (2.3): the torrent was added straight to
+    /// the engine (no queue item, no ledger) and its cache dir is deleted
+    /// when the session ends — the stream-and-delete contract.
+    pub ephemeral: bool,
 }
 
 pub mod downloads;
 pub mod help;
+pub mod now_playing;
+pub mod player;
 pub mod search;
+pub mod settings;
 pub mod status;
+
+#[cfg(test)]
+mod tests;

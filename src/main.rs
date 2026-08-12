@@ -1,3 +1,18 @@
+// Code-quality policy (FR-62): test code keeps its unwraps; shipped code
+// cannot panic on a recoverable error. Scoped to non-test builds so the
+// suite's legitimate `unwrap`/`expect` assertions keep compiling.
+#![cfg_attr(not(test), forbid(unsafe_code))]
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::dbg_macro,
+        clippy::todo
+    )
+)]
+
 mod anim;
 mod app;
 mod cli;
@@ -12,6 +27,7 @@ mod sources;
 mod theme;
 mod theme_watch;
 mod ui;
+mod watch;
 
 use std::process::ExitCode;
 
@@ -55,6 +71,9 @@ async fn run_tui(initial: InitialAction) -> ExitCode {
     // the theme-watcher thread swaps themes at runtime, so the render loop and
     // every view lock the same shared handle instead of caching a copy.
     let theme = std::sync::Arc::new(std::sync::Mutex::new(theme::Theme::titanium()));
+    // Live theme reload (docs/theming.md §Custom themes): edits to the active
+    // theme file under the themes dir swap in at the next render frame.
+    theme_watch::spawn_theme_watcher(theme.clone());
     match app::run(theme, initial).await {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {

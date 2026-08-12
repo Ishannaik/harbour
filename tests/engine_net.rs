@@ -38,7 +38,9 @@ use crate::engine::rqbit::RqbitEngine;
 use crate::queue::{AddInput, Queue};
 
 const SINTEL: &str = "magnet:?xt=urn:btih:08ada5a7a6183aae1e09d831df6748d566095a10\
-&dn=Sintel&tr=udp%3A%2F%2Fexplodie.org%3A6969&tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337%2Fannounce\
+&dn=Sintel\
+&tr=udp%3A%2F%2Fexplodie.org%3A6969\
+&tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337%2Fannounce\
 &tr=udp%3A%2F%2Ftracker.openbittorrent.com%3A6969%2Fannounce";
 const SINTEL_HASH: &str = "08ada5a7a6183aae1e09d831df6748d566095a10";
 
