@@ -961,8 +961,9 @@ pub async fn run(
 
     // An engine that will not start must not stop the app: search still works,
     // and downloads report the reason instead of the window refusing to open.
+    let launch_opts = crate::engine::rqbit::EngineLaunchOptions::from_config(&config);
     let (engine, engine_error): (Arc<dyn CoreEngine>, Option<String>) =
-        match RqbitEngine::new(&config.download_dir, store.root()).await {
+        match RqbitEngine::new(&config.download_dir, store.root(), &launch_opts).await {
             Ok(engine) => {
                 // Adopt anything librqbit restored from its own persistence, or
                 // it would be running but invisible to the queue.
@@ -975,8 +976,32 @@ pub async fn run(
             ),
         };
 
-    let mut queue = Queue::new(engine.clone(), paths::max_downloads());
+    // Boot-time policies from settings: the queueing cap (config wins over
+    // the env default), the share-ratio seed stop, and the live rate limits.
+    let mut queue = Queue::new(
+        engine.clone(),
+        config
+            .max_active_downloads
+            .unwrap_or_else(crate::core::paths::max_downloads),
+    );
     queue.set_trackers(config.trackers.clone());
+    queue.set_stop_ratio(if config.stop_seed_at_ratio {
+        Some(config.seed_ratio)
+    } else {
+        None
+    });
+    engine.set_speed_limits(
+        if config.use_alt_rates {
+            config.alt_download_limit_mib
+        } else {
+            config.download_limit_mib
+        },
+        if config.use_alt_rates {
+            config.alt_upload_limit_mib
+        } else {
+            config.upload_limit_mib
+        },
+    );
     queue.restore(items, safe_mode).await;
 
     let search = SearchEngine::new(
@@ -1457,15 +1482,66 @@ fn settings_activate(app: &mut App) {
     match kind {
         RowKind::Text => settings_edit_text(app),
         RowKind::Theme => settings_cycle_theme(app),
-        RowKind::Toggle => {
-            app.config.seed_by_default = !app.config.seed_by_default;
-            save_settings(app);
-        }
+        RowKind::Toggle => settings_toggle_row(app),
         RowKind::Source => {
             if let Some(id) = crate::ui::settings::source_at(app.settings.selected) {
                 settings_toggle_source(app, id);
             }
         }
+    }
+}
+
+/// Toggle-row Enter: flip the config bit, persist, and apply live whatever
+/// can apply live (the queueing cap, the ratio policy, the rate limits).
+/// Boot-time knobs (upnp, dht) persist and apply on the next launch, which
+/// their labels say.
+fn settings_toggle_row(app: &mut App) {
+    match app.settings.selected {
+        3 => app.config.seed_by_default = !app.config.seed_by_default,
+        9 => {
+            app.config.use_alt_rates = !app.config.use_alt_rates;
+            apply_rate_limits(app);
+        }
+        12 => app.config.enable_upnp = !app.config.enable_upnp,
+        13 => app.config.enable_dht = !app.config.enable_dht,
+        15 => {
+            app.config.stop_seed_at_ratio = !app.config.stop_seed_at_ratio;
+            app.queue.set_stop_ratio(if app.config.stop_seed_at_ratio {
+                Some(app.config.seed_ratio)
+            } else {
+                None
+            });
+        }
+        _ => return,
+    }
+    save_settings(app);
+}
+
+/// The effective (normal or alt) rate limits from config, applied live.
+fn apply_rate_limits(app: &mut App) {
+    let (down, up) = if app.config.use_alt_rates {
+        (
+            app.config.alt_download_limit_mib,
+            app.config.alt_upload_limit_mib,
+        )
+    } else {
+        (app.config.download_limit_mib, app.config.upload_limit_mib)
+    };
+    app.queue.engine().set_speed_limits(down, up);
+}
+
+/// Parses a numeric settings value; an empty input means "unlimited/auto".
+/// Returns None when the text is not a valid number — the caller warns
+/// loudly and keeps the edit open; a bad value never silently becomes
+/// something else.
+fn parse_opt_number(text: &str) -> Option<Option<u64>> {
+    let t = text.trim();
+    if t.is_empty() {
+        return Some(None);
+    }
+    match t.parse::<u64>() {
+        Ok(n) => Some(Some(n)),
+        Err(_) => None,
     }
 }
 
@@ -1482,6 +1558,22 @@ fn settings_edit_text(app: &mut App) {
             TextField::Player => app.config.player.clone().unwrap_or_default(),
             TextField::DownloadDir => app.config.download_dir.display().to_string(),
             TextField::Trackers => app.config.trackers.join(", "),
+            TextField::DownloadLimit => opt_mib(app.config.download_limit_mib),
+            TextField::UploadLimit => opt_mib(app.config.upload_limit_mib),
+            TextField::AltDownloadLimit => opt_mib(app.config.alt_download_limit_mib),
+            TextField::AltUploadLimit => opt_mib(app.config.alt_upload_limit_mib),
+            TextField::MaxActiveDownloads => app
+                .config
+                .max_active_downloads
+                .map(|n| n.to_string())
+                .unwrap_or_default(),
+            TextField::ListenPort => app
+                .config
+                .listen_port
+                .map(|p| p.to_string())
+                .unwrap_or_default(),
+            TextField::SocksProxy => app.config.socks_proxy_url.clone().unwrap_or_default(),
+            TextField::SeedRatio => format!("{:.1}", app.config.seed_ratio),
         };
         app.settings.editing = true;
         return;
@@ -1504,10 +1596,113 @@ fn settings_edit_text(app: &mut App) {
                 .map(str::to_string)
                 .collect();
         }
+        // Numeric rows: parse or stay editing with a loud banner — never a
+        // silent default.
+        TextField::DownloadLimit => match parse_opt_number(value) {
+            Some(n) => {
+                app.config.download_limit_mib = n;
+                apply_rate_limits(app);
+            }
+            None => {
+                app.warn(format!(
+                    "'{value}' is not a number — leave empty for unlimited"
+                ));
+                return;
+            }
+        },
+        TextField::UploadLimit => match parse_opt_number(value) {
+            Some(n) => {
+                app.config.upload_limit_mib = n;
+                apply_rate_limits(app);
+            }
+            None => {
+                app.warn(format!(
+                    "'{value}' is not a number — leave empty for unlimited"
+                ));
+                return;
+            }
+        },
+        TextField::AltDownloadLimit => match parse_opt_number(value) {
+            Some(n) => app.config.alt_download_limit_mib = n,
+            None => {
+                app.warn(format!(
+                    "'{value}' is not a number — leave empty for unlimited"
+                ));
+                return;
+            }
+        },
+        TextField::AltUploadLimit => match parse_opt_number(value) {
+            Some(n) => app.config.alt_upload_limit_mib = n,
+            None => {
+                app.warn(format!(
+                    "'{value}' is not a number — leave empty for unlimited"
+                ));
+                return;
+            }
+        },
+        TextField::MaxActiveDownloads => match parse_opt_number(value) {
+            Some(n) => {
+                app.config.max_active_downloads = n.map(|v| v as usize);
+                app.queue.set_max_downloads(
+                    app.config
+                        .max_active_downloads
+                        .unwrap_or_else(crate::core::paths::max_downloads),
+                );
+            }
+            None => {
+                app.warn(format!(
+                    "'{value}' is not a number — empty = the env default"
+                ));
+                return;
+            }
+        },
+        TextField::ListenPort => match parse_opt_number(value) {
+            Some(n) => {
+                if let Some(port) = n {
+                    if port > u16::MAX as u64 {
+                        app.warn(format!("{port} is not a valid port (1-65535)"));
+                        return;
+                    }
+                    app.config.listen_port = Some(port as u16);
+                } else {
+                    app.config.listen_port = None;
+                }
+            }
+            None => {
+                app.warn(format!("'{value}' is not a number — empty = auto"));
+                return;
+            }
+        },
+        TextField::SocksProxy => {
+            app.config.socks_proxy_url = if value.is_empty() {
+                None
+            } else {
+                Some(value.to_string())
+            };
+        }
+        TextField::SeedRatio => match value.parse::<f64>() {
+            Ok(r) if r.is_finite() && r >= 0.0 => {
+                app.config.seed_ratio = r;
+                if app.config.stop_seed_at_ratio {
+                    app.queue.set_stop_ratio(Some(r));
+                }
+            }
+            _ => {
+                app.warn(format!("'{value}' is not a ratio (a number ≥ 0)"));
+                return;
+            }
+        },
     }
     app.settings.editing = false;
     app.settings.edit_buffer.clear();
     save_settings(app);
+}
+
+/// The settings edit buffer's seed form for a MiB/s row ("unlimited" when
+/// unset — the same text the row value shows).
+fn opt_mib(mib: Option<u64>) -> String {
+    mib.map(|m| m.to_string())
+        .unwrap_or_else(|| "unlimited".to_string())
 }
 
 /// The theme row's Enter: advance to the next installed theme, apply it
