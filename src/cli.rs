@@ -94,7 +94,13 @@ pub fn parse(args: &[String]) -> Command {
         };
     }
 
-    if first.len() >= 8 && first[..8].eq_ignore_ascii_case("magnet:?") {
+    // `get(..8)` rather than `[..8]`: `len()` is bytes, and slicing at byte 8
+    // panics on a non-ASCII first argument (e.g. a Japanese title) whose char
+    // boundary lands elsewhere — FR-02 wants a usage error, not a crash.
+    if first
+        .get(..8)
+        .is_some_and(|p| p.eq_ignore_ascii_case("magnet:?"))
+    {
         // Validate rather than trust: an unusable magnet should fail here with
         // a clear message, not three layers down inside the engine.
         return match crate::core::magnet::info_hash_from_magnet(first) {
@@ -106,8 +112,14 @@ pub fn parse(args: &[String]) -> Command {
     }
 
     if is_info_hash(first) {
-        let hash = normalize_info_hash(first).expect("is_info_hash just said yes");
-        return Command::RunWithMagnet(crate::core::magnet::build_magnet(&hash, &hash));
+        // The guard above already shaped the string; still handle failure
+        // honestly — a malformed infohash is user input, not a crash.
+        return match normalize_info_hash(first) {
+            Some(hash) => Command::RunWithMagnet(crate::core::magnet::build_magnet(&hash, &hash)),
+            None => Command::Invalid {
+                message: "that doesn't look like a usable 40-hex infohash".into(),
+            },
+        };
     }
 
     if first.to_ascii_lowercase().ends_with(".torrent") {

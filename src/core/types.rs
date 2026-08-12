@@ -557,6 +557,13 @@ pub trait Engine: Send + Sync {
     /// Every torrent the engine currently holds. Synchronous because the poll
     /// runs on the UI cadence and must never await.
     fn snapshot(&self) -> Vec<EngineSnapshot>;
+    /// A playable loopback stream URL for `id` served from the swarm while
+    /// pieces arrive (FR-57: Stremio-style watch-before-download). Default
+    /// is none — the file-based watch path is the fallback. Additive: the
+    /// trait is frozen, so a default keeps every implementor compiling.
+    fn stream_url<'a>(&'a self, _id: &'a str) -> EngineFuture<'a, Option<String>> {
+        Box::pin(async move { None })
+    }
 }
 
 /// Events pushed from the engine and the search layer to the app state.

@@ -25,8 +25,9 @@ use std::time::Duration;
 
 use librqbit::api::TorrentIdOrHash;
 use librqbit::dht::Id20;
+use librqbit::http_api::HttpApi;
 use librqbit::{
-    AddTorrent, AddTorrentOptions, ManagedTorrent, Session, SessionOptions,
+    AddTorrent, AddTorrentOptions, Api, ManagedTorrent, Session, SessionOptions,
     SessionPersistenceConfig,
 };
 
@@ -52,6 +53,73 @@ pub struct RqbitEngine {
     /// Handles we have added, keyed by our own lowercase-hex infohash so the
     /// queue never has to know about librqbit's `TorrentId`.
     handles: Mutex<HashMap<InfoHash, ManagedTorrentHandle>>,
+    /// The loopback stream server (FR-57), started lazily on first watch.
+    stream: Mutex<Option<Arc<StreamServer>>>,
+}
+
+/// One running librqbit HTTP API — the Stremio-style stream server. Binds
+/// loopback only (FR-61), on a random port; the player talks to it directly,
+/// pulling pieces as they arrive while the torrent downloads.
+struct StreamServer {
+    base_url: String,
+}
+
+impl RqbitEngine {
+    /// Ensures the loopback HTTP API is running and returns it. Idempotent:
+    /// the first watch starts it, every later watch reuses it.
+    async fn stream_server(&self) -> Option<Arc<StreamServer>> {
+        if let Some(server) = self.stream_guard().clone() {
+            return Some(server);
+        }
+        let api = Api::new(self.session.clone(), None, None);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.ok()?;
+        let port = listener.local_addr().ok()?.port();
+        let base_url = format!("http://127.0.0.1:{port}");
+        // The HTTP API owns the listener and its state; run it for the
+        // session's lifetime.
+        tokio::spawn(async move {
+            let http = HttpApi::new(api, None);
+            let _ = http.make_http_api_and_run(listener, None).await;
+        });
+        let server = Arc::new(StreamServer { base_url });
+        *self.stream_guard() = Some(server.clone());
+        Some(server)
+    }
+
+    /// The stream URL for `id`'s largest video file, if the swarm can serve
+    /// it. The URL is stable; the player opens it and librqbit blocks on
+    /// missing pieces while prioritizing the requested ones.
+    async fn stream_url_for(&self, id: &str) -> Option<String> {
+        let server = self.stream_server().await?;
+        let handle = self.handles().get(id).cloned()?;
+        // `with_metadata` is Result-returning (metadata may not have arrived);
+        // file 0 is the honest fallback for a still-resolving torrent.
+        let file_id = handle
+            .with_metadata(|meta| {
+                meta.file_infos
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, f)| is_video(&f.relative_filename))
+                    .max_by_key(|(_, f)| f.len)
+                    .map(|(i, _)| i)
+                    .unwrap_or(0)
+            })
+            .unwrap_or(0);
+        Some(format!(
+            "{}/torrents/{id}/stream/{file_id}",
+            server.base_url
+        ))
+    }
+}
+
+/// Video extensions a torrent file must carry to be stream-watchable.
+fn is_video(path: &std::path::Path) -> bool {
+    const VIDEO: &[&str] = &[
+        "mkv", "mp4", "avi", "mov", "webm", "m4v", "ts", "flv", "wmv", "mpg", "mpeg",
+    ];
+    path.extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| VIDEO.contains(&e.to_ascii_lowercase().as_str()))
 }
 
 impl RqbitEngine {
@@ -90,6 +158,7 @@ impl RqbitEngine {
         Ok(Self {
             session,
             handles: Mutex::new(HashMap::new()),
+            stream: Mutex::new(None),
         })
     }
 
@@ -97,6 +166,14 @@ impl RqbitEngine {
     /// must not take the download engine down with it (`plan-engine.md` §4.1).
     fn handles(&self) -> std::sync::MutexGuard<'_, HashMap<InfoHash, ManagedTorrentHandle>> {
         self.handles
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// Same poison-recovery policy as [`Self::handles`], for the stream
+    /// server slot.
+    fn stream_guard(&self) -> std::sync::MutexGuard<'_, Option<Arc<StreamServer>>> {
+        self.stream
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
@@ -287,6 +364,10 @@ impl Engine for RqbitEngine {
         // Stable order so the UI list does not shuffle between frames.
         out.sort_by(|a, b| a.id.cmp(&b.id));
         out
+    }
+
+    fn stream_url<'a>(&'a self, id: &'a str) -> EngineFuture<'a, Option<String>> {
+        Box::pin(async move { self.stream_url_for(id).await })
     }
 }
 
