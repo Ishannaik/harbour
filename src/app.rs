@@ -786,6 +786,10 @@ async fn launch_watch(app: &mut App, id: String, name: String, dir: PathBuf, pla
     // Path 1: stream from the swarm while it downloads. librqbit blocks on
     // missing pieces and prioritizes the requested ones — seek works.
     if let Some(url) = app.queue.engine().stream_url(&id).await {
+        if let Err(reason) = probe_stream(&url).await {
+            app.warn(format!("watch: '{name}' is not streaming — {reason}"));
+            return;
+        }
         match crate::watch::WatchSession::launch_remote(&player, &url) {
             Ok(session) => enter_watch(app, id, name, session, false),
             Err(err) => app.warn(format!("watch: cannot start player: {err}")),
@@ -881,9 +885,38 @@ async fn launch_ephemeral_session(app: &mut App, id: String, name: String, playe
         app.warn(format!("watch: the swarm cannot stream '{name}' yet"));
         return;
     };
+    if let Err(reason) = probe_stream(&url).await {
+        app.warn(format!("watch: '{name}' is not streaming — {reason}"));
+        return;
+    }
     match crate::watch::WatchSession::launch_remote(player, &url) {
         Ok(session) => enter_watch(app, id, name, session, true),
         Err(err) => app.warn(format!("watch: cannot start player: {err}")),
+    }
+}
+
+/// Asks the stream endpoint for its first byte before launching the player.
+/// librqbit's stream blocks on missing pieces — a dead swarm would hang the
+/// player on a baffling "unable to open MRL". Probing turns that into our
+/// own banner with the real reason, and a live swarm answers in seconds.
+async fn probe_stream(url: &str) -> Result<(), String> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .build()
+        .map_err(|e| format!("cannot build probe client: {e}"))?;
+    let resp = client
+        .get(url)
+        .header("Range", "bytes=0-0")
+        .send()
+        .await
+        .map_err(|e| format!("the swarm did not answer within 15s ({e})"))?;
+    if resp.status().is_success() {
+        Ok(())
+    } else {
+        Err(format!(
+            "the stream refused the request ({})",
+            resp.status()
+        ))
     }
 }
 
