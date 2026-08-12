@@ -10,6 +10,7 @@
 //! All colors come from the theme subset (docs/theming.md), so custom themes
 //! work unchanged.
 
+use std::collections::HashSet;
 use std::sync::LazyLock;
 use std::time::{Duration, Instant};
 
@@ -26,14 +27,20 @@ use crate::ui::SearchState;
 
 /// Panel title — same framing as the downloads view and the splash.
 const TITLE: &str = " harbour — search ";
-/// Sidebar width (docs/design.md §2.2).
-const SIDEBAR_WIDTH: u16 = 22;
-/// Search bar height: top border, content row, bottom border.
-const SEARCH_BAR_H: u16 = 3;
+/// Sidebar width (docs/design.md §2.2). Shared with `input.rs`'s mouse
+/// mapping: the results column starts one cell past the sidebar.
+pub(crate) const SIDEBAR_WIDTH: u16 = 22;
+/// Search bar height: top border, content row, bottom border. Shared with
+/// `input.rs`'s mouse mapping: results start below the bar and its header.
+pub(crate) const SEARCH_BAR_H: u16 = 3;
 /// Block cursor glyph at the end of the query — the input's focus marker.
 const CURSOR: &str = "▌";
 /// Bottom hint — the keybinds that matter on this screen.
-const HINT: &str = "enter search · d download · ? help · q quit";
+///
+/// Every printable key types on this screen (so "dune" can never fire a
+/// download on the `d`); downloading is shift+D mid-query, or plain `d`
+/// with an empty query.
+const HINT: &str = "enter search · shift+d download · tab downloads · ? help · q quit";
 /// Placeholder while the query is empty and idle.
 const PLACEHOLDER: &str = "search torrents…";
 /// Bar label while searching on an empty query — the curated-browse mode
@@ -82,9 +89,42 @@ const SIDEBAR: &[(SourceGroup, &[(SourceId, &str)])] = &[
 /// (see module docs — the contract's signature carries no clock).
 static EPOCH: LazyLock<Instant> = LazyLock::new(Instant::now);
 
+/// Maps a sidebar row to the source it renders, or `None` for rows that are
+/// not a source: the "Sources" title (row 0), the group dividers, and rows
+/// past the last source. The offset is relative to the sidebar's inner area,
+/// so `input.rs` can hit-test clicks against the same matrix the painter
+/// draws without duplicating its layout.
+pub fn sidebar_source_at(row: u16) -> Option<SourceId> {
+    // Row 0 is the "Sources" title; the first source row sits at offset 1.
+    let mut cursor = row.saturating_sub(1);
+    for (_, sources) in SIDEBAR {
+        // Each group spends one row on its divider header.
+        if cursor == 0 {
+            return None;
+        }
+        cursor -= 1;
+        for (id, _) in *sources {
+            if cursor == 0 {
+                return Some(*id);
+            }
+            cursor -= 1;
+        }
+    }
+    None
+}
+
 /// Renders the search screen: sidebar + search bar + result list in one
 /// rounded panel (same framing as downloads.rs / the splash).
-pub fn draw(frame: &mut Frame, area: Rect, state: &SearchState, theme: &Theme) {
+///
+/// `disabled` is the app's current set of user-disabled sources, so the
+/// sidebar can paint them dim and inert.
+pub fn draw(
+    frame: &mut Frame,
+    area: Rect,
+    state: &SearchState,
+    disabled: &HashSet<SourceId>,
+    theme: &Theme,
+) {
     let colors = &theme.colors;
     let bg = colors.bg().to_ratatui();
     let accent = colors.accent().to_ratatui();
@@ -111,14 +151,20 @@ pub fn draw(frame: &mut Frame, area: Rect, state: &SearchState, theme: &Theme) {
 
     let cols =
         Layout::horizontal([Constraint::Length(SIDEBAR_WIDTH), Constraint::Min(0)]).split(inner);
-    draw_sidebar(frame, cols[0], state, theme);
+    draw_sidebar(frame, cols[0], state, disabled, theme);
     draw_main(frame, cols[1], state, theme);
 }
 
 /// Left column: "Sources" title, then one divider header per group with its
 /// sources beneath (dot + label). A group stays dim until one of its sources
 /// reports a count — the stagger: groups pop in as sources answer.
-fn draw_sidebar(frame: &mut Frame, area: Rect, state: &SearchState, theme: &Theme) {
+fn draw_sidebar(
+    frame: &mut Frame,
+    area: Rect,
+    state: &SearchState,
+    disabled: &HashSet<SourceId>,
+    theme: &Theme,
+) {
     let colors = &theme.colors;
     let width = area.width as usize;
     let mut lines: Vec<Line> = Vec::new();
@@ -140,22 +186,45 @@ fn draw_sidebar(frame: &mut Frame, area: Rect, state: &SearchState, theme: &Them
             Style::default().fg(head_color.to_ratatui()),
         )));
         for (id, label) in *sources {
-            lines.push(source_line(*id, label, state, theme, width));
+            lines.push(source_line(
+                *id,
+                disabled.contains(id),
+                label,
+                state,
+                theme,
+                width,
+            ));
         }
     }
     frame.render_widget(Paragraph::new(lines), area);
 }
 
 /// One source row: health dot + label. A missing dot renders the muted
-/// placeholder so an unprobed source reads "unknown", not "down".
+/// placeholder so an unprobed source reads "unknown", not "down". A
+/// user-disabled source is drawn dim and inert — the neutral dot, no health
+/// color — so the sidebar reads "off" at a glance.
 fn source_line(
     id: SourceId,
+    disabled: bool,
     label: &'static str,
     state: &SearchState,
     theme: &Theme,
     width: usize,
 ) -> Line<'static> {
     let colors = &theme.colors;
+    // Disabled wins over every health state: the row is deliberately flat.
+    if disabled {
+        return Line::from(vec![
+            Span::styled("  · ", Style::default().fg(colors.dim().to_ratatui())),
+            Span::styled(
+                truncate(label, width.saturating_sub(4)),
+                Style::default().fg(colors.dim().to_ratatui()),
+            ),
+        ]);
+    }
+    // A source that has not answered *yet* must not read as dead: `Checking`
+    // renders the live glyph muted (Ishan's pending dot), while never-probed
+    // stays the neutral placeholder.
     // A source that has not answered *yet* must not read as dead: `Checking`
     // renders the live glyph muted (Ishan's pending dot), while never-probed
     // stays the neutral placeholder.
@@ -267,15 +336,17 @@ fn draw_search_bar(
             } else {
                 colors.accent()
             };
-            if c != run_color {
-                if !run.is_empty() {
-                    spans.push(Span::styled(
-                        std::mem::take(&mut run),
-                        Style::default().fg(run_color.to_ratatui()),
-                    ));
-                }
-                run_color = c;
+            if c == run_color {
+                run.push(ch);
+                continue;
             }
+            if !run.is_empty() {
+                spans.push(Span::styled(
+                    std::mem::take(&mut run),
+                    Style::default().fg(run_color.to_ratatui()),
+                ));
+            }
+            run_color = c;
             run.push(ch);
         }
         if !run.is_empty() {
@@ -348,10 +419,14 @@ fn lerp_color(a: Color, b: Color, t: f64) -> Color {
     }
 }
 
-/// Results header: "N results from M sources" — or, on an empty query, the
-/// browse-mode line (design §2.2: Enter with no query = curated top lists).
+/// Results header: the count line on the left plus dim column labels
+/// ("name", "size", "s", "l", "source") right-aligned over the suffix
+/// block `result_line` draws — a new user can read a row without guessing
+/// which number is which. One row, not two: `input.rs`'s mouse mapping
+/// derives the results top from `SEARCH_BAR_H + 1`.
 fn draw_header(frame: &mut Frame, area: Rect, state: &SearchState, theme: &Theme) {
-    let text = if state.query.is_empty() {
+    let colors = &theme.colors;
+    let count = if state.query.is_empty() {
         "browse the curated library".to_string()
     } else {
         format!(
@@ -360,13 +435,24 @@ fn draw_header(frame: &mut Frame, area: Rect, state: &SearchState, theme: &Theme
             distinct_sources(&state.results)
         )
     };
-    frame.render_widget(
-        Paragraph::new(Line::from(Span::styled(
-            text,
-            Style::default().fg(theme.colors.muted().to_ratatui()),
-        ))),
-        area,
-    );
+    // Same cells and single-space gaps as the row suffix, so the labels sit
+    // over their columns; the block's right edge is the row's right edge.
+    let suffix = ["size", "s", "l", "source"].join(" ");
+    let suffix_w = suffix.chars().count();
+    let width = area.width as usize;
+    // "name" labels the left column; the count text follows it, truncated
+    // before it can collide with the right-aligned labels.
+    let count_w = width.saturating_sub(suffix_w + 1 + 5); // 5: "name" + gap
+    let count = truncate(&count, count_w);
+    let pad = width.saturating_sub(5 + count.chars().count() + suffix_w);
+    let spans = vec![
+        Span::styled("name", Style::default().fg(colors.dim().to_ratatui())),
+        Span::raw(" "),
+        Span::styled(count, Style::default().fg(colors.muted().to_ratatui())),
+        Span::raw(" ".repeat(pad)),
+        Span::styled(suffix, Style::default().fg(colors.dim().to_ratatui())),
+    ];
+    frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
 /// Number of distinct sources among the results — walks the fixed registry
@@ -418,9 +504,9 @@ fn draw_results(frame: &mut Frame, area: Rect, state: &SearchState, theme: &Them
 }
 
 /// One result row: name (accent when selected), then right-aligned size,
-/// seeders, leechers, and the source chip. The chip stays dim until its
-/// source reports a count — the staggered pop-in as sources answer
-/// (design §2.2).
+/// seeders, leechers, the quality chip (only when the title names one),
+/// and the source chip. Both chips stay dim until their source reports a
+/// count — the staggered pop-in as sources answer (design §2.2).
 fn result_line(
     result: &TorrentResult,
     selected: bool,
@@ -429,6 +515,7 @@ fn result_line(
     width: usize,
 ) -> Line<'static> {
     let colors = &theme.colors;
+    let quality = quality_tag(&result.name).map(|tag| format!("[{tag}]"));
     let chip = format!("[{}]", chip_label(result.source));
     let size = fmt_size(result.size_bytes);
     // Zero seeders/leechers means the source doesn't report health (e.g.
@@ -443,11 +530,16 @@ fn result_line(
     } else {
         "—".into()
     };
+    // One gap before each suffix cell; the quality chip's own gap rides on
+    // its presence, so a row without a tag keeps the old four-cell layout.
+    let quality_w = quality.as_ref().map_or(0, |q| q.chars().count());
     let suffix_w = size.chars().count()
         + seeds.chars().count()
         + leeches.chars().count()
+        + quality_w
         + chip.chars().count()
-        + 3; // one gap before each of the four right-aligned cells
+        + 3
+        + usize::from(quality.is_some());
     let name = truncate(&result.name, width.saturating_sub(suffix_w + 1));
     let pad = width.saturating_sub(name.chars().count() + suffix_w);
     let name_fg = if selected {
@@ -465,7 +557,7 @@ fn result_line(
     } else {
         colors.dim()
     };
-    let spans = vec![
+    let mut spans = vec![
         Span::styled(name, Style::default().fg(name_fg.to_ratatui())),
         Span::raw(" ".repeat(pad)),
         Span::styled(size, Style::default().fg(colors.muted().to_ratatui())),
@@ -474,9 +566,54 @@ fn result_line(
         Span::raw(" "),
         Span::styled(leeches, Style::default().fg(colors.muted().to_ratatui())),
         Span::raw(" "),
-        Span::styled(chip, Style::default().fg(chip_fg.to_ratatui())),
     ];
+    if let Some(q) = quality {
+        spans.push(Span::styled(q, Style::default().fg(chip_fg.to_ratatui())));
+        spans.push(Span::raw(" "));
+    }
+    spans.push(Span::styled(
+        chip,
+        Style::default().fg(chip_fg.to_ratatui()),
+    ));
     row_line(spans, selected, colors)
+}
+
+/// Quality tag from a release name — the second chip on a result row.
+///
+/// Case-insensitive, first match wins in priority order (4k before 1080p,
+/// resolution before hdr/dv, quality before codec). A token is only a tag
+/// when no digit sits immediately before or after it: "2021" must never
+/// read as "720", while "1080p" still matches "1080".
+fn quality_tag(name: &str) -> Option<&'static str> {
+    let lower = name.to_lowercase();
+    const TAGS: &[(&[&str], &str)] = &[
+        (&["4k", "2160"], "4k"),
+        (&["1080"], "1080p"),
+        (&["720"], "720p"),
+        (&["hdr"], "hdr"),
+        (&["dv", "dovi"], "dv"),
+        (&["remux"], "remux"),
+        (&["bluray"], "bluray"),
+        (&["web-dl"], "web-dl"),
+        (&["x265", "hevc"], "x265"),
+    ];
+    for (needles, tag) in TAGS {
+        if needles.iter().any(|n| has_tag_token(&lower, n)) {
+            return Some(tag);
+        }
+    }
+    None
+}
+
+/// True when `needle` occurs in `hay` with no digit immediately before or
+/// after it. Byte offsets are safe: every needle is ASCII, and UTF-8
+/// continuation bytes are never ASCII digits.
+fn has_tag_token(hay: &str, needle: &str) -> bool {
+    hay.match_indices(needle).any(|(i, _)| {
+        let before = i.checked_sub(1).and_then(|j| hay.as_bytes().get(j));
+        let after = hay.as_bytes().get(i + needle.len());
+        !before.is_some_and(u8::is_ascii_digit) && !after.is_some_and(u8::is_ascii_digit)
+    })
 }
 
 /// Narrow chip text per source — shorter than the sidebar label so names
@@ -559,5 +696,135 @@ fn truncate(s: &str, max: usize) -> String {
         let mut out: String = s.chars().take(max - 1).collect();
         out.push('…');
         out
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    use super::*;
+    use crate::core::types::{SourceId, TorrentResult};
+
+    /// A deterministic CineVault result — the name is the only varying field.
+    fn result(name: &str) -> TorrentResult {
+        TorrentResult {
+            info_hash: "test-hash".into(),
+            name: name.to_string(),
+            size_bytes: 5 * 1024 * 1024 * 1024,
+            seeders: 120,
+            leechers: 5,
+            num_files: Some(3),
+            source: SourceId::CineVault,
+            magnet: Some("magnet:?xt=urn:btih:test".into()),
+            added: Some(1_786_000_000),
+        }
+    }
+
+    #[test]
+    fn quality_tag_matches_every_tag() {
+        let cases = [
+            ("The Movie 4K", "4k"),
+            ("The Movie 2160p", "4k"),
+            ("The Movie 1080p", "1080p"),
+            ("The Movie 720p", "720p"),
+            ("The Movie HDR", "hdr"),
+            ("The Movie DV", "dv"),
+            ("The Movie DoVi", "dv"),
+            ("The Movie REMUX", "remux"),
+            ("The Movie BluRay", "bluray"),
+            ("The Movie WEB-DL", "web-dl"),
+            ("The Movie x265", "x265"),
+            ("The Movie HEVC", "x265"),
+        ];
+        for (name, want) in cases {
+            assert_eq!(
+                quality_tag(name),
+                Some(want),
+                "title `{name}` should read as {want}"
+            );
+        }
+    }
+
+    #[test]
+    fn quality_tag_priority_first_match_wins() {
+        let cases = [
+            ("The Movie 2160p REMUX", "4k"),
+            ("The Movie 1080p HDR DV", "1080p"),
+            ("The Movie 720p WEB-DL", "720p"),
+            ("The Movie DV 4K", "4k"),
+            ("The Movie x265 4K", "4k"),
+            ("The Movie 1080p x265", "1080p"),
+        ];
+        for (name, want) in cases {
+            assert_eq!(
+                quality_tag(name),
+                Some(want),
+                "`{name}` should read as {want}, not a lower-priority tag"
+            );
+        }
+    }
+
+    #[test]
+    fn quality_tag_ignores_digit_surrounded_false_positives() {
+        // A year must never read as a resolution, and "720" inside "1720"
+        // is a longer number, not a tag.
+        assert_eq!(quality_tag("The Movie 2021 1080p"), Some("1080p"));
+        assert_eq!(quality_tag("The Movie 2021"), None);
+        assert_eq!(quality_tag("The Movie 1720"), None);
+        assert_eq!(quality_tag("The Movie 2024"), None);
+        // The digit rule cuts both ways: a digit right after the token also
+        // disqualifies it (HDR10 is a branding, not our "hdr" tag).
+        assert_eq!(quality_tag("The Movie hdr10"), None);
+        assert_eq!(quality_tag("The Movie 1080"), Some("1080p"));
+        assert_eq!(quality_tag("The Movie"), None);
+    }
+
+    #[test]
+    fn result_line_puts_quality_chip_before_source_chip() {
+        let mut state = SearchState::default();
+        state.source_counts.insert(SourceId::CineVault, 3);
+        let theme = Theme::titanium();
+        let line = result_line(&result("Dune 2021 1080p BLURAY"), false, &state, &theme, 60);
+        let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        let q = text.find("[1080p]").expect("quality chip rendered");
+        let c = text.find("[cinevault]").expect("source chip rendered");
+        assert!(q < c, "quality chip precedes the source chip: {text}");
+    }
+
+    #[test]
+    fn result_line_without_quality_tag_has_no_second_chip() {
+        let mut state = SearchState::default();
+        state.source_counts.insert(SourceId::CineVault, 3);
+        let theme = Theme::titanium();
+        let line = result_line(&result("Dune"), false, &state, &theme, 60);
+        let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(!text.contains("[1080p]"), "no quality chip: {text}");
+        assert!(text.contains("[cinevault]"), "source chip still rendered: {text}");
+    }
+
+    #[test]
+    fn header_renders_column_labels_and_count() {
+        let state = SearchState {
+            query: "dune".into(),
+            results: vec![result("Dune: Part Two")],
+            ..SearchState::default()
+        };
+        let theme = Theme::titanium();
+        let backend = TestBackend::new(56, 1);
+        let mut terminal = Terminal::new(backend).expect("test backend");
+        terminal
+            .draw(|f| draw_header(f, f.area(), &state, &theme))
+            .expect("draw must succeed");
+        let buf = terminal.backend().buffer();
+        let text: String = (0..56).map(|x| buf[(x, 0)].symbol().to_string()).collect();
+        assert!(text.contains("name"), "name column labeled: {text}");
+        assert!(text.contains("size"), "size column labeled: {text}");
+        assert!(text.contains("source"), "source column labeled: {text}");
+        assert!(
+            text.contains("1 results from 1 sources"),
+            "count line kept: {text}"
+        );
     }
 }

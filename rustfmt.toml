@@ -1,0 +1,4 @@
+# FR-63: maximum line width, pinned. Code is wrapped by rustfmt; the CI
+# awk check (workflow "line length") catches the strings/comments rustfmt
+# cannot touch. No exemptions.
+max_width = 100

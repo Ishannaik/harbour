@@ -15,7 +15,9 @@
 harbour is a terminal client for curated torrents. Browse a hand-picked
 catalogue, search, and pull torrents without leaving the terminal.
 
-> Status: scaffolding. The repo was created empty; the TUI is being built.
+> Status: UI MVP. Animated splash, keyboard-driven search, downloads queue
+> with Seeding tab, and the `?` help overlay run against deterministic fake
+> data; the engine and live sources land in later phases.
 
 ## Build
 
