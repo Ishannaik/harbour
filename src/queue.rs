@@ -508,7 +508,11 @@ impl Queue {
             .collect();
         for id in seeds {
             let (magnet, dir) = {
-                let item = self.get(&id).expect("id came from this list");
+                // `id` was collected from `self.items` moments ago; the item
+                // cannot have vanished in between (no mutation in this loop).
+                let item = self
+                    .get(&id)
+                    .unwrap_or_else(|| unreachable!("id came from self.items"));
                 (item.magnet.clone().unwrap_or_default(), item.dir.clone())
             };
             let req = AddRequest {

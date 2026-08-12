@@ -1,0 +1,5 @@
+# FR-65: cap rustc parallelism so heavy builds never peg the dev machine.
+# A cap, not a request — machines with fewer cores are unaffected (CI's
+# ubuntu-latest has 4 cores; 8 is a no-op there).
+[build]
+jobs = 8

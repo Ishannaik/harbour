@@ -25,6 +25,8 @@ cargo fmt
 cargo clippy -- -D warnings
 ```
 
+Quality gates (FR-62..FR-66): CI enforces fmt/clippy/tests/audits on every PR; `just check` runs the identical pipeline locally. Max line length 100 (rustfmt.toml + CI check), no exemptions. Size/complexity norms are review pressure, not gates (FR-67): functions ≤30–50 LOC and cyclomatic ≤10; files ≤500 preferred, >700 earns a split unless an FR-67 exception applies.
+
 ## Rules
 
 1. **Never push to `main`.** Branch per workstream: `ui/*`, `engine/*`, `sources/*`. Integrate via PR with ≥1 review (Sarthak reviews engine + sources; anyone reviews UI).

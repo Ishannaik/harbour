@@ -358,10 +358,12 @@ const TITANIUM_JSON: &str = r##"{
     "syntaxVariable": "#e0af68", "syntaxString": "#9ece6a", "syntaxNumber": "#ff9e64",
     "syntaxType": "#2ac3de", "syntaxOperator": "#89ddff", "syntaxPunctuation": "#9aa5ce",
     "thinkingOff": "#3b4261", "thinkingMinimal": "#565f89", "thinkingLow": "#7aa2f7",
-    "thinkingMedium": "#e0af68", "thinkingHigh": "#ff9e64", "thinkingXhigh": "#f7768e",
+    "thinkingMedium": "#e0af68", "thinkingHigh": "#ff9e64",
+    "thinkingXhigh": "#f7768e",
     "bashMode": "#9ece6a", "pythonMode": "#7aa2f7",
     "statusLineSep": "#3b4261", "statusLineModel": "#7aa2f7", "statusLinePath": "#a9b1d6",
-    "statusLineGitClean": "#9ece6a", "statusLineGitDirty": "#e0af68", "statusLineContext": "#7aa2f7",
+    "statusLineGitClean": "#9ece6a", "statusLineGitDirty": "#e0af68",
+    "statusLineContext": "#7aa2f7",
     "statusLineSpend": "#e0af68", "statusLineStaged": "#9ece6a", "statusLineDirty": "#e0af68",
     "statusLineUntracked": "#565f89", "statusLineOutput": "#a9b1d6", "statusLineCost": "#ff9e64",
     "statusLineSubagents": "#89ddff"
@@ -500,6 +502,10 @@ impl Theme {
 
     /// The titanium theme, parsed through the same validation path as custom
     /// themes (it is guaranteed valid by tests).
+    #[expect(
+        clippy::expect_used,
+        reason = "embedded titanium JSON is test-validated; a parse failure here is a build bug"
+    )]
     pub fn titanium() -> Theme {
         Theme::parse(TITANIUM_JSON).expect("embedded titanium theme must parse")
     }
@@ -592,6 +598,10 @@ fn zero_colors() -> ThemeColors {
 
 /// Build the titanium baseline without recursing through [`Theme::parse`] —
 /// this is what breaks the would-be infinite parse loop.
+#[expect(
+    clippy::expect_used,
+    reason = "embedded titanium JSON is test-validated; a parse failure here is a build bug"
+)]
 fn titanium_colors() -> ThemeColors {
     let v: serde_json::Value =
         serde_json::from_str(TITANIUM_JSON).expect("embedded titanium JSON must parse");

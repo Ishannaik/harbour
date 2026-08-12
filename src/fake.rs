@@ -379,8 +379,12 @@ pub fn fake_results(query: &str) -> Vec<TorrentResult> {
     (0..count)
         .map(|i| {
             let id = sources[i % sources.len()];
-            let (_id, _label, suffix, min_size, max_size) =
-                *SOURCES.iter().find(|(sid, ..)| *sid == id).unwrap();
+            // `id` is drawn from `SOURCES` itself (directly or via
+            // `category_sources`), so the lookup cannot miss.
+            let (_id, _label, suffix, min_size, max_size) = *SOURCES
+                .iter()
+                .find(|(sid, ..)| *sid == id)
+                .unwrap_or_else(|| unreachable!("{id} is drawn from SOURCES"));
             // Unique infohash per hit: golden-ratio mix of the seed and the
             // index spreads hits apart without consuming RNG state.
             let info_hash = hash40(seed ^ (i as u64 + 1).wrapping_mul(0x9e37_79b9_7f4a_7c15));

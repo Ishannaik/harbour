@@ -444,7 +444,9 @@ fn draw_splash(frame: &mut Frame, theme: &Theme, splash: &mut SplashState, now: 
         for p in &splash.particles {
             let px = panel_area.x + (p.fx * panel_area.width as f64) as u16;
             let py = panel_area.y + (p.fy * panel_area.height as f64) as u16;
-            let tw = ((elapsed.as_secs_f64() * 1.7 + p.phase).sin() * 0.5 + 0.5).powf(2.0); // fast attack, slow fall — sparkle, not sine
+            // Fast attack, slow fall — sparkle, not sine.
+            let t = (elapsed.as_secs_f64() * 1.7 + p.phase).sin() * 0.5 + 0.5;
+            let tw = t.powf(2.0);
             let color = lerp_color(colors.muted(), colors.accent(), tw);
             if let Some(cell) = frame
                 .buffer_mut()

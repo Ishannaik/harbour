@@ -258,6 +258,39 @@ requiring private announces; GPU/ASCII-image rendering.
 - **FR-61** The stream endpoint binds to loopback only (no external network exposure);
   verified by connecting from a non-loopback address and getting a refusal.
 
+### 4.8 Code quality (FR-62 … FR-68)
+
+- **FR-62** Shipped (non-test) code forbids `unsafe` and denies `unwrap_used`, `expect_used`,
+  `panic`, `dbg_macro`, and `todo` — enforced via crate-root
+  `#![cfg_attr(not(test), …)]` in `src/main.rs` (test code keeps its unwraps); clippy runs
+  `--all-targets -- -D warnings` in CI. Documented invariants may use
+  `#[expect(…, reason = "…")]` or `unreachable!` with the invariant stated.
+- **FR-63** Maximum line length is 100 chars, pinned in `rustfmt.toml`; enforced by
+  `cargo fmt --check` and a CI awk check over all tracked `*.rs` files. No exemptions:
+  fixture raw strings are reflowed at whitespace-insensitive boundaries or moved to
+  `src/sources/fixtures/` (HTML attribute values and JSON tokens cannot be split).
+- **FR-64** CI (`.github/workflows/ci.yml`) runs on every push and PR: fmt check, clippy
+  `-D warnings`, the offline test suite, the line-length check, `cargo-audit` (RustSec
+  advisories), and `cargo-deny` (license policy per `deny.toml`, OSI-permissive only).
+  Network-gated tests never run in CI; the job is cached and fail-fast.
+- **FR-65** Build joy: `just check` / `just lines` / `just audit` mirror the CI pipeline
+  locally; `.cargo/config.toml` caps build jobs at 8 so heavy builds never peg a dev
+  machine; heavy verification runs in CI, not on dev machines.
+- **FR-66** `main` is branch-protected: PR required, ≥1 approval, the `quality` CI check
+  green, linear history, no force pushes or deletions. (Enabled via GitHub settings/API —
+  an owner action; this FR records that it must stay on.)
+- **FR-67** Size and complexity norms are review pressure, not CI gates: functions ≤30 LOC
+  excellent / 31–50 acceptable / 51–80 review / >80 refactor; cyclomatic ≤10 target,
+  11–15 warn, >15 refactor; cognitive ≤10; nesting ≤3; params ≤4 (5+ review); files ≤500
+  preferred, 500–700 review, 700–1000 strong refactor, >1000 justify. Exceptions: big
+  data/contract tables (e.g. `core/types.rs`, the frozen shared contract), dense
+  protocol/state machines, and co-located test modules (scraper parser + fixtures +
+  tests). Splitting to satisfy a number is forbidden; the per-file signal starts at 700
+  and ratchets down as refactors land.
+- **FR-68** `src/app.rs` (1420 LOC — the one file FR-67's exceptions do not save) is
+  decomposed by responsibility (splash / loop / watch / dispatch), boundaries drawn per
+  concept, not to a line count; the FR-67 signal tightens after it lands.
+
 ## 5. UI/UX requirements (UR)
 
 - **UR-01** Views, in order: splash (animated logo draw-in + gradient sweep) → search

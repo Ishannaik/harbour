@@ -437,7 +437,10 @@ mod tests {
     fn an_empty_feed_is_not_an_error() {
         // A reachable site with nothing new is a successful empty search and
         // must never mark the source offline.
-        let empty = r#"<?xml version="1.0"?><rss version="2.0"><channel><title>SubsPlease</title></channel></rss>"#;
+        let empty = concat!(
+            "<?xml version=\"1.0\"?><rss version=\"2.0\">",
+            "<channel><title>SubsPlease</title></channel></rss>"
+        );
         assert_eq!(parse(empty).expect("empty feed parses").len(), 0);
         assert_eq!(parse("").expect("an empty body parses").len(), 0);
     }

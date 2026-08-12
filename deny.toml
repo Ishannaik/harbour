@@ -1,0 +1,17 @@
+# FR-64: dependency license policy. OSI-permissive only — harbour is MIT and
+# copyleft dependencies would leak the license. Extend ONLY with
+# OSI-permissive licenses (see plan Step 6).
+[licenses]
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "0BSD",
+    "Unlicense",
+    "CC0-1.0",
+    "Unicode-3.0",
+]

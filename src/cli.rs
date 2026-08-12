@@ -112,8 +112,14 @@ pub fn parse(args: &[String]) -> Command {
     }
 
     if is_info_hash(first) {
-        let hash = normalize_info_hash(first).expect("is_info_hash just said yes");
-        return Command::RunWithMagnet(crate::core::magnet::build_magnet(&hash, &hash));
+        // The guard above already shaped the string; still handle failure
+        // honestly — a malformed infohash is user input, not a crash.
+        return match normalize_info_hash(first) {
+            Some(hash) => Command::RunWithMagnet(crate::core::magnet::build_magnet(&hash, &hash)),
+            None => Command::Invalid {
+                message: "that doesn't look like a usable 40-hex infohash".into(),
+            },
+        };
     }
 
     if first.to_ascii_lowercase().ends_with(".torrent") {

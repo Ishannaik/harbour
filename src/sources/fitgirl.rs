@@ -490,17 +490,7 @@ mod tests {
     /// A repack post, trimmed to the parts this module reads. The real thing is
     /// megabytes of screenshots and mirror lists — which is exactly why the
     /// magnet is fetched lazily and not once per search result.
-    const POST: &str = r#"<!DOCTYPE html><html><body>
-        <article id="post-46381" class="post-46381 post">
-        <h1 class="entry-title">Cyberpunk 2077: Ultimate Edition</h1>
-        <div class="entry-content">
-          <p><strong>Repack Size: 68.9 GB</strong></p>
-          <h3>Download Mirrors</h3>
-          <ul>
-            <li>1337x [<a href="magnet:?xt=urn:btih:C4A9E7B1D6F80352AB19CD7E4406F5238B0D91EA&amp;dn=Cyberpunk.2077.Ultimate.Edition&amp;tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337">magnet</a>]</li>
-            <li>RuTracker [<a href="https://rutracker.org/forum/viewtopic.php?t=1">torrent</a>]</li>
-          </ul>
-        </div></article></body></html>"#;
+    const POST: &str = include_str!("fixtures/fitgirl_post.html");
 
     /// The real bytes a blocked scrape gets back: a full page with no article on
     /// it at all.

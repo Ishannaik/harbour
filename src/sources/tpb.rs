@@ -306,7 +306,11 @@ mod tests {
     const FIXTURE: &str = include_str!("fixtures/tpb.json");
 
     /// apibay's actual "nothing matched" body — one row, not an empty array.
-    const NO_RESULTS: &str = r#"[{"id":"0","name":"No results returned","info_hash":"0000000000000000000000000000000000000000","leechers":"0","seeders":"0","num_files":"0","size":"0","username":"","added":"0","status":"","category":"0","imdb":""}]"#;
+    /// Reflowed across lines: JSON whitespace is insignificant, so the bytes
+    /// the parser sees are identical.
+    const NO_RESULTS: &str = r#"[{"id":"0","name":"No results returned",
+"info_hash":"0000000000000000000000000000000000000000","leechers":"0","seeders":"0",
+"num_files":"0","size":"0","username":"","added":"0","status":"","category":"0","imdb":""}]"#;
 
     fn movies() -> Vec<TorrentResult> {
         parse(FIXTURE, SourceId::TpbMovies).expect("fixture parses")

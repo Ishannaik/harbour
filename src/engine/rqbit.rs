@@ -68,7 +68,7 @@ impl RqbitEngine {
     /// Ensures the loopback HTTP API is running and returns it. Idempotent:
     /// the first watch starts it, every later watch reuses it.
     async fn stream_server(&self) -> Option<Arc<StreamServer>> {
-        if let Some(server) = self.stream.lock().unwrap().clone() {
+        if let Some(server) = self.stream_guard().clone() {
             return Some(server);
         }
         let api = Api::new(self.session.clone(), None, None);
@@ -82,7 +82,7 @@ impl RqbitEngine {
             let _ = http.make_http_api_and_run(listener, None).await;
         });
         let server = Arc::new(StreamServer { base_url });
-        *self.stream.lock().unwrap() = Some(server.clone());
+        *self.stream_guard() = Some(server.clone());
         Some(server)
     }
 
@@ -91,7 +91,7 @@ impl RqbitEngine {
     /// missing pieces while prioritizing the requested ones.
     async fn stream_url_for(&self, id: &str) -> Option<String> {
         let server = self.stream_server().await?;
-        let handle = self.handles.lock().unwrap().get(id).cloned()?;
+        let handle = self.handles().get(id).cloned()?;
         // `with_metadata` is Result-returning (metadata may not have arrived);
         // file 0 is the honest fallback for a still-resolving torrent.
         let file_id = handle
@@ -166,6 +166,14 @@ impl RqbitEngine {
     /// must not take the download engine down with it (`plan-engine.md` §4.1).
     fn handles(&self) -> std::sync::MutexGuard<'_, HashMap<InfoHash, ManagedTorrentHandle>> {
         self.handles
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// Same poison-recovery policy as [`Self::handles`], for the stream
+    /// server slot.
+    fn stream_guard(&self) -> std::sync::MutexGuard<'_, Option<Arc<StreamServer>>> {
+        self.stream
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }

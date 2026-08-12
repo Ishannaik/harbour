@@ -1,3 +1,18 @@
+// Code-quality policy (FR-62): test code keeps its unwraps; shipped code
+// cannot panic on a recoverable error. Scoped to non-test builds so the
+// suite's legitimate `unwrap`/`expect` assertions keep compiling.
+#![cfg_attr(not(test), forbid(unsafe_code))]
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::dbg_macro,
+        clippy::todo
+    )
+)]
+
 mod anim;
 mod app;
 mod cli;

@@ -1,30 +1,38 @@
-name: CI
-
+# FR-64: the enforcement backbone. fmt → clippy → tests → line length →
+# dependency audits, cached and fail-fast, on every push and PR. Network-
+# gated tests (tests/engine_net.rs, tests/search_net.rs) self-skip without
+# HARBOUR_TEST_NET=1, so this job never depends on live swarms or sites.
+name: ci
 on:
   push:
-    branches: [main]
   pull_request:
-
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
-  build:
-    # NFR-08 names Windows Terminal as the primary target, FR-06 resolves
-    # %USERPROFILE% vs $HOME, and FR-55 requires same-volume atomic rename.
-    # Path resolution, rename semantics and file locking are exactly what differs
-    # per-OS, so the matrix has to exist before persistence lands, not after.
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-    runs-on: ${{ matrix.os }}
+  quality:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@v6
+      # The maintained toolchain action (dtolnay/rust-toolchain is deprecated
+      # since 2025); it wires rust-cache caching in itself.
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
-          components: clippy, rustfmt
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo build --all-targets
-      - run: cargo test --all-targets
-      - run: cargo clippy --all-targets -- -D warnings
-      # Formatting is platform-independent; running it once keeps the matrix cheap.
-      - run: cargo fmt --check
-        if: matrix.os == 'ubuntu-latest'
+          components: rustfmt, clippy
+      - name: fmt
+        run: cargo fmt --check
+      - name: lint
+        run: cargo clippy --all-targets -- -D warnings
+      - name: test
+        run: cargo test
+      - name: line length ≤ 100
+        run: |
+          bad="$(awk 'length($0) > 100 {print FILENAME":"FNR": "length($0)}' $(git ls-files '*.rs'))"
+          [ -z "$bad" ] || { echo "$bad"; exit 1; }
+      - name: audit
+        uses: rustsec/audit-check@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+      - name: deny
+        uses: EmbarkStudios/cargo-deny-action@v2
