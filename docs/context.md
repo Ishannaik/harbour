@@ -16,7 +16,7 @@ sources, and phases below are normative — do not invent alternatives.
 
 - Opens straight to a search bar. Type query + Enter → results stream in from 10 sources as each answers, tagged with size and seeders.
 - Empty query + Enter → browse curated top lists.
-- Arrow keys navigate; `d` downloads to the default folder; `shift+d` picks a folder for that download; `o` changes the output folder; `p` pauses/stops seeding; `?` shows keybinds; `q` quits.
+- Arrow keys navigate; `d` downloads to the default folder; `shift+d` picks a folder for that download; `o` changes the output folder; `p` pauses/stops seeding; `?` shows keybinds; `Tab` cycles screens (search ⇄ downloads); `←`/`→` switch the downloads tabs; `esc` closes help; `q` quits.
 - Downloads run in the background while you keep searching; queue supports unlimited items, concurrency cap.
 - Active downloads show progress, speed, time left; finished items drop into "recently downloaded"; everything persists across restarts; interrupted downloads resume.
 - Finished torrents keep seeding by default (opt out per-item with `p`); Seeding tab shows upload speed, peers, pause/stop.
