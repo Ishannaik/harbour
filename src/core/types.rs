@@ -564,6 +564,11 @@ pub trait Engine: Send + Sync {
     fn stream_url<'a>(&'a self, _id: &'a str) -> EngineFuture<'a, Option<String>> {
         Box::pin(async move { None })
     }
+
+    /// Live global speed limits in MiB/s (None = unlimited). Additive
+    /// default no-op — the trait is frozen, so every implementor compiles;
+    /// librqbit's session limiter applies instantly, no restart needed.
+    fn set_speed_limits(&self, _download_mib: Option<u64>, _upload_mib: Option<u64>) {}
 }
 
 /// Events pushed from the engine and the search layer to the app state.

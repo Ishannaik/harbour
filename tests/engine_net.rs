@@ -34,7 +34,7 @@ mod persist;
 mod queue;
 
 use crate::core::types::{Engine, EngineItemState, QueueStatus};
-use crate::engine::rqbit::RqbitEngine;
+use crate::engine::rqbit::{EngineLaunchOptions, RqbitEngine};
 use crate::queue::{AddInput, Queue};
 
 const SINTEL: &str = "magnet:?xt=urn:btih:08ada5a7a6183aae1e09d831df6748d566095a10\
@@ -75,9 +75,13 @@ async fn metadata_arrives_from_a_real_swarm() {
         return;
     }
     let root = scratch("meta");
-    let engine = RqbitEngine::new(&root.join("downloads"), &root)
-        .await
-        .expect("session starts");
+    let engine = RqbitEngine::new(
+        &root.join("downloads"),
+        &root,
+        &EngineLaunchOptions::default(),
+    )
+    .await
+    .expect("session starts");
 
     engine
         .add(crate::core::types::AddRequest {
@@ -127,9 +131,13 @@ async fn pause_reports_unknown_peers_not_zero() {
         return;
     }
     let root = scratch("pause");
-    let engine = RqbitEngine::new(&root.join("downloads"), &root)
-        .await
-        .expect("session starts");
+    let engine = RqbitEngine::new(
+        &root.join("downloads"),
+        &root,
+        &EngineLaunchOptions::default(),
+    )
+    .await
+    .expect("session starts");
     engine
         .add(crate::core::types::AddRequest {
             id: SINTEL_HASH.into(),
@@ -190,7 +198,9 @@ async fn a_restarted_session_restores_its_torrents() {
     let downloads = root.join("downloads");
 
     {
-        let engine = RqbitEngine::new(&downloads, &root).await.expect("session");
+        let engine = RqbitEngine::new(&downloads, &root, &EngineLaunchOptions::default())
+            .await
+            .expect("session");
         engine
             .add(crate::core::types::AddRequest {
                 id: SINTEL_HASH.into(),
@@ -211,7 +221,9 @@ async fn a_restarted_session_restores_its_torrents() {
     }
 
     // Fresh session over the same state directory.
-    let engine = RqbitEngine::new(&downloads, &root).await.expect("session");
+    let engine = RqbitEngine::new(&downloads, &root, &EngineLaunchOptions::default())
+        .await
+        .expect("session");
     let adopted = engine.adopt_restored();
     assert!(
         adopted.iter().any(|h| h == SINTEL_HASH),
@@ -231,7 +243,7 @@ async fn the_queue_drives_the_real_engine() {
     let root = scratch("queue");
     let downloads = root.join("downloads");
     let engine = std::sync::Arc::new(
-        RqbitEngine::new(&downloads, &root)
+        RqbitEngine::new(&downloads, &root, &EngineLaunchOptions::default())
             .await
             .expect("session starts"),
     );

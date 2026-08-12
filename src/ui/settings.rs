@@ -35,7 +35,8 @@ const HINT: &str = "↑/↓ move · enter edit/toggle · esc back";
 const CURSOR: &str = "▌";
 /// Rows before the per-source toggles: player, theme, download dir,
 /// seed-by-default, trackers.
-const APP_ROWS: usize = 5;
+/// Total settings rows before the per-source toggles.
+const APP_ROWS: usize = 17;
 /// Fixed label column width — the value column gets the rest of the panel.
 const LABEL_W: usize = 16;
 /// Panel width: label column + a value column long enough for a download
@@ -56,13 +57,21 @@ pub enum RowKind {
     Source,
 }
 
-/// The three text-editable rows, so the view and the dispatch agree on which
+/// The text-editable rows, so the view and the dispatch agree on which
 /// config field an edit buffer commits into.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TextField {
     Player,
     DownloadDir,
     Trackers,
+    DownloadLimit,
+    UploadLimit,
+    AltDownloadLimit,
+    AltUploadLimit,
+    MaxActiveDownloads,
+    ListenPort,
+    SocksProxy,
+    SeedRatio,
 }
 
 /// Settings-overlay state: the row selection and the inline text-edit
@@ -90,9 +99,9 @@ pub fn row_count() -> usize {
 /// The kind of row at `index`, or `None` past the end.
 pub fn row_kind(index: usize) -> Option<RowKind> {
     match index {
-        0 | 2 | 4 => Some(RowKind::Text),
+        0 | 2 | 4 | 5 | 6 | 7 | 8 | 10 | 11 | 14 | 16 => Some(RowKind::Text),
         1 => Some(RowKind::Theme),
-        3 => Some(RowKind::Toggle),
+        3 | 9 | 12 | 13 | 15 => Some(RowKind::Toggle),
         _ => {
             let source = index.checked_sub(APP_ROWS)?;
             SourceId::ALL.get(source).map(|_| RowKind::Source)
@@ -106,6 +115,14 @@ pub fn text_field(index: usize) -> Option<TextField> {
         0 => Some(TextField::Player),
         2 => Some(TextField::DownloadDir),
         4 => Some(TextField::Trackers),
+        5 => Some(TextField::DownloadLimit),
+        6 => Some(TextField::UploadLimit),
+        7 => Some(TextField::AltDownloadLimit),
+        8 => Some(TextField::AltUploadLimit),
+        10 => Some(TextField::MaxActiveDownloads),
+        11 => Some(TextField::ListenPort),
+        14 => Some(TextField::SocksProxy),
+        16 => Some(TextField::SeedRatio),
         _ => None,
     }
 }
@@ -124,6 +141,18 @@ pub fn row_label(index: usize) -> Option<&'static str> {
         2 => Some("download dir"),
         3 => Some("seed by default"),
         4 => Some("trackers"),
+        5 => Some("download limit (MiB/s)"),
+        6 => Some("upload limit (MiB/s)"),
+        7 => Some("alt download limit (MiB/s)"),
+        8 => Some("alt upload limit (MiB/s)"),
+        9 => Some("use alt rates"),
+        10 => Some("max active downloads (0 = unlimited)"),
+        11 => Some("listen port (empty = auto)"),
+        12 => Some("upnp port forwarding"),
+        13 => Some("dht"),
+        14 => Some("socks proxy"),
+        15 => Some("stop seeding at ratio"),
+        16 => Some("seed ratio"),
         _ => source_at(index).map(source_label),
     }
 }
@@ -301,15 +330,43 @@ fn row_value(
                 config.trackers.join(", ")
             }
         }
+        Some(TextField::DownloadLimit) => opt_mib(config.download_limit_mib),
+        Some(TextField::UploadLimit) => opt_mib(config.upload_limit_mib),
+        Some(TextField::AltDownloadLimit) => opt_mib(config.alt_download_limit_mib),
+        Some(TextField::AltUploadLimit) => opt_mib(config.alt_upload_limit_mib),
+        Some(TextField::MaxActiveDownloads) => config
+            .max_active_downloads
+            .map(|n| n.to_string())
+            .unwrap_or_else(|| "env default".to_string()),
+        Some(TextField::ListenPort) => config
+            .listen_port
+            .map(|p| p.to_string())
+            .unwrap_or_else(|| "auto".to_string()),
+        Some(TextField::SocksProxy) => config
+            .socks_proxy_url
+            .clone()
+            .unwrap_or_else(|| "none".to_string()),
+        Some(TextField::SeedRatio) => format!("{:.1}", config.seed_ratio),
         None => match index {
             1 => config.theme.clone(),
             3 => bool_glyph(config.seed_by_default),
+            9 => bool_glyph(config.use_alt_rates),
+            12 => bool_glyph(config.enable_upnp),
+            13 => bool_glyph(config.enable_dht),
+            15 => bool_glyph(config.stop_seed_at_ratio),
             _ => match source_at(index) {
                 Some(id) => bool_glyph(!disabled.contains(&id)),
                 None => String::new(),
             },
         },
     }
+}
+
+/// MiB/s limit as "unlimited" or the number — the empty-buffer round-trip
+/// form for the settings text rows.
+fn opt_mib(mib: Option<u64>) -> String {
+    mib.map(|m| m.to_string())
+        .unwrap_or_else(|| "unlimited".to_string())
 }
 
 /// ✓ for an on/checked value, ✗ for off/unchecked — the toggle rows' glyph.
@@ -343,7 +400,7 @@ mod tests {
 
     #[test]
     fn row_layout_matches_the_settings_contract() {
-        assert_eq!(row_count(), 15);
+        assert_eq!(row_count(), 17 + SourceId::ALL.len());
         assert_eq!(row_kind(0), Some(RowKind::Text));
         assert_eq!(text_field(0), Some(TextField::Player));
         assert_eq!(row_kind(1), Some(RowKind::Theme));
@@ -352,11 +409,26 @@ mod tests {
         assert_eq!(row_kind(3), Some(RowKind::Toggle));
         assert_eq!(row_kind(4), Some(RowKind::Text));
         assert_eq!(text_field(4), Some(TextField::Trackers));
-        assert_eq!(row_kind(5), Some(RowKind::Source));
+        // The qBittorrent-parity rows.
+        assert_eq!(row_kind(5), Some(RowKind::Text));
+        assert_eq!(text_field(5), Some(TextField::DownloadLimit));
+        assert_eq!(text_field(6), Some(TextField::UploadLimit));
+        assert_eq!(text_field(7), Some(TextField::AltDownloadLimit));
+        assert_eq!(text_field(8), Some(TextField::AltUploadLimit));
+        assert_eq!(row_kind(9), Some(RowKind::Toggle));
+        assert_eq!(text_field(10), Some(TextField::MaxActiveDownloads));
+        assert_eq!(text_field(11), Some(TextField::ListenPort));
+        assert_eq!(row_kind(12), Some(RowKind::Toggle));
+        assert_eq!(row_kind(13), Some(RowKind::Toggle));
+        assert_eq!(text_field(14), Some(TextField::SocksProxy));
+        assert_eq!(row_kind(15), Some(RowKind::Toggle));
+        assert_eq!(text_field(16), Some(TextField::SeedRatio));
+        // Sources follow the app rows.
+        assert_eq!(row_kind(17), Some(RowKind::Source));
         assert_eq!(row_kind(row_count() - 1), Some(RowKind::Source));
         assert_eq!(row_kind(row_count()), None);
         assert_eq!(text_field(1), None);
-        assert_eq!(source_at(4), None);
+        assert_eq!(source_at(16), None);
         assert_eq!(source_at(row_count()), None);
     }
 
@@ -366,7 +438,7 @@ mod tests {
         // movies, 1337x movies, BitTorrented, EZTV, TPB tv, 1337x tv, Nyaa,
         // SubsPlease — which is exactly SourceId::ALL, the registry's
         // canonical sidebar order.
-        let got: Vec<SourceId> = (5..row_count()).filter_map(source_at).collect();
+        let got: Vec<SourceId> = (17..row_count()).filter_map(source_at).collect();
         assert_eq!(got, SourceId::ALL);
         assert_eq!(got[0], SourceId::FitGirl);
         assert_eq!(got[9], SourceId::SubsPlease);
@@ -374,7 +446,7 @@ mod tests {
 
     #[test]
     fn source_labels_match_the_search_sidebar() {
-        let labels: Vec<&str> = (5..row_count()).filter_map(row_label).collect();
+        let labels: Vec<&str> = (17..row_count()).filter_map(row_label).collect();
         assert_eq!(
             labels,
             [
@@ -410,7 +482,7 @@ mod tests {
         let disabled = HashSet::new();
         let state = SettingsState::default();
         let theme = Theme::titanium();
-        let backend = TestBackend::new(80, 24);
+        let backend = TestBackend::new(80, 40);
         let mut terminal = Terminal::new(backend).expect("test backend");
         let frame = terminal
             .draw(|frame| draw(frame, frame.area(), &cfg, &disabled, &state, &theme))
@@ -447,7 +519,7 @@ mod tests {
         disabled.insert(SourceId::FitGirl);
         let state = SettingsState::default();
         let theme = Theme::titanium();
-        let backend = TestBackend::new(80, 24);
+        let backend = TestBackend::new(80, 40);
         let mut terminal = Terminal::new(backend).expect("test backend");
         let frame = terminal
             .draw(|frame| draw(frame, frame.area(), &cfg, &disabled, &state, &theme))
@@ -458,8 +530,10 @@ mod tests {
             .iter()
             .map(|cell| cell.symbol())
             .collect();
-        // seed-by-default is on (✓); 9 sources enabled (✓), FitGirl off (✗).
-        assert_eq!(symbols.matches('✓').count(), 10);
-        assert_eq!(symbols.matches('✗').count(), 1);
+        // Defaults: seed-by-default ✓, upnp ✓, dht ✓ (3 toggles on);
+        // use-alt-rates ✗, stop-at-ratio ✗; 9 sources enabled (✓), FitGirl
+        // off (✗).
+        assert_eq!(symbols.matches('✓').count(), 12);
+        assert_eq!(symbols.matches('✗').count(), 3);
     }
 }
