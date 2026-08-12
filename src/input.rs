@@ -172,10 +172,11 @@ pub fn map(
             KeyCode::Tab => Action::SwitchScreen,
             KeyCode::Esc => Action::Escape,
             KeyCode::Backspace => Action::Backspace,
-            // `?` opens help only when the query is empty, so it stays typable
-            // in a search term. The same reasoning applies to `d` and `q`: on
-            // the search screen the text field wins, because a user typing
-            // "dune" must not trigger a download on the `d`.
+            // `?` always opens help — a torrent title never needs a literal
+            // question mark, and the hint advertises `?` unconditionally. The
+            // text-field-wins rule still guards `d` and `q`: typing "dune"
+            // must never fire a download on the `d`.
+            KeyCode::Char('?') => Action::ToggleHelp,
             KeyCode::Char(c) => Action::Type(c),
             _ => Action::None,
         },
@@ -365,7 +366,9 @@ mod tests {
     #[test]
     fn typing_on_the_search_screen_never_triggers_an_action() {
         // The bug this prevents: typing "dune" firing a download on the `d`.
-        for c in "dunepqrsx?".chars() {
+        // `?` is the one exception — help is advertised unconditionally, and
+        // a torrent title never needs a literal question mark.
+        for c in "dunepqrsx".chars() {
             assert_eq!(
                 map(
                     key(KeyCode::Char(c)),
@@ -379,6 +382,18 @@ mod tests {
                 "`{c}` must reach the text field"
             );
         }
+        assert_eq!(
+            map(
+                key(KeyCode::Char('?')),
+                Screen::Search,
+                false,
+                false,
+                false,
+                false
+            ),
+            Action::ToggleHelp,
+            "`?` opens help even mid-query"
+        );
     }
 
     #[test]
