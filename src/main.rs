@@ -63,6 +63,22 @@ async fn main() -> ExitCode {
 }
 
 async fn run_tui(initial: InitialAction) -> ExitCode {
+    // A TUI panic must not leave the user's shell in raw mode with no
+    // cursor. The TerminalGuard also restores on unwind, but the hook runs
+    // first so the panic message itself is readable and the shell is
+    // declared intact — a crash is a bug report, not a broken terminal.
+    std::panic::set_hook(Box::new(|info| {
+        let _ = crossterm::execute!(
+            std::io::stdout(),
+            crossterm::cursor::Show,
+            crossterm::terminal::LeaveAlternateScreen,
+            crossterm::event::DisableMouseCapture
+        );
+        let _ = crossterm::terminal::disable_raw_mode();
+        eprintln!("\nharbour crashed: {info}");
+        eprintln!("your terminal was restored — please report this line");
+    }));
+
     // Color capability is detected once at startup, before the alt-screen
     // (docs/theming.md §Color mode detection) — fixed for the process lifetime.
     let _color_mode = theme::detect_color_mode();
