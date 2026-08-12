@@ -26,10 +26,12 @@ use crate::ui::SearchState;
 
 /// Panel title — same framing as the downloads view and the splash.
 const TITLE: &str = " harbour — search ";
-/// Sidebar width (docs/design.md §2.2).
-const SIDEBAR_WIDTH: u16 = 22;
-/// Search bar height: top border, content row, bottom border.
-const SEARCH_BAR_H: u16 = 3;
+/// Sidebar width (docs/design.md §2.2). Shared with `input.rs`'s mouse
+/// mapping: the results column starts one cell past the sidebar.
+pub(crate) const SIDEBAR_WIDTH: u16 = 22;
+/// Search bar height: top border, content row, bottom border. Shared with
+/// `input.rs`'s mouse mapping: results start below the bar and its header.
+pub(crate) const SEARCH_BAR_H: u16 = 3;
 /// Block cursor glyph at the end of the query — the input's focus marker.
 const CURSOR: &str = "▌";
 /// Bottom hint — the keybinds that matter on this screen.

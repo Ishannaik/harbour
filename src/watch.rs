@@ -83,6 +83,20 @@ impl WatchSession {
         matches!(self.child.try_wait(), Ok(Some(_)))
     }
 
+    /// Launches the player against an engine-provided stream URL (FR-57:
+    /// Stremio-style watch while downloading). No local server — the player
+    /// talks straight to librqbit's loopback HTTP API, which blocks on
+    /// missing pieces and prioritizes the requested ones.
+    pub fn launch_remote(player: &str, url: &str) -> std::io::Result<WatchSession> {
+        let stop = Arc::new(AtomicBool::new(false));
+        let child = Command::new(player).arg(url).stdin(Stdio::null()).spawn()?;
+        Ok(WatchSession {
+            url: url.to_string(),
+            child,
+            stop,
+        })
+    }
+
     /// Stops the server and kills the player (FR-59: `q`/esc stops cleanly).
     pub fn stop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);

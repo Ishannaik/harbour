@@ -16,7 +16,9 @@ use std::io;
 use std::time::{Duration, Instant};
 
 use crossterm::cursor::{Hide, Show};
-use crossterm::event::{self, Event};
+use crossterm::event::{
+    self, DisableMouseCapture, EnableMouseCapture, Event, MouseButton, MouseEventKind,
+};
 use crossterm::execute;
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
@@ -113,18 +115,19 @@ impl Rng {
 }
 
 /// Restores the terminal on drop: show cursor, leave alternate screen, then
-/// disable raw mode — in that order, best-effort. Drop cannot return errors,
+/// disable raw mode — in that order, best-effort. Mouse capture is released
+/// with the alternate screen it was enabled on. Drop cannot return errors,
 /// and a partial restore still beats leaving the user's shell unusable.
 struct TerminalGuard;
 
 impl TerminalGuard {
     /// Enters the TUI: raw mode first, then the alternate screen with the
-    /// cursor hidden. If the alternate-screen entry fails, raw mode is
-    /// disabled before the error propagates so a half-set-up terminal is
-    /// never leaked to the caller.
+    /// cursor hidden and mouse capture on. If the alternate-screen entry
+    /// fails, raw mode is disabled before the error propagates so a
+    /// half-set-up terminal is never leaked to the caller.
     fn enter() -> io::Result<Self> {
         enable_raw_mode()?;
-        if let Err(err) = execute!(io::stdout(), EnterAlternateScreen, Hide) {
+        if let Err(err) = execute!(io::stdout(), EnterAlternateScreen, Hide, EnableMouseCapture) {
             let _ = disable_raw_mode();
             return Err(err);
         }
@@ -134,9 +137,14 @@ impl TerminalGuard {
 
 impl Drop for TerminalGuard {
     fn drop(&mut self) {
-        // Cursor/alt-screen must be restored while still in raw mode; raw
-        // mode is lifted last so no escape codes leak to the shell.
-        let _ = execute!(io::stdout(), Show, LeaveAlternateScreen);
+        // Cursor/alt-screen/mouse must be restored while still in raw mode;
+        // raw mode is lifted last so no escape codes leak to the shell.
+        let _ = execute!(
+            io::stdout(),
+            Show,
+            LeaveAlternateScreen,
+            DisableMouseCapture
+        );
         let _ = disable_raw_mode();
     }
 }
@@ -622,7 +630,18 @@ fn spawn_input_thread() -> mpsc::UnboundedReceiver<Event> {
 /// a silent no-op. With fake data there are no files, so this is exactly the
 /// honest error until real downloads land; the engine track will swap the
 /// file path for librqbit's live stream URL.
-fn start_watch(app: &mut App) {
+/// `w` on the selected item: stream it to an external player (mpv → VLC,
+/// or `config.player`). Two paths, engine-first (FR-57):
+///
+/// 1. **Swarm streaming** — the engine serves the torrent's largest video
+///    file over its loopback HTTP API while pieces arrive (Stremio-style:
+///    watch before the download finishes). This is the primary path.
+/// 2. **File serving** — items with a media file already on disk but no
+///    live session (or a fake/queued item) fall back to the local Range
+///    server.
+///
+/// Every failure is a loud error banner — never a silent no-op.
+async fn start_watch(app: &mut App) {
     // The selection indexes the visible tab, so resolve through it; clone
     // the fields (a ref into `items` would fight the mutations below).
     let Some(item) = app
@@ -635,17 +654,45 @@ fn start_watch(app: &mut App) {
     let id = item.id.clone();
     let name = item.name.clone();
     let dir = item.dir.clone();
-    let Some(player) = crate::watch::find_player() else {
-        app.warn("watch: no player found — install mpv or VLC and add it to PATH");
-        return;
+    let player = match &app.config.player {
+        Some(p) if !p.trim().is_empty() => p.clone(),
+        _ => match crate::watch::find_player() {
+            Some(p) => p.to_string(),
+            None => {
+                app.warn(
+                    "watch: no player found — set `player` in config.toml, or install mpv/VLC on PATH",
+                );
+                return;
+            }
+        },
     };
+
+    // Path 1: stream from the swarm while it downloads. librqbit blocks on
+    // missing pieces and prioritizes the requested ones — seek works.
+    if let Some(url) = app.queue.engine().stream_url(&id).await {
+        match crate::watch::WatchSession::launch_remote(&player, &url) {
+            Ok(session) => {
+                app.state.now_playing = Some(crate::ui::NowPlaying {
+                    id,
+                    name,
+                    stream_url: session.url.clone(),
+                });
+                app.watch = Some(session);
+                app.state.screen = Screen::NowPlaying;
+            }
+            Err(err) => app.warn(format!("watch: cannot start player: {err}")),
+        }
+        return;
+    }
+
+    // Path 2: a file already on disk (completed item outside the session).
     let Some(file) = crate::watch::primary_media(&dir) else {
         app.warn(format!(
-            "watch: no media file for '{name}' (fake data — engine lands in phase 4)"
+            "watch: no media file for '{name}' and the swarm cannot stream it yet"
         ));
         return;
     };
-    match crate::watch::WatchSession::start(&file, player) {
+    match crate::watch::WatchSession::start(&file, &player) {
         Ok(session) => {
             app.state.now_playing = Some(crate::ui::NowPlaying {
                 id,
@@ -915,11 +962,41 @@ fn banner_height(message: Option<&str>) -> u16 {
     message.map_or(0, |m| 2 + m.lines().count().clamp(1, 2) as u16)
 }
 
+/// The area the current screen draws into, for mouse hit-testing.
+///
+/// Mirrors `draw`'s `Layout::vertical([Min(0), Length(status_height)])`
+/// split: the full terminal size, minus the rows the status bar reserves.
+/// The terminal size is the same number the frame layout reads on the next
+/// draw, so a click lands on the view the user is actually looking at.
+fn mouse_view_area(app: &App) -> Rect {
+    let (width, height) = crossterm::terminal::size().unwrap_or((0, 0));
+    Rect::new(0, 0, width, height.saturating_sub(status_height(app)))
+}
+
 /// Turns one terminal event into state changes.
 async fn handle_event(app: &mut App, event: Event) {
+    // A left-button press is a click. Releases, drags, scrolls, and other
+    // buttons carry no selection intent; ignoring them keeps a scroll wheel
+    // from firing row selections while the user browses.
+    if let Event::Mouse(mouse) = event {
+        if mouse.kind == MouseEventKind::Down(MouseButton::Left) {
+            // Build the action first: `mouse_to_action` borrows `app.state`
+            // only to read the screen, and the awaited apply takes `app`
+            // mutably — the two cannot overlap.
+            let action = crate::input::mouse_to_action(
+                app.state.screen,
+                mouse_view_area(app),
+                mouse.column,
+                mouse.row,
+                app.state.downloads.show_seeding,
+            );
+            apply_action(app, action).await;
+        }
+        return;
+    }
     let Event::Key(key) = event else {
-        // Resize and mouse events need no handling: ratatui re-lays out from
-        // the frame size on every draw.
+        // Resize events need no handling: ratatui re-lays out from the frame
+        // size on every draw.
         return;
     };
     // Windows reports both press and release; acting on both would double
@@ -959,9 +1036,25 @@ async fn apply_action(app: &mut App, action: Action) {
             };
             app.state.error_banner = None;
         }
-        Action::ToggleSeeding => {
+        Action::ToggleSeeding | Action::ClickSeedingTab => {
             app.state.downloads.show_seeding = !app.state.downloads.show_seeding;
             app.state.downloads.selected = 0;
+        }
+        Action::ClickRow(index) => {
+            // The mouse mapping only knows the view geometry, so the list's
+            // real length decides whether the click lands on a row. Unlike
+            // the keyboard cursor there is no wraparound — a click past the
+            // last row is a no-op, and clicking an empty list does nothing.
+            let len = match app.state.screen {
+                Screen::Downloads => app.visible_items().len(),
+                _ => app.state.search.results.len(),
+            };
+            if index < len {
+                match app.state.screen {
+                    Screen::Downloads => app.state.downloads.selected = index,
+                    _ => app.state.search.selected = index,
+                }
+            }
         }
         Action::MoveUp => {
             // During a streaming search the list shifts under the cursor;
@@ -999,7 +1092,7 @@ async fn apply_action(app: &mut App, action: Action) {
         Action::TogglePause => toggle_pause(app).await,
         Action::Retry => retry_selected(app).await,
         Action::Remove => remove_selected(app).await,
-        Action::Watch => start_watch(app),
+        Action::Watch => start_watch(app).await,
         Action::EndWatch => end_watch(app),
     }
 }

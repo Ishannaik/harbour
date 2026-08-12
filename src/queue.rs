@@ -91,6 +91,11 @@ pub struct Queue {
 }
 
 impl Queue {
+    /// The underlying engine — needed by the UI for stream URLs (FR-57).
+    pub fn engine(&self) -> &Arc<dyn Engine> {
+        &self.engine
+    }
+
     pub fn new(engine: Arc<dyn Engine>, max_downloads: usize) -> Self {
         Self {
             engine,

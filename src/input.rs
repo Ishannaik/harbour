@@ -1,13 +1,15 @@
-//! Keyboard handling: key event in, [`Action`] out.
+//! Input handling: key and mouse events in, [`Action`] out.
 //!
-//! Deliberately a pure function of `(key, screen)`. The app loop performs the
+//! Deliberately pure functions of `(screen, …)`. The app loop performs the
 //! actions; nothing here touches the engine, the queue, or the terminal. That
-//! is what makes the entire keymap testable without a TUI, and it is why the
-//! keybind tests below can assert `UR-10` directly.
+//! is what makes the keymap and the click mapping testable without a TUI, and
+//! it is why the keybind tests below can assert `UR-10` directly.
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ratatui::layout::{Margin, Rect};
 
 use crate::ui::Screen;
+use crate::ui::search::{SEARCH_BAR_H, SIDEBAR_WIDTH};
 
 /// Everything the user can ask for.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -41,6 +43,13 @@ pub enum Action {
     Watch,
     /// Leave the now-playing screen back to the TUI (FR-59).
     EndWatch,
+    /// Select the visible row under a left click — a search result or a
+    /// downloads item (UR-13). The index is clamped by the app loop, which
+    /// knows the real list length; a click past the last row is a no-op.
+    ClickRow(usize),
+    /// Toggle the downloads seeding tab from a click (same effect as
+    /// `ToggleSeeding`).
+    ClickSeedingTab,
 }
 
 /// Ctrl-C always quits, everywhere — a terminal convention users rely on more
@@ -138,6 +147,66 @@ pub fn map_empty_query(key: KeyEvent) -> Option<Action> {
 /// query box focused via any other capital.
 pub fn is_download_key(key: KeyEvent) -> bool {
     matches!(key.code, KeyCode::Char('D'))
+}
+
+/// Maps a left click at terminal coordinates `(col, row)` inside `view_area`
+/// to an action, or `Action::None` when the click lands on nothing clickable.
+///
+/// `view_area` is the area the current screen draws into — the full terminal
+/// width minus the status rows (`app.rs`'s `draw` layout). `col`/`row` are
+/// 0-based terminal coordinates, as crossterm reports them, so they line up
+/// with ratatui `Rect` positions directly.
+pub fn mouse_to_action(
+    screen: Screen,
+    view_area: Rect,
+    col: u16,
+    row: u16,
+    show_seeding: bool,
+) -> Action {
+    match screen {
+        Screen::Search => {
+            // Mirrors `ui::search::draw`'s layout: a 1-cell panel border,
+            // then a 22-wide sidebar; the main column starts after both.
+            // Inside it, the search bar is SEARCH_BAR_H rows, the results
+            // header 1 row, then one result row per line. The hint line
+            // owns the last inner row, and the panel's bottom border sits
+            // one row below that.
+            let main_col = view_area.x + 1 + SIDEBAR_WIDTH;
+            let results_top = view_area.y + 1 + SEARCH_BAR_H + 1;
+            let results_bottom = view_area.y + view_area.height.saturating_sub(2);
+            if col < main_col || row < results_top || row >= results_bottom {
+                Action::None
+            } else {
+                Action::ClickRow((row - results_top) as usize)
+            }
+        }
+        Screen::Downloads => {
+            // Mirrors `ui::downloads::draw`'s layout: a 1-cell panel
+            // border, then a 2-row tab band (label row + underline row)
+            // at the top of the inner area, then the body, with the hint
+            // line on the last inner row. A click anywhere on the tab
+            // band flips the seeding tab.
+            //
+            // Row height depends on the active tab: the Downloads tab
+            // renders two rows per item (name + progress bar), the Seeding
+            // tab one (seed_row). `show_seeding` picks the divisor.
+            let inner = view_area.inner(Margin::new(1, 1));
+            if col < inner.x || col >= inner.right() {
+                Action::None
+            } else {
+                let items_top = inner.y + 2;
+                let rows_per_item: u16 = if show_seeding { 1 } else { 2 };
+                match row {
+                    r if r < inner.y => Action::None,
+                    r if r < items_top => Action::ClickSeedingTab,
+                    r if r >= inner.bottom().saturating_sub(1) => Action::None,
+                    r => Action::ClickRow(((r - items_top) / rows_per_item) as usize),
+                }
+            }
+        }
+        // Splash, help, and watch mode have no clickable rows.
+        _ => Action::None,
+    }
 }
 
 #[cfg(test)]
@@ -297,6 +366,188 @@ mod tests {
             assert!(
                 documented.contains(&key),
                 "`{key}` is missing from the help overlay"
+            );
+        }
+    }
+
+    /// A search-view area with no status bar: 30 rows of 100 columns.
+    fn search_view() -> Rect {
+        Rect::new(0, 0, 100, 30)
+    }
+
+    /// The terminal row where the first search result renders: inner top
+    /// border (1) + search bar (3) + results header (1).
+    fn results_top() -> u16 {
+        1 + SEARCH_BAR_H + 1
+    }
+
+    #[test]
+    fn a_click_on_a_search_result_selects_that_row() {
+        let view = search_view();
+        // First result row sits at `results_top`; row 2 is two lines down.
+        assert_eq!(
+            mouse_to_action(Screen::Search, view, 30, results_top() + 2, false),
+            Action::ClickRow(2)
+        );
+        // The first row maps to index 0, and any column past the sidebar
+        // counts — clicks do not need to hit the name text.
+        assert_eq!(
+            mouse_to_action(Screen::Search, view, 99, results_top(), false),
+            Action::ClickRow(0)
+        );
+    }
+
+    #[test]
+    fn a_click_outside_the_search_results_does_nothing() {
+        let view = search_view();
+        let main_col = 1 + SIDEBAR_WIDTH;
+        // Sidebar and the panel's left border.
+        assert_eq!(
+            mouse_to_action(Screen::Search, view, 0, results_top(), false),
+            Action::None
+        );
+        assert_eq!(
+            mouse_to_action(Screen::Search, view, SIDEBAR_WIDTH, results_top(), false),
+            Action::None
+        );
+        // Search bar rows and the results header.
+        for row in 0..results_top() {
+            assert_eq!(
+                mouse_to_action(Screen::Search, view, main_col + 10, row, false),
+                Action::None,
+                "row {row} is above the results"
+            );
+        }
+        // Hint line (the last inner row) and the panel's bottom border.
+        assert_eq!(
+            mouse_to_action(Screen::Search, view, main_col + 10, view.height - 2, false),
+            Action::None
+        );
+        assert_eq!(
+            mouse_to_action(Screen::Search, view, main_col + 10, view.height - 1, false),
+            Action::None
+        );
+        // Completely outside the view area.
+        assert_eq!(
+            mouse_to_action(Screen::Search, view, 200, 200, false),
+            Action::None
+        );
+    }
+
+    /// A downloads-view area with no status bar: 20 rows of 60 columns.
+    fn downloads_view() -> Rect {
+        Rect::new(0, 0, 60, 20)
+    }
+
+    /// The terminal row where the first downloads item renders: inner top
+    /// border (1) + the 2-row tab band.
+    fn downloads_items_top() -> u16 {
+        1 + 2
+    }
+
+    #[test]
+    fn a_click_on_the_downloads_tab_band_toggles_seeding() {
+        let view = downloads_view();
+        // The whole 2-row tab band responds, in any column inside the panel.
+        for row in [1, 2] {
+            assert_eq!(
+                mouse_to_action(Screen::Downloads, view, 30, row, false),
+                Action::ClickSeedingTab,
+                "tab band row {row}"
+            );
+        }
+        // The panel's inner corners still count as the tab band.
+        assert_eq!(
+            mouse_to_action(Screen::Downloads, view, 1, 2, false),
+            Action::ClickSeedingTab
+        );
+        assert_eq!(
+            mouse_to_action(Screen::Downloads, view, 58, 2, false),
+            Action::ClickSeedingTab
+        );
+        // The panel border and everything above it are not clickable.
+        assert_eq!(
+            mouse_to_action(Screen::Downloads, view, 0, 2, false),
+            Action::None
+        );
+        assert_eq!(
+            mouse_to_action(Screen::Downloads, view, 30, 0, false),
+            Action::None
+        );
+    }
+
+    #[test]
+    fn a_click_on_a_downloads_item_row_selects_that_item() {
+        let view = downloads_view();
+        // Each item spans two rows (name line + progress bar) and the
+        // first starts two rows below the inner top — below the tab band.
+        assert_eq!(
+            mouse_to_action(Screen::Downloads, view, 30, downloads_items_top(), false),
+            Action::ClickRow(0)
+        );
+        assert_eq!(
+            mouse_to_action(
+                Screen::Downloads,
+                view,
+                30,
+                downloads_items_top() + 1,
+                false
+            ),
+            Action::ClickRow(0)
+        );
+        assert_eq!(
+            mouse_to_action(
+                Screen::Downloads,
+                view,
+                30,
+                downloads_items_top() + 2,
+                false
+            ),
+            Action::ClickRow(1)
+        );
+        // Deep in the list: row 17 maps to the 8th visible item.
+        assert_eq!(
+            mouse_to_action(Screen::Downloads, view, 30, 17, false),
+            Action::ClickRow(7)
+        );
+    }
+
+    #[test]
+    fn clicks_below_the_downloads_list_or_outside_the_panel_do_nothing() {
+        let view = downloads_view();
+        // The hint line owns the last inner row; the status bar and
+        // off-screen rows below it have no click target.
+        assert_eq!(
+            mouse_to_action(Screen::Downloads, view, 30, 18, false),
+            Action::None
+        );
+        assert_eq!(
+            mouse_to_action(Screen::Downloads, view, 30, 19, false),
+            Action::None
+        );
+        assert_eq!(
+            mouse_to_action(Screen::Downloads, view, 30, 25, false),
+            Action::None
+        );
+        // Outside the panel horizontally.
+        assert_eq!(
+            mouse_to_action(Screen::Downloads, view, 0, 10, false),
+            Action::None
+        );
+        assert_eq!(
+            mouse_to_action(Screen::Downloads, view, 61, 10, false),
+            Action::None
+        );
+    }
+
+    #[test]
+    fn non_search_screens_ignore_clicks() {
+        let view = search_view();
+        for screen in [Screen::Splash, Screen::Help, Screen::NowPlaying] {
+            assert_eq!(
+                mouse_to_action(screen, view, 30, results_top(), false),
+                Action::None,
+                "{screen:?} has no clickable rows"
             );
         }
     }
