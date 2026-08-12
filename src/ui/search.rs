@@ -43,7 +43,7 @@ const CURSOR: &str = "▌";
 const HINT: &str = "type to search · enter run/browse · tab downloads · ctrl+c quit";
 /// The results pane owns the keyboard: plain keys act on the selected row.
 const RESULTS_HINT: &str =
-    "d download · w watch now · s settings · ? help · type to refine · esc input";
+    "enter watch now · d download · s settings · ? help · type to refine · esc input";
 /// Placeholder while the query is empty and idle.
 const PLACEHOLDER: &str = "search torrents…";
 /// Bar label while searching on an empty query — the curated-browse mode
