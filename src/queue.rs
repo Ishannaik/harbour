@@ -87,6 +87,10 @@ pub struct Queue {
     runtime: HashMap<InfoHash, Runtime>,
     /// 0 means unlimited (`FR-07`).
     max_downloads: usize,
+    /// When set, a finished seed whose share ratio (uploaded/downloaded) has
+    /// reached it pauses itself (qBittorrent `max_ratio` + `max_ratio_act` =
+    /// stop). The seed keeps its files; it is a paused seed, per AGENTS.
+    stop_ratio: Option<f64>,
     trackers: Vec<String>,
 }
 
@@ -102,6 +106,7 @@ impl Queue {
             items: Vec::new(),
             runtime: HashMap::new(),
             max_downloads,
+            stop_ratio: None,
             trackers: Vec::new(),
         }
     }
@@ -109,6 +114,16 @@ impl Queue {
     /// Extra announce URLs applied to torrents added from now on.
     pub fn set_trackers(&mut self, trackers: Vec<String>) {
         self.trackers = trackers;
+    }
+
+    /// Live queueing cap (0 = unlimited), from settings.
+    pub fn set_max_downloads(&mut self, max_downloads: usize) {
+        self.max_downloads = max_downloads;
+    }
+
+    /// Live seed-stop ratio policy from settings; `None` disables it.
+    pub fn set_stop_ratio(&mut self, ratio: Option<f64>) {
+        self.stop_ratio = ratio;
     }
 
     pub fn items(&self) -> &[QueueItem] {
@@ -324,6 +339,9 @@ impl Queue {
         let mut events = Vec::new();
         let mut newly_missing: Vec<InfoHash> = Vec::new();
         let mut freed_slot = false;
+        // Seeds that hit the share-ratio target this tick; paused after the
+        // loop so no borrow crosses an await.
+        let mut ratio_paused: Vec<InfoHash> = Vec::new();
 
         for snap in snapshots {
             let Some(idx) = self.items.iter().position(|i| i.id == snap.id) else {
@@ -396,10 +414,29 @@ impl Queue {
                 rt.seed_started_at.get_or_insert(now);
             }
 
+            // qBittorrent-style share-ratio stop: a finished seed that has
+            // reached its target ratio pauses itself. The files stay; it
+            // reads as a paused seed (AGENTS vocabulary). The engine pause
+            // happens after the loop so this borrow never crosses an await.
+            if item.finished
+                && item.status == QueueStatus::Seeding
+                && self.stop_ratio.is_some_and(|target| {
+                    let d = snap.stats.downloaded_bytes;
+                    d > 0 && snap.stats.uploaded_bytes as f64 / d as f64 >= target
+                })
+            {
+                item.status = QueueStatus::Paused;
+                ratio_paused.push(snap.id.clone());
+            }
+
             events.push(EngineEvent::Progress {
                 id: snap.id.clone(),
                 stats: snap.stats,
             });
+        }
+
+        for id in ratio_paused {
+            let _ = self.engine.pause(&id).await;
         }
 
         for id in newly_missing {
@@ -702,6 +739,41 @@ mod tests {
             QueueStatus::Downloading,
             "seeding does not hold a download slot"
         );
+    }
+
+    #[tokio::test]
+    async fn a_seed_at_its_share_ratio_pauses_itself() {
+        let (mut q, engine) = setup(1);
+        q.add(input("a", 1), 1).await;
+        engine.deliver_metadata(&id_of("a"), "Example", 1000);
+        engine.complete(&id_of("a"));
+        q.tick(Instant::now()).await;
+        assert_eq!(q.get(&id_of("a")).unwrap().status, QueueStatus::Seeding);
+
+        // Ratio 0.5: uploaded >= 500 of 1000 downloaded stops the seed.
+        q.set_stop_ratio(Some(0.5));
+        engine.set_uploaded(&id_of("a"), 600);
+        q.tick(Instant::now()).await;
+        let item = q.get(&id_of("a")).unwrap();
+        assert_eq!(item.status, QueueStatus::Paused, "the seed pauses itself");
+        assert!(item.finished, "a paused seed keeps its finished flag");
+        assert!(item.is_paused_seed());
+
+        // A paused seed stays paused until the user resumes it (qBittorrent's
+        // "stop" semantics). Resume with a policy that no longer applies —
+        // the ratio target raised above the current share — keeps it seeding.
+        q.set_stop_ratio(Some(2.0));
+        engine.set_uploaded(&id_of("a"), 100);
+        q.resume(&id_of("a"), Instant::now()).await.unwrap();
+        q.tick(Instant::now()).await;
+        assert_eq!(q.get(&id_of("a")).unwrap().status, QueueStatus::Seeding);
+
+        // Disabling the policy never stops a seed, whatever it has uploaded.
+        q.set_stop_ratio(None);
+        engine.set_uploaded(&id_of("a"), 5000);
+        q.resume(&id_of("a"), Instant::now()).await.unwrap();
+        q.tick(Instant::now()).await;
+        assert_eq!(q.get(&id_of("a")).unwrap().status, QueueStatus::Seeding);
     }
 
     #[tokio::test]
