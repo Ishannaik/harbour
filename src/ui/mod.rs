@@ -48,6 +48,10 @@ pub struct SearchState {
     pub results: Vec<TorrentResult>,
     pub selected: usize,
     pub searching: bool,
+    /// Which pane owns the keyboard (the fzf convention): `true` = the input
+    /// pane types every key; `false` = the results pane maps plain keys to
+    /// actions (d/w/s/?) until Esc or typing returns focus to the input.
+    pub focus: bool,
     /// Per-source dot. A source absent from the map has never been probed and
     /// renders as unknown — not as offline.
     pub source_health: HashMap<SourceId, SourceStatus>,
