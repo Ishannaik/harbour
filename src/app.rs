@@ -1253,29 +1253,15 @@ async fn handle_event(app: &mut App, event: Event) {
         return;
     }
 
-    let mut action = crate::input::map(
+    let action = crate::input::map_with_focus(
         key,
         app.state.screen,
         app.help_open,
         app.picker.open,
         app.picker.mode == PickerMode::Custom,
         app.settings_open,
+        app.state.search.focus,
     );
-
-    // On the search screen every printable key belongs to the text field —
-    // except when there is nothing to type into, or when shift+D asks for a
-    // download explicitly. The help, picker, and settings overlays win while
-    // they are up, exactly like the keymap's own overlay branches.
-    let overlays_up = app.help_open || app.picker.open || app.settings_open;
-    if app.state.screen == Screen::Search && !overlays_up {
-        if crate::input::is_download_key(key) {
-            action = Action::Download;
-        } else if app.state.search.query.is_empty()
-            && let Some(override_action) = crate::input::map_empty_query(key)
-        {
-            action = override_action;
-        }
-    }
 
     apply_action(app, action).await;
 }
@@ -1328,7 +1314,6 @@ async fn apply_action(app: &mut App, action: Action) {
             }
             move_selection(app, 1);
         }
-        Action::Type(c) => app.state.search.query.push(c),
         Action::Backspace => {
             app.state.search.query.pop();
         }
@@ -1358,6 +1343,16 @@ async fn apply_action(app: &mut App, action: Action) {
         Action::Submit => {
             let query = app.state.search.query.clone();
             app.start_search(query);
+            // Enter hands the keyboard to the results pane: plain keys act
+            // on the selected row from here (d/w/s/?).
+            app.state.search.focus = false;
+        }
+        Action::FocusSearchInput => app.state.search.focus = true,
+        Action::Type(c) => {
+            // Typing from the results pane returns focus to the input and
+            // types there (fzf-style refinement).
+            app.state.search.focus = true;
+            app.state.search.query.push(c);
         }
         Action::Download => download_selected(app).await,
         Action::TogglePause => toggle_pause(app).await,

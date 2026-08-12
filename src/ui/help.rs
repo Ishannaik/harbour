@@ -18,22 +18,34 @@ use crate::theme::Theme;
 /// show exactly the bindings the app implements, so a keybind added to the
 /// input handler without a row here is a documentation bug that a test catches.
 pub const BINDINGS: &[(&str, &str)] = &[
-    ("enter", "search — an empty query browses the curated lists"),
+    // Search input pane: every key types; Enter moves to the results pane.
+    ("enter", "run the search, then focus the results"),
     ("↑ ↓", "move the selection"),
-    ("d", "download to the default folder"),
     ("tab", "switch between search and downloads"),
-    ("s", "downloads: toggle the seeding tab"),
+    // Search results pane: plain keys act on the selected row.
+    ("d", "search results: download the selected row"),
+    ("w", "watch — results: stream now · downloads: watch item"),
+    ("s", "search results: settings · downloads: seeding tab"),
+    (
+        "esc",
+        "results → search input · input: clear query · overlays: close",
+    ),
+    (
+        "type",
+        "results → back to the input, typing what you pressed",
+    ),
+    // Downloads screen.
     ("p", "downloads: pause or resume the selected item"),
     ("r", "downloads: retry a failed item"),
     ("x", "downloads: remove the selected item (keeps files)"),
-    ("w", "watch in your player (shift+P to choose)"),
     (
         "shift+P",
-        "choose the watch player (mpv/VLC/Windows Media Player)",
+        "anywhere: choose the watch player (mpv/VLC/Windows Media Player)",
     ),
-    ("esc", "clear the query, or close this overlay"),
-    ("?", "show or hide this overlay"),
-    ("q", "quit"),
+    ("shift+S", "downloads: open settings"),
+    ("?", "help — when not typing a query"),
+    ("q", "quit — anywhere except while typing a query"),
+    ("ctrl+c", "quit"),
 ];
 
 /// One ELI5 line per field in a search result row — the "reading results"
