@@ -81,6 +81,22 @@ fn search_snapshot_idle_with_results() {
     assert!(out.contains("Dune: Part Two"), "catalog title in results");
     assert!(out.contains("FitGirl"), "sidebar lists all sources");
     assert!(!out.contains("no results"), "results present");
+    assert!(!out.contains("results focused"), "input pane by default");
+}
+
+#[test]
+fn the_results_pane_announces_how_to_get_back_to_typing() {
+    let mut state = search_state("dune");
+    state.focus = false; // Enter moved the keyboard to the results pane
+    let theme = Theme::titanium();
+    let out = render(|f| {
+        search::draw(f, f.area(), &state, &HashSet::new(), &theme);
+    });
+    assert!(
+        out.contains("results focused"),
+        "the bar must say where the keyboard is"
+    );
+    assert!(out.contains("esc"), "…and how to leave it");
 }
 
 #[test]
