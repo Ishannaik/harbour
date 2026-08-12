@@ -30,3 +30,13 @@ allow = [
 # security-audited individually.
 [bans]
 multiple-versions = "allow"
+
+[advisories]
+# Transitive unmaintained crates (backoff, bincode, crypto-hash, instant)
+# have no maintained replacement in the pinned tree — warn, don't fail.
+unmaintained = "warn"
+# quick-xml DoS pair: the direct dep migrated to oxixml-xml; the vulnerable
+# copy is transitive via librqbit-upnp (hard-pinned to quick-xml 0.37.5, no
+# upstream fix — librqbit 9 is RC). Surface: UPnP responses from trusted
+# local-network devices only. Mirrors the audit-check ignore in ci.yml.
+ignore = ["RUSTSEC-2026-0194", "RUSTSEC-2026-0195"]
