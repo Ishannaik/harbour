@@ -156,13 +156,26 @@ pub fn is_download_key(key: KeyEvent) -> bool {
 /// width minus the status rows (`app.rs`'s `draw` layout). `col`/`row` are
 /// 0-based terminal coordinates, as crossterm reports them, so they line up
 /// with ratatui `Rect` positions directly.
+///
+/// `help_open` mirrors `map`'s overlay flag: with the help modal open, any
+/// click dismisses it no matter where it lands (see the `map` help branch).
 pub fn mouse_to_action(
     screen: Screen,
     view_area: Rect,
     col: u16,
     row: u16,
+    help_open: bool,
     show_seeding: bool,
 ) -> Action {
+    if help_open {
+        // The modal is dismissible and position carries no meaning: a click
+        // anywhere — on the modal or on the screen behind it — closes help
+        // and returns the user exactly where they were. This wins over row
+        // selection, mirroring `map`: with help open, a click never selects
+        // the row underneath the overlay.
+        return Action::ToggleHelp;
+    }
+
     match screen {
         Screen::Search => {
             // Mirrors `ui::search::draw`'s layout: a 1-cell panel border,
@@ -204,8 +217,15 @@ pub fn mouse_to_action(
                 }
             }
         }
-        // Splash, help, and watch mode have no clickable rows.
-        _ => Action::None,
+        // The splash is an intro, not a state: anything moves past it,
+        // clicks included.
+        Screen::Splash => Action::Dismiss,
+        // Watch mode: a click ends the session and returns to the TUI,
+        // the same action q/esc map to (FR-59).
+        Screen::NowPlaying => Action::EndWatch,
+        // Reachable only as a state; the `help_open` branch above handles
+        // the real overlay. Mirror the keymap: a click closes it.
+        Screen::Help => Action::ToggleHelp,
     }
 }
 
@@ -386,13 +406,13 @@ mod tests {
         let view = search_view();
         // First result row sits at `results_top`; row 2 is two lines down.
         assert_eq!(
-            mouse_to_action(Screen::Search, view, 30, results_top() + 2, false),
+            mouse_to_action(Screen::Search, view, 30, results_top() + 2, false, false),
             Action::ClickRow(2)
         );
         // The first row maps to index 0, and any column past the sidebar
         // counts — clicks do not need to hit the name text.
         assert_eq!(
-            mouse_to_action(Screen::Search, view, 99, results_top(), false),
+            mouse_to_action(Screen::Search, view, 99, results_top(), false, false),
             Action::ClickRow(0)
         );
     }
@@ -403,33 +423,54 @@ mod tests {
         let main_col = 1 + SIDEBAR_WIDTH;
         // Sidebar and the panel's left border.
         assert_eq!(
-            mouse_to_action(Screen::Search, view, 0, results_top(), false),
+            mouse_to_action(Screen::Search, view, 0, results_top(), false, false),
             Action::None
         );
         assert_eq!(
-            mouse_to_action(Screen::Search, view, SIDEBAR_WIDTH, results_top(), false),
+            mouse_to_action(
+                Screen::Search,
+                view,
+                SIDEBAR_WIDTH,
+                results_top(),
+                false,
+                false
+            ),
             Action::None
         );
         // Search bar rows and the results header.
         for row in 0..results_top() {
             assert_eq!(
-                mouse_to_action(Screen::Search, view, main_col + 10, row, false),
+                mouse_to_action(Screen::Search, view, main_col + 10, row, false, false),
                 Action::None,
                 "row {row} is above the results"
             );
         }
         // Hint line (the last inner row) and the panel's bottom border.
         assert_eq!(
-            mouse_to_action(Screen::Search, view, main_col + 10, view.height - 2, false),
+            mouse_to_action(
+                Screen::Search,
+                view,
+                main_col + 10,
+                view.height - 2,
+                false,
+                false
+            ),
             Action::None
         );
         assert_eq!(
-            mouse_to_action(Screen::Search, view, main_col + 10, view.height - 1, false),
+            mouse_to_action(
+                Screen::Search,
+                view,
+                main_col + 10,
+                view.height - 1,
+                false,
+                false
+            ),
             Action::None
         );
         // Completely outside the view area.
         assert_eq!(
-            mouse_to_action(Screen::Search, view, 200, 200, false),
+            mouse_to_action(Screen::Search, view, 200, 200, false, false),
             Action::None
         );
     }
@@ -451,27 +492,27 @@ mod tests {
         // The whole 2-row tab band responds, in any column inside the panel.
         for row in [1, 2] {
             assert_eq!(
-                mouse_to_action(Screen::Downloads, view, 30, row, false),
+                mouse_to_action(Screen::Downloads, view, 30, row, false, false),
                 Action::ClickSeedingTab,
                 "tab band row {row}"
             );
         }
         // The panel's inner corners still count as the tab band.
         assert_eq!(
-            mouse_to_action(Screen::Downloads, view, 1, 2, false),
+            mouse_to_action(Screen::Downloads, view, 1, 2, false, false),
             Action::ClickSeedingTab
         );
         assert_eq!(
-            mouse_to_action(Screen::Downloads, view, 58, 2, false),
+            mouse_to_action(Screen::Downloads, view, 58, 2, false, false),
             Action::ClickSeedingTab
         );
         // The panel border and everything above it are not clickable.
         assert_eq!(
-            mouse_to_action(Screen::Downloads, view, 0, 2, false),
+            mouse_to_action(Screen::Downloads, view, 0, 2, false, false),
             Action::None
         );
         assert_eq!(
-            mouse_to_action(Screen::Downloads, view, 30, 0, false),
+            mouse_to_action(Screen::Downloads, view, 30, 0, false, false),
             Action::None
         );
     }
@@ -482,7 +523,14 @@ mod tests {
         // Each item spans two rows (name line + progress bar) and the
         // first starts two rows below the inner top — below the tab band.
         assert_eq!(
-            mouse_to_action(Screen::Downloads, view, 30, downloads_items_top(), false),
+            mouse_to_action(
+                Screen::Downloads,
+                view,
+                30,
+                downloads_items_top(),
+                false,
+                false
+            ),
             Action::ClickRow(0)
         );
         assert_eq!(
@@ -491,6 +539,7 @@ mod tests {
                 view,
                 30,
                 downloads_items_top() + 1,
+                false,
                 false
             ),
             Action::ClickRow(0)
@@ -501,13 +550,14 @@ mod tests {
                 view,
                 30,
                 downloads_items_top() + 2,
+                false,
                 false
             ),
             Action::ClickRow(1)
         );
         // Deep in the list: row 17 maps to the 8th visible item.
         assert_eq!(
-            mouse_to_action(Screen::Downloads, view, 30, 17, false),
+            mouse_to_action(Screen::Downloads, view, 30, 17, false, false),
             Action::ClickRow(7)
         );
     }
@@ -518,37 +568,89 @@ mod tests {
         // The hint line owns the last inner row; the status bar and
         // off-screen rows below it have no click target.
         assert_eq!(
-            mouse_to_action(Screen::Downloads, view, 30, 18, false),
+            mouse_to_action(Screen::Downloads, view, 30, 18, false, false),
             Action::None
         );
         assert_eq!(
-            mouse_to_action(Screen::Downloads, view, 30, 19, false),
+            mouse_to_action(Screen::Downloads, view, 30, 19, false, false),
             Action::None
         );
         assert_eq!(
-            mouse_to_action(Screen::Downloads, view, 30, 25, false),
+            mouse_to_action(Screen::Downloads, view, 30, 25, false, false),
             Action::None
         );
         // Outside the panel horizontally.
         assert_eq!(
-            mouse_to_action(Screen::Downloads, view, 0, 10, false),
+            mouse_to_action(Screen::Downloads, view, 0, 10, false, false),
             Action::None
         );
         assert_eq!(
-            mouse_to_action(Screen::Downloads, view, 61, 10, false),
+            mouse_to_action(Screen::Downloads, view, 61, 10, false, false),
             Action::None
         );
     }
 
     #[test]
-    fn non_search_screens_ignore_clicks() {
+    fn a_click_anywhere_on_the_splash_dismisses_it() {
         let view = search_view();
-        for screen in [Screen::Splash, Screen::Help, Screen::NowPlaying] {
+        // The splash is an intro, not a state: any left click moves past
+        // it, exactly like any key. Position carries no meaning — there is
+        // nothing on it to select.
+        for (col, row) in [(0, 0), (99, 0), (0, 29), (99, 29), (200, 200)] {
             assert_eq!(
-                mouse_to_action(screen, view, 30, results_top(), false),
-                Action::None,
-                "{screen:?} has no clickable rows"
+                mouse_to_action(Screen::Splash, view, col, row, false, false),
+                Action::Dismiss,
+                "click at ({col}, {row})"
             );
         }
+    }
+
+    #[test]
+    fn a_click_anywhere_on_now_playing_ends_the_watch_session() {
+        let view = search_view();
+        // Mirror of the q/esc binding: a click ends the session and
+        // returns to the TUI rather than quitting.
+        for (col, row) in [(0, 0), (99, 0), (0, 29), (99, 29), (200, 200)] {
+            assert_eq!(
+                mouse_to_action(Screen::NowPlaying, view, col, row, false, false),
+                Action::EndWatch,
+                "click at ({col}, {row})"
+            );
+        }
+    }
+
+    #[test]
+    fn a_click_while_help_is_open_closes_it_from_any_position() {
+        let view = search_view();
+        // The overlay is dismissible and position carries no meaning: a
+        // click anywhere — on the modal or on the screen behind it — closes
+        // help and returns the user exactly where they were. This wins over
+        // row selection, mirroring `map`: with help open, a click never
+        // selects the row underneath the overlay.
+        for screen in [
+            Screen::Search,
+            Screen::Downloads,
+            Screen::Splash,
+            Screen::NowPlaying,
+        ] {
+            for (col, row) in [(0, 0), (30, results_top()), (99, 29)] {
+                assert_eq!(
+                    mouse_to_action(screen, view, col, row, true, false),
+                    Action::ToggleHelp,
+                    "{screen:?} + click at ({col}, {row})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_help_screen_state_closes_on_a_click() {
+        // Mirror of the keymap's `Screen::Help` arm; the real overlay is
+        // handled by `help_open` above.
+        let view = search_view();
+        assert_eq!(
+            mouse_to_action(Screen::Help, view, 30, results_top(), false, false),
+            Action::ToggleHelp
+        );
     }
 }

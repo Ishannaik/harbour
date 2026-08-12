@@ -1,7 +1,7 @@
 //! Watch mode (FR-57..FR-61): serves an item's primary media file over a
 //! loopback HTTP endpoint with Range support and launches an external player
-//! (mpv first, then VLC — the player is the renderer; harbour ships no
-//! render engine).
+//! (mpv → VLC → Windows Media Player — the player is the renderer; harbour
+//! ships no render engine).
 //!
 //! Architecture follows the spec and the proven rqbit/stremio pattern:
 //! an HTTP stream URL + Range requests give the player seek while it reads.
@@ -273,14 +273,26 @@ fn content_type(ext: Option<&str>) -> &'static str {
     }
 }
 
-/// Finds an installed player: mpv (the spec's renderer) first, then VLC.
-pub fn find_player() -> Option<&'static str> {
+/// Finds an installed player: mpv (the spec's renderer) first, then VLC, then
+/// Windows Media Player (ships on every Windows box, so a bare install always
+/// has a working default). Returns a command path, not a display name —
+/// `Command::new` needs the executable.
+pub fn find_player() -> Option<String> {
     if command_exists("mpv") {
-        Some("mpv")
+        Some("mpv".into())
     } else if command_exists("vlc") {
-        Some("vlc")
+        Some("vlc".into())
     } else {
-        None
+        // wmplayer is rarely on PATH; check the standard install roots.
+        // 64-bit wmplayer lives under Program Files; the x86 root is a
+        // fallback for 32-bit Windows.
+        [
+            r"C:\Program Files\Windows Media Player\wmplayer.exe",
+            r"C:\Program Files (x86)\Windows Media Player\wmplayer.exe",
+        ]
+        .into_iter()
+        .find(|p| Path::new(p).exists())
+        .map(str::to_string)
     }
 }
 

@@ -87,15 +87,24 @@ const VERSION_FADE_DUR: Duration = Duration::from_millis(350);
 /// literal color in the splash (a highlight, not a theme choice).
 const HOT: Color = Color::Rgb(255, 255, 255);
 
-/// Block-letter HARBOUR logo, 5 rows x 41 columns. Hand-drawn so each letter
-/// is exactly 5 cells wide + 1 separator: crisp monospace output, no emoji
-/// width surprises. Rows converge top-down with a CRT-style flicker.
+/// The splash hero: an ASCII anchor — harbour's icon, drawn without emoji so
+/// every terminal renders it identically. 13 rows, monospace-safe; rows
+/// converge top-down with a CRT-style flicker. `logo_row` skips the art's
+/// spacing columns, so alignment lives in the art itself.
 const LOGO_ART: &[&str] = &[
-    "H   H  AAA   RRRR   BBBB    OOO   U   U  RRRR ",
-    "H   H A   A  R   R  B   B  O   O  U   U  R   R",
-    "HHHHH AAAAA  RRRR   BBBB   O   O  U   U  RRRR ",
-    "H   H A   A  R  R   B   B  O   O  U   U  R  R ",
-    "H   H A   A  R   R  BBBB    OOO    UUU   R   R",
+    "        __   __",
+    "       /  \\ /  \\",
+    "      |    |    |",
+    "       \\  |  /",
+    "        \\ | /",
+    "    _____\\|/_____",
+    "   /      |      \\",
+    "  /       |       \\",
+    " /        |        \\",
+    "|         |         |",
+    "|         |         |",
+    " \\        |        /",
+    "  \\_______|_______/",
 ];
 
 /// Number of particles twinkling around the logo (positioned by seeded PRNG).
@@ -657,10 +666,12 @@ async fn start_watch(app: &mut App) {
     let player = match &app.config.player {
         Some(p) if !p.trim().is_empty() => p.clone(),
         _ => match crate::watch::find_player() {
-            Some(p) => p.to_string(),
+            Some(p) => p,
             None => {
                 app.warn(
-                    "watch: no player found — set `player` in config.toml, or install mpv/VLC on PATH",
+                    "watch: no player found — set `player` in %USERPROFILE%\\.harbour\\config.toml \
+                     (e.g. player = \"C:\\\\Program Files\\\\VideoLAN\\\\VLC\\\\vlc.exe\"), \
+                     or install mpv/VLC so it's on PATH (winget install mpv / VideoLAN.VLC)",
                 );
                 return;
             }
@@ -988,6 +999,7 @@ async fn handle_event(app: &mut App, event: Event) {
                 mouse_view_area(app),
                 mouse.column,
                 mouse.row,
+                app.help_open,
                 app.state.downloads.show_seeding,
             );
             apply_action(app, action).await;
