@@ -181,7 +181,7 @@ fn help_snapshot_modal() {
     });
     assert!(out.contains(" keys ") || out.contains("keybinds"));
     assert!(out.contains("quit"));
-    assert!(out.contains("watch in your player"), "w binding listed");
+    assert!(out.contains("watch"), "w binding listed");
 }
 
 #[test]

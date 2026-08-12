@@ -54,6 +54,34 @@ pub struct Config {
     /// merged. Empty = everything enabled (additive: configs written by
     /// older builds keep working).
     pub disabled_sources: Vec<SourceId>,
+    /// Global download cap in MiB/s; None = unlimited (librqbit's session
+    /// rate limiter, applied live from settings).
+    pub download_limit_mib: Option<u64>,
+    /// Global upload cap in MiB/s; None = unlimited.
+    pub upload_limit_mib: Option<u64>,
+    /// Alternate-rate download cap in MiB/s (the qBittorrent "alt rates"
+    /// slot); used while `use_alt_rates` is on.
+    pub alt_download_limit_mib: Option<u64>,
+    /// Alternate-rate upload cap in MiB/s.
+    pub alt_upload_limit_mib: Option<u64>,
+    /// When true the alternate caps apply; toggling re-applies live.
+    pub use_alt_rates: bool,
+    /// Queueing: max simultaneous downloads; None = the env default
+    /// (`HARBOUR_MAX_DOWNLOADS`, 0 = unlimited). Applied live.
+    pub max_active_downloads: Option<usize>,
+    /// Listen port for the swarm; None = librqbit picks one. Boot-time.
+    pub listen_port: Option<u16>,
+    /// UPnP port forwarding. Boot-time.
+    pub enable_upnp: bool,
+    /// DHT bootstrap. Boot-time.
+    pub enable_dht: bool,
+    /// SOCKS5 proxy URL for the swarm (e.g. socks5://host:1080). Boot-time.
+    pub socks_proxy_url: Option<String>,
+    /// Stop seeding once the share ratio (uploaded / downloaded) is met.
+    /// Applied live; the seed pauses (a paused seed, per AGENTS vocabulary).
+    pub stop_seed_at_ratio: bool,
+    /// The ratio that triggers the stop above (qBittorrent `max_ratio`).
+    pub seed_ratio: f64,
 }
 
 impl Default for Config {
@@ -65,6 +93,18 @@ impl Default for Config {
             trackers: Vec::new(),
             player: None,
             disabled_sources: Vec::new(),
+            download_limit_mib: None,
+            upload_limit_mib: None,
+            alt_download_limit_mib: None,
+            alt_upload_limit_mib: None,
+            use_alt_rates: false,
+            max_active_downloads: None,
+            listen_port: None,
+            enable_upnp: true,
+            enable_dht: true,
+            socks_proxy_url: None,
+            stop_seed_at_ratio: false,
+            seed_ratio: 1.0,
         }
     }
 }
@@ -516,6 +556,18 @@ mod tests {
             trackers: vec!["udp://tracker.example:80".into()],
             player: Some("mpv".into()),
             disabled_sources: vec![SourceId::GamesHub, SourceId::TsukiBase],
+            download_limit_mib: Some(25),
+            upload_limit_mib: Some(10),
+            alt_download_limit_mib: Some(100),
+            alt_upload_limit_mib: None,
+            use_alt_rates: true,
+            max_active_downloads: Some(3),
+            listen_port: Some(51413),
+            enable_upnp: false,
+            enable_dht: true,
+            socks_proxy_url: Some("socks5://127.0.0.1:1080".into()),
+            stop_seed_at_ratio: true,
+            seed_ratio: 1.5,
         };
         store.save_config(&cfg).expect("save");
         assert_eq!(store.load_config(), Loaded::Ok(cfg));

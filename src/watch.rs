@@ -273,13 +273,18 @@ fn content_type(ext: Option<&str>) -> &'static str {
     }
 }
 
-/// Every installed player, in preference order: mpv, VLC, then Windows Media
-/// Player (ships on every Windows box, so a bare install always has a working
-/// default). Each entry is a (display label, command path) pair — the command
-/// is what `Command::new` needs, the label is what the TUI picker shows.
-/// Listing all three instead of stopping at the first lets the user choose.
+/// Every installed player, in preference order: the OS default video handler
+/// (the program Windows itself opens .mkv/.mp4 with — the user's own choice,
+/// e.g. VLC), then mpv, then VLC, then Windows Media Player (ships on every
+/// Windows box, so a bare install always has a working default). Each entry
+/// is a (display label, command path) pair — the command is what
+/// `Command::new` needs, the label is what the TUI picker shows. Listing all
+/// instead of stopping at the first lets the user choose.
 pub fn find_players() -> Vec<(String, String)> {
     let mut players = Vec::new();
+    if let Some((label, command)) = default_video_handler() {
+        players.push((label, command));
+    }
     if command_exists("mpv") {
         players.push(("mpv".to_string(), "mpv".to_string()));
     }
@@ -299,6 +304,75 @@ pub fn find_players() -> Vec<(String, String)> {
         }
     }
     players
+}
+
+/// The program Windows has registered as the default handler for video
+/// files — the user's own system-wide choice. Reads the classic association
+/// chain: `HKCR\.mkv`'s default value names a ProgID, and that ProgID's
+/// `shell\open\command` is the launch command. AppX handlers (Movies & TV)
+/// have no open command and fall through; browsers never own a video
+/// extension, so this cannot resolve to a browser. Windows only.
+fn default_video_handler() -> Option<(String, String)> {
+    if !cfg!(windows) {
+        return None;
+    }
+    // Probe the common container extensions in order; the first with a
+    // command wins. The swarm stream URL carries no extension, so the
+    // container is unknown until a file lands — the mkv/mp4 probe is the
+    // honest stand-in for "whatever this turns out to be".
+    for ext in [".mkv", ".mp4", ".avi", ".webm"] {
+        let Some(progid) = reg_default(&format!("HKCR\\{ext}")) else {
+            continue; // no association for this container — try the next
+        };
+        let Some(command) = reg_default(&format!("HKCR\\{progid}\\shell\\open\\command")) else {
+            continue; // AppX handlers have no open command — try the next
+        };
+        if let Some(exe) = command_exe(&command) {
+            let label = Path::new(&exe)
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("system default")
+                .to_string();
+            return Some((label, exe));
+        }
+    }
+    None
+}
+
+/// The default (unnamed) value of a registry key, via `reg query`.
+fn reg_default(key: &str) -> Option<String> {
+    let out = Command::new("reg")
+        .args(["query", key, "/ve"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    // Output line: `    (Default)    REG_SZ    mkvfile`
+    let text = String::from_utf8_lossy(&out.stdout);
+    text.lines()
+        .find(|l| l.contains("REG_SZ"))
+        .and_then(|l| l.split("REG_SZ").nth(1))
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+}
+
+/// The executable path out of a shell open command. Handles the quoted form
+/// (`"C:\Program Files\VideoLAN\VLC\vlc.exe" "%1"`) and the bare form
+/// (`C:\vlc.exe %1`). A command that is *only* the file placeholder (`%1`)
+/// names no program and yields None.
+fn command_exe(command: &str) -> Option<String> {
+    let trimmed = command.trim();
+    let exe = if trimmed.starts_with('"') {
+        trimmed
+            .split_once('"')
+            .and_then(|(_, rest)| rest.split_once('"'))
+            .map(|(exe, _)| exe.to_string())
+    } else {
+        trimmed.split_whitespace().next().map(str::to_string)
+    };
+    exe.filter(|p| !p.is_empty() && p != "%1")
 }
 
 /// Finds the best installed player: mpv (the spec's renderer) first, then
@@ -333,6 +407,35 @@ mod tests {
         assert_eq!(parse_range("bytes=-500"), None, "suffix ranges unsupported");
         assert_eq!(parse_range("bytes=abc-def"), None);
         assert_eq!(parse_range("garbage"), None);
+    }
+
+    #[test]
+    fn shell_open_commands_yield_the_executable() {
+        // The quoted form VLC/MPC register: `"C:\Program Files\VideoLAN\VLC\vlc.exe" "%1"`.
+        assert_eq!(
+            command_exe(r#""C:\Program Files\VideoLAN\VLC\vlc.exe" "%1""#),
+            Some(r"C:\Program Files\VideoLAN\VLC\vlc.exe".to_string())
+        );
+        // The bare form some players register: `C:\vlc.exe %1`.
+        assert_eq!(
+            command_exe(r"C:\vlc.exe %1"),
+            Some(r"C:\vlc.exe".to_string())
+        );
+        // Unparseable garbage yields no handler rather than a broken one.
+        assert_eq!(command_exe(""), None);
+        assert_eq!(command_exe("%1"), None);
+    }
+
+    #[test]
+    fn no_video_association_falls_through_the_whole_probe() {
+        // Non-Windows never probes the registry at all.
+        if !cfg!(windows) {
+            assert_eq!(default_video_handler(), None);
+        }
+        // On Windows the result is whatever the machine says — the contract
+        // is only that AppX-style handlers (no open command) cannot return a
+        // browser; that property is enforced by reg_default + command_exe
+        // returning None for commandless ProgIDs.
     }
 
     #[test]

@@ -48,6 +48,8 @@ pub struct FakeEngine {
     /// When set, the next [`Engine::add`] fails with this error. Used to test
     /// the "one item fails, the batch survives" path.
     next_add_error: Mutex<Option<EngineError>>,
+    /// The last speed limits applied, (download MiB/s, upload MiB/s).
+    speed_limits: Mutex<(Option<u64>, Option<u64>)>,
 }
 
 impl FakeEngine {
@@ -117,6 +119,13 @@ impl FakeEngine {
             t.stats.progress = 1.0;
             t.stats.downloaded_bytes = t.stats.total_bytes;
             t.stats.speed_mib = 0.0;
+        }
+    }
+
+    /// Reports uploaded bytes on a seed — the input to the share-ratio stop.
+    pub fn set_uploaded(&self, id: &str, bytes: u64) {
+        if let Some(t) = self.map().get_mut(id) {
+            t.stats.uploaded_bytes = bytes;
         }
     }
 
@@ -228,12 +237,34 @@ impl Engine for FakeEngine {
         out.sort_by(|a, b| a.id.cmp(&b.id));
         out
     }
+
+    fn set_speed_limits(&self, download_mib: Option<u64>, upload_mib: Option<u64>) {
+        let mut slot = self.speed_limits.lock().unwrap_or_else(|p| p.into_inner());
+        *slot = (download_mib, upload_mib);
+    }
+}
+
+impl FakeEngine {
+    /// The limits last applied via [`Engine::set_speed_limits`].
+    pub fn applied_limits(&self) -> (Option<u64>, Option<u64>) {
+        *self.speed_limits.lock().unwrap_or_else(|p| p.into_inner())
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    #[tokio::test]
+    async fn speed_limits_are_recorded_for_the_settings_dispatch() {
+        let e = FakeEngine::new();
+        assert_eq!(e.applied_limits(), (None, None));
+        e.set_speed_limits(Some(25), None);
+        assert_eq!(e.applied_limits(), (Some(25), None));
+        e.set_speed_limits(None, Some(2));
+        assert_eq!(e.applied_limits(), (None, Some(2)));
+    }
 
     fn req(id: &str) -> AddRequest {
         AddRequest {
