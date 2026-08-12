@@ -9,6 +9,10 @@ on:
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
+permissions:
+  contents: read
+  # rustsec/audit-check posts a check run with its findings.
+  checks: write
 jobs:
   quality:
     runs-on: ubuntu-latest

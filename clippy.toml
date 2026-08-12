@@ -1,0 +1,6 @@
+﻿# FR-62/FR-67 thresholds for the clippy lints enabled in src/main.rs.
+# Bands ≤30 excellent / 31–50 ok / 51–80 review stay review pressure (FR-67);
+# these values are the mechanical backstop where review pressure ends.
+too-many-lines-threshold = 120
+cognitive-complexity-threshold = 15
+excessive-nesting-threshold = 4
