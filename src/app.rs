@@ -953,6 +953,28 @@ async fn end_watch(app: &mut App) {
     }
 }
 
+/// A crash mid-watch (2.3) leaves its ephemeral torrent in librqbit's
+/// persistence and its files under `<state>/cache/<hash>`. The queue never
+/// owns those dirs (watch-now is ledger-free by contract), so on boot they
+/// are orphans: drop the torrent and delete the files — the same
+/// stream-and-delete contract, enforced after the fact.
+async fn cleanup_orphaned_cache(engine: &Arc<dyn CoreEngine>, root: &std::path::Path) {
+    let cache_root = root.join("cache");
+    let Ok(entries) = std::fs::read_dir(&cache_root) else {
+        return; // no cache dir = nothing to clean
+    };
+    for entry in entries.flatten() {
+        let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+            continue;
+        };
+        if name.len() != 40 || !name.chars().all(|c| c.is_ascii_hexdigit()) {
+            continue; // not a torrent id — leave it alone
+        }
+        let _ = engine.remove(&name, true).await;
+        let _ = std::fs::remove_dir_all(entry.path());
+    }
+}
+
 /// Runs the TUI.
 ///
 /// Takes the shared `Arc<Mutex<Theme>>` so the theme-watcher thread can swap
@@ -1001,6 +1023,13 @@ pub async fn run(
                 Some(format!("downloads are unavailable: {err}")),
             ),
         };
+
+    // A crash mid-watch (2.3) leaves its ephemeral torrent in librqbit's
+    // persistence and its files under <state>/cache/<hash>. The queue never
+    // owns those dirs (watch-now is ledger-free by contract), so on boot
+    // they are orphans: drop the torrent and delete the files — the same
+    // stream-and-delete contract, enforced after the fact.
+    cleanup_orphaned_cache(&engine, store.root()).await;
 
     // Boot-time policies from settings: the queueing cap (config wins over
     // the env default), the share-ratio seed stop, and the live rate limits.
@@ -1102,6 +1131,7 @@ pub async fn run(
     let mut input = spawn_input_thread();
     let mut last_poll = Instant::now();
     let started = Instant::now();
+    let mut frame_warned = false;
 
     while !app.quitting {
         // Wait for the next frame slot, but wake early for input or an engine
@@ -1154,15 +1184,22 @@ pub async fn run(
             end_watch(&mut app).await;
         }
 
-        let active = lock_theme(&theme);
-        splash.spinner.set_frames(&active.symbols.spinner_frames);
-        splash.spinner.advance(now, SPINNER_INTERVAL);
-        let glyph = splash.spinner.current().to_owned();
-        anim::with_sync_output(|| {
-            terminal.draw(|frame| draw(frame, &active, &app, &mut splash, now, &glyph))?;
-            Ok(())
-        })?;
-        drop(active);
+        let frame_result = {
+            let active = lock_theme(&theme);
+            splash.spinner.set_frames(&active.symbols.spinner_frames);
+            splash.spinner.advance(now, SPINNER_INTERVAL);
+            let glyph = splash.spinner.current().to_owned();
+            draw_frame(&mut terminal, &active, &app, &mut splash, now, &glyph)
+        };
+        if let Err(err) = frame_result {
+            // One bad frame (a transient terminal hiccup) must not kill the
+            // app: log once and keep the loop alive. Ctrl+C still quits.
+            if !frame_warned {
+                eprintln!("harbour: a frame failed: {err}");
+                frame_warned = true;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
     }
 
     // Flush before standing the crash breaker down: a crash between the two
@@ -1171,6 +1208,23 @@ pub async fn run(
         eprintln!("harbour: could not save state on exit: {err}");
     }
     Ok(())
+}
+
+/// One synchronized frame. Extracted so the theme lock never lives inside
+/// the closure passed to the terminal (a guard across the draw call reads
+/// as an await-holding lock to clippy even though the call is synchronous).
+fn draw_frame(
+    terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
+    theme: &Theme,
+    app: &App,
+    splash: &mut SplashState,
+    now: Instant,
+    glyph: &str,
+) -> std::io::Result<()> {
+    anim::with_sync_output(|| {
+        terminal.draw(|frame| draw(frame, theme, app, splash, now, glyph))?;
+        Ok(())
+    })
 }
 
 /// Draws whichever screen is current, plus the status line and any overlay.
@@ -2125,5 +2179,33 @@ mod app_tests {
             .as_ref()
             .map(|m| (m.lines().count() as u16 + 2).clamp(3, 6));
         assert_eq!(lines, Some(6), "a long banner is capped, never unbounded");
+    }
+
+    #[tokio::test]
+    async fn orphaned_cache_torrents_are_removed_on_boot() {
+        // A crashed watch-now leaves <state>/cache/<hash> plus a restored
+        // torrent. Boot cleanup must drop both — and leave non-torrent
+        // entries alone.
+        let root = std::env::temp_dir().join(format!("harbour-cache-{}", std::process::id()));
+        let hash = "0123456789abcdef0123456789abcdef01234567";
+        let dir = root.join("cache").join(hash);
+        std::fs::create_dir_all(&dir).expect("test dir");
+        std::fs::write(dir.join("piece.bin"), b"x").expect("test file");
+        let stranger = root.join("cache").join("notes.txt");
+        std::fs::write(&stranger, b"keep me").expect("test file");
+
+        let engine: Arc<dyn CoreEngine> = Arc::new(crate::engine::fake::FakeEngine::new());
+        cleanup_orphaned_cache(&engine, &root).await;
+
+        assert!(!dir.exists(), "the orphaned cache dir is deleted");
+        assert!(
+            engine.snapshot().iter().all(|s| s.id != hash),
+            "the orphaned torrent is dropped from the engine"
+        );
+        assert!(
+            stranger.exists(),
+            "non-torrent entries in the cache dir are never touched"
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
