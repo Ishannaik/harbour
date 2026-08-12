@@ -32,11 +32,18 @@ allow = [
 multiple-versions = "allow"
 
 [advisories]
-# Transitive unmaintained crates (backoff, bincode, crypto-hash, instant)
-# have no maintained replacement in the pinned tree — warn, don't fail.
-unmaintained = "warn"
 # quick-xml DoS pair: the direct dep migrated to oxixml-xml; the vulnerable
 # copy is transitive via librqbit-upnp (hard-pinned to quick-xml 0.37.5, no
 # upstream fix — librqbit 9 is RC). Surface: UPnP responses from trusted
 # local-network devices only. Mirrors the audit-check ignore in ci.yml.
-ignore = ["RUSTSEC-2026-0194", "RUSTSEC-2026-0195"]
+# Unmaintained transitives (backoff, bincode, crypto-hash, instant) have no
+# maintained replacement in the pinned tree; each is ignored explicitly so a
+# NEW unmaintained crate still fails loudly.
+ignore = [
+    "RUSTSEC-2026-0194",
+    "RUSTSEC-2026-0195",
+    { id = "RUSTSEC-2025-0012", reason = "backoff is transitive (reqwest chain), unmaintained upstream, no replacement in pinned tree" },
+    { id = "RUSTSEC-2025-0141", reason = "bincode is transitive (librqbit), unmaintained upstream, no replacement in pinned tree" },
+    { id = "RUSTSEC-2025-0060", reason = "crypto-hash is transitive (librqbit sha1), unmaintained upstream, no replacement in pinned tree" },
+    { id = "RUSTSEC-2024-0384", reason = "instant is transitive, unmaintained upstream, no replacement in pinned tree" },
+]
