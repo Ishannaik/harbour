@@ -155,6 +155,13 @@ async fn launch_watch(app: &mut App, id: String, name: String, dir: PathBuf, pla
 
 /// Enters watch mode with an already-launched session: records it on the app
 /// state and flips the screen. `ephemeral` marks a watch-now (2.3) session.
+///
+/// FR-59: the stream URL recorded here is the playback state harbour
+/// carries — every harbour stream is Range-served (the file server and the
+/// engine's loopback HTTP API both honor `Range`), so seeking works, while
+/// position belongs to the external player, which is launched with a bare
+/// URL and never reports it back. The now-playing view renders exactly these
+/// facts and never invents a progress bar.
 fn enter_watch(
     app: &mut App,
     id: String,
@@ -242,6 +249,10 @@ async fn launch_ephemeral_session(app: &mut App, id: String, name: String, playe
 /// librqbit's stream blocks on missing pieces — a dead swarm would hang the
 /// player on a baffling "unable to open MRL". Probing turns that into our
 /// own banner with the real reason, and a live swarm answers in seconds.
+///
+/// The probe is a `Range: bytes=0-0` request: a successful answer is also
+/// what lets the now-playing view honestly state "seeking supported" (FR-59)
+/// — the endpoint proved it honors Range, which is what player seeking is.
 async fn probe_stream(url: &str) -> Result<(), String> {
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(15))

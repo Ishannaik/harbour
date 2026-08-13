@@ -29,6 +29,8 @@ mod theme_watch;
 mod ui;
 mod watch;
 
+use std::io;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use crate::app::InitialAction;
@@ -62,6 +64,45 @@ async fn main() -> ExitCode {
     }
 }
 
+/// Splits a panic payload into the message and location a crash log wants.
+///
+/// Panic payloads are `&dyn Any`; the two string shapes cover every real
+/// panic (`panic!("x")`, `panic!(String)`) and anything else falls back to a
+/// placeholder — the report must always be written.
+fn panic_parts(info: &std::panic::PanicHookInfo) -> (String, Option<String>) {
+    let message = if let Some(s) = info.payload().downcast_ref::<&str>() {
+        (*s).to_string()
+    } else if let Some(s) = info.payload().downcast_ref::<String>() {
+        s.clone()
+    } else {
+        "non-string panic payload".to_string()
+    };
+    let location = info
+        .location()
+        .map(|l| format!("{}:{}", l.file(), l.line()));
+    (message, location)
+}
+
+/// Writes a crash report to `<root>/crash.log` (FR-09) and returns the path.
+///
+/// Pure — no panic hook, no terminal — so tests drive it with a temp root
+/// while the hook just extracts strings via [`panic_parts`]. The directory is
+/// created if missing: a crash can land before the app ever wrote its state
+/// dir, and losing the report over a missing folder would defeat the point.
+fn write_crash_log(root: &Path, message: &str, location: Option<&str>) -> io::Result<PathBuf> {
+    std::fs::create_dir_all(root)?;
+    let path = root.join("crash.log");
+    let mut report = String::from("harbour crashed\n");
+    report.push_str("message: ");
+    report.push_str(message);
+    report.push('\n');
+    report.push_str("location: ");
+    report.push_str(location.unwrap_or("unknown"));
+    report.push('\n');
+    std::fs::write(&path, report)?;
+    Ok(path)
+}
+
 async fn run_tui(initial: InitialAction) -> ExitCode {
     // A TUI panic must not leave the user's shell in raw mode with no
     // cursor. The TerminalGuard also restores on unwind, but the hook runs
@@ -77,6 +118,19 @@ async fn run_tui(initial: InitialAction) -> ExitCode {
         let _ = crossterm::terminal::disable_raw_mode();
         eprintln!("\nharbour crashed: {info}");
         eprintln!("your terminal was restored — please report this line");
+        // FR-09: a crash is a bug report, so persist it to the state dir —
+        // terminal scrollback is not a log. The hook must never panic (a
+        // panic inside a panic hook aborts instead of unwinding), so any
+        // failure here is only an eprintln.
+        let (message, location) = panic_parts(info);
+        match write_crash_log(
+            &crate::core::paths::state_dir(),
+            &message,
+            location.as_deref(),
+        ) {
+            Ok(path) => eprintln!("crash log written to {}", path.display()),
+            Err(err) => eprintln!("could not write crash log: {err}"),
+        }
     }));
 
     // Color capability is detected once at startup, before the alt-screen
@@ -98,5 +152,53 @@ async fn run_tui(initial: InitialAction) -> ExitCode {
             eprintln!("harbour: {err}");
             ExitCode::FAILURE
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A scratch state dir unique to this test — parallel tests each get
+    /// their own, so the crash log can never collide.
+    fn temp_root(tag: &str) -> PathBuf {
+        let root =
+            std::env::temp_dir().join(format!("harbour-crashlog-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        root
+    }
+
+    #[test]
+    fn crash_log_writes_message_and_location() {
+        let root = temp_root("main");
+        let path = write_crash_log(&root, "boom at the seam", Some("src/main.rs:42"))
+            .expect("write crash log");
+        assert_eq!(path, root.join("crash.log"));
+        let content = std::fs::read_to_string(&path).expect("read crash log");
+        assert!(content.contains("harbour crashed"), "header present");
+        assert!(content.contains("boom at the seam"), "message present");
+        assert!(content.contains("src/main.rs:42"), "location present");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn crash_log_writes_without_a_location() {
+        let root = temp_root("noloc");
+        let path = write_crash_log(&root, "panic!", None).expect("write crash log");
+        let content = std::fs::read_to_string(&path).expect("read crash log");
+        assert!(content.contains("panic!"), "message present");
+        assert!(content.contains("location: unknown"), "unknown stated");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn crash_log_creates_the_state_dir_when_missing() {
+        // A crash can land before the app ever wrote its state dir; the
+        // writer must create it rather than failing.
+        let root = temp_root("nested");
+        let nested = root.join("deep").join("state");
+        let path = write_crash_log(&nested, "early crash", None).expect("write crash log");
+        assert!(path.is_file(), "crash log exists under the created dir");
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

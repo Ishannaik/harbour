@@ -68,6 +68,7 @@ pub(crate) async fn download_selected(app: &mut App) {
                 name: result.name.clone(),
                 source: Some(result.source),
                 magnet: Some(magnet),
+                bytes: None,
                 dir: app.config.download_dir.clone(),
                 size_bytes: result.size_bytes,
             },
@@ -139,7 +140,9 @@ pub(crate) async fn retry_selected(app: &mut App) {
     let Some(item) = app.queue.get(&id).cloned() else {
         return;
     };
-    if item.status != QueueStatus::Failed {
+    // A `Missing` item re-checks exactly like a failed one retries (FR-46):
+    // re-adding it restarts the torrent against whatever is on disk.
+    if !matches!(item.status, QueueStatus::Failed | QueueStatus::Missing) {
         return;
     }
     app.queue
@@ -149,6 +152,7 @@ pub(crate) async fn retry_selected(app: &mut App) {
                 name: item.name.clone(),
                 source: item.source,
                 magnet: item.magnet.clone(),
+                bytes: item.bytes.clone(),
                 dir: item.dir.clone(),
                 size_bytes: item.total_bytes,
             },
@@ -277,6 +281,7 @@ pub(crate) async fn enqueue_magnet(app: &mut App, magnet: &str) {
                 name: info_hash.clone(),
                 source: None,
                 magnet: Some(magnet.to_owned()),
+                bytes: None,
                 dir: app.config.download_dir.clone(),
                 size_bytes: 0,
             },
@@ -286,4 +291,154 @@ pub(crate) async fn enqueue_magnet(app: &mut App, magnet: &str) {
     app.state.screen = Screen::Downloads;
     persist(app);
     app.refresh_downloads();
+}
+
+/// Enqueues a `.torrent` file handed to us on the command line
+/// (`FR-02`/`FR-39`).
+///
+/// The infohash lives inside the file, so the engine parses it before the
+/// queue sees it: the item is keyed by the real hash from the start, which is
+/// what keeps FR-56 dedupe and the engine poll honest. An unreadable or
+/// unparseable file is user error and gets a loud banner, never a silent no-op.
+pub(crate) async fn enqueue_torrent(app: &mut App, path: &std::path::Path) {
+    let bytes = match std::fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(err) => {
+            app.warn(format!("could not read {}: {err}", path.display()));
+            return;
+        }
+    };
+    let Some(info_hash) = app.queue.engine().torrent_info_hash(&bytes) else {
+        app.warn(format!(
+            "{} is not a readable .torrent file",
+            path.display()
+        ));
+        return;
+    };
+    let name = path
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| info_hash.clone());
+    app.queue
+        .add(
+            AddInput {
+                id: info_hash,
+                name,
+                source: None,
+                magnet: None,
+                bytes: Some(bytes),
+                dir: app.config.download_dir.clone(),
+                size_bytes: 0,
+            },
+            now_ms(),
+        )
+        .await;
+    app.state.screen = Screen::Downloads;
+    persist(app);
+    app.refresh_downloads();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::{HashMap, HashSet};
+    use std::path::PathBuf;
+    use std::sync::{Arc, Mutex};
+
+    use crate::core::types::Engine as _;
+    use crate::engine::fake::FakeEngine;
+    use crate::persist::{Config, Store};
+    use crate::queue::Queue;
+    use crate::search::SearchEngine;
+    use crate::theme::Theme;
+    use crate::ui::player::PlayerPicker;
+    use crate::ui::settings::SettingsState;
+    use crate::ui::{AppState, Screen};
+
+    /// A fully wired App over a FakeEngine, with its state rooted in a scratch
+    /// directory so the ledger writes land nowhere near a real profile.
+    ///
+    /// `label` keeps parallel tests in separate directories — the temp root is
+    /// otherwise shared per-process.
+    fn test_app(engine: Arc<FakeEngine>, label: &str) -> (App, PathBuf) {
+        let root = std::env::temp_dir().join(format!(
+            "harbour-actions-test-{label}-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("scratch dir");
+        let config = Config {
+            download_dir: root.join("dl"),
+            ..Config::default()
+        };
+        let app = App {
+            state: AppState::default(),
+            queue: Queue::new(engine, 0),
+            search: SearchEngine::new(vec![]),
+            store: Store::new(&root),
+            disabled_sources: HashSet::new(),
+            config,
+            partial: HashMap::new(),
+            search_cancel: None,
+            events_tx: tokio::sync::mpsc::unbounded_channel().0,
+            history: Vec::new(),
+            help_open: false,
+            settings_open: false,
+            settings: SettingsState::default(),
+            theme: Arc::new(Mutex::new(Theme::titanium())),
+            watch: None,
+            picker: PlayerPicker::default(),
+            picker_pending: None,
+            quitting: false,
+        };
+        (app, root)
+    }
+
+    #[tokio::test]
+    async fn a_torrent_file_is_enqueued_from_its_bytes() {
+        let engine = Arc::new(FakeEngine::new());
+        let (mut app, root) = test_app(engine.clone(), "enqueue");
+        let file = root.join("movie.torrent");
+        std::fs::write(&file, b"d4:infod4:name3:fooe").expect("fixture");
+
+        enqueue_torrent(&mut app, &file).await;
+
+        let hash = engine
+            .torrent_info_hash(b"d4:infod4:name3:fooe")
+            .expect("the fake parses the payload");
+        assert_eq!(app.state.screen, Screen::Downloads);
+        let item = app
+            .queue
+            .get(&hash)
+            .expect("enqueued under the file's own infohash");
+        assert_eq!(item.name, "movie", "named from the file stem");
+        assert_eq!(
+            item.status,
+            QueueStatus::Downloading,
+            "FR-02/.39: a launch .torrent starts immediately"
+        );
+        assert!(
+            engine.contains(&hash),
+            "the engine keys the torrent identically"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_unreadable_torrent_file_warns_instead_of_enqueueing() {
+        let engine = Arc::new(FakeEngine::new());
+        let (mut app, root) = test_app(engine.clone(), "unreadable");
+        let missing = root.join("nope.torrent");
+
+        enqueue_torrent(&mut app, &missing).await;
+
+        assert!(
+            app.state
+                .error_banner
+                .as_deref()
+                .is_some_and(|m| m.contains("could not read")),
+            "a missing file is a loud warning, not a silent no-op"
+        );
+        assert!(app.queue.items().is_empty());
+        assert!(engine.is_empty());
+    }
 }

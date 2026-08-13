@@ -40,7 +40,7 @@ mod splash;
 mod terminal;
 mod watch;
 
-use actions::{apply_event, enqueue_magnet};
+use actions::{apply_event, enqueue_magnet, enqueue_torrent};
 use events::handle_event;
 use splash::{SplashState, draw_splash};
 use terminal::TerminalGuard;
@@ -194,6 +194,10 @@ impl App {
         if let Some(previous) = self.search_cancel.take() {
             previous.cancel();
         }
+        // An empty query is browse mode (`FR-12`): the indexer treats it as
+        // its curated lists, so the app state says so instead of pretending
+        // there is a query to edit.
+        self.state.search.browsing = query.trim().is_empty();
         self.partial.clear();
         self.state.search.results.clear();
         self.state.search.selected = 0;
@@ -408,18 +412,7 @@ pub async fn run(
     match initial {
         InitialAction::None => {}
         InitialAction::Magnet(magnet) => enqueue_magnet(&mut app, &magnet).await,
-        InitialAction::TorrentFile(path) => match std::fs::metadata(&path) {
-            // Reading a .torrent means parsing bencode and hashing its info
-            // dict. librqbit can do both, but wiring the file path through the
-            // add request is engine work that has not landed; say so plainly
-            // rather than failing silently on launch.
-            Ok(_) => app.warn(format!(
-                "{} was found, but opening a .torrent on launch is not wired up yet — \
-                 paste its magnet instead",
-                path.display()
-            )),
-            Err(err) => app.warn(format!("could not read {}: {err}", path.display())),
-        },
+        InitialAction::TorrentFile(path) => enqueue_torrent(&mut app, &path).await,
     }
 
     let _guard = TerminalGuard::enter()?;
@@ -656,6 +649,48 @@ mod app_tests {
             .as_ref()
             .map(|m| (m.lines().count() as u16 + 2).clamp(3, 6));
         assert_eq!(lines, Some(6), "a long banner is capped, never unbounded");
+    }
+
+    #[tokio::test]
+    async fn an_empty_query_search_is_browse_flagged() {
+        // FR-12: Enter with no query asks the indexer for its curated lists;
+        // the search state must say so (browsing = true) instead of reading
+        // as a search for "".
+        let root = std::env::temp_dir().join(format!("harbour-browse-{}", std::process::id()));
+        let engine: Arc<dyn CoreEngine> = Arc::new(FakeEngine::new());
+        let mut app = App {
+            state: AppState::default(),
+            queue: Queue::new(engine, 2),
+            search: SearchEngine::new(Vec::new()),
+            store: Store::new(&root),
+            config: Config::default(),
+            disabled_sources: HashSet::new(),
+            partial: HashMap::new(),
+            search_cancel: None,
+            events_tx: mpsc::unbounded_channel().0,
+            history: Vec::new(),
+            help_open: false,
+            settings_open: false,
+            settings: SettingsState::default(),
+            theme: Arc::new(Mutex::new(Theme::titanium())),
+            watch: None,
+            picker: PlayerPicker::default(),
+            picker_pending: None,
+            quitting: false,
+        };
+
+        app.start_search("   ".into());
+        assert!(
+            app.state.search.browsing,
+            "a blank query is browse mode, not a search for whitespace"
+        );
+
+        app.start_search("dune".into());
+        assert!(
+            !app.state.search.browsing,
+            "a real query is a search, not browse"
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[tokio::test]

@@ -5,9 +5,11 @@ use std::path::PathBuf;
 
 use crate::core::types::SourceId;
 use crate::theme::Theme;
+use crate::ui::FolderPromptMode;
 use crate::ui::settings::{RowKind, TextField};
 
 use super::App;
+use super::actions::download_selected;
 
 /// The settings overlay's Enter: per row kind, either enter/commit an
 /// inline text edit, cycle the theme, or flip a toggle immediately.
@@ -324,4 +326,54 @@ fn save_settings(app: &mut App) {
         app.warn(format!("settings: could not save config: {err}"));
     }
     app.disabled_sources = app.config.disabled_sources.iter().copied().collect();
+}
+
+/// Opens the folder prompt (FR-29/40), seeded with the current default
+/// download folder so the common case is just Enter. `mode` decides what
+/// Enter commits: a one-off download target (shift+D) or the persisted
+/// default (`o`).
+pub(crate) fn open_folder_prompt(app: &mut App, mode: FolderPromptMode) {
+    app.state.folder_prompt.open = true;
+    app.state.folder_prompt.mode = mode;
+    app.state.folder_prompt.edit_buffer = app.config.download_dir.display().to_string();
+}
+
+/// Closes the folder prompt without committing — the typed buffer is
+/// discarded, exactly like Esc on a settings inline edit.
+pub(crate) fn cancel_folder_prompt(app: &mut App) {
+    app.state.folder_prompt.open = false;
+    app.state.folder_prompt.edit_buffer.clear();
+}
+
+/// Enter on the folder prompt: validates the path, then either downloads the
+/// selected row into it (shift+D) or persists it as the new default folder
+/// (`o`). An empty path or a directory that cannot be created keeps the
+/// prompt open with a loud banner — never a silent fallback.
+pub(crate) async fn commit_folder_prompt(app: &mut App) {
+    let dir = PathBuf::from(app.state.folder_prompt.edit_buffer.trim());
+    if dir.as_os_str().is_empty() {
+        app.warn("enter a folder path first");
+        return;
+    }
+    if let Err(err) = std::fs::create_dir_all(&dir) {
+        app.warn(format!("could not create {}: {err}", dir.display()));
+        return;
+    }
+    match app.state.folder_prompt.mode {
+        FolderPromptMode::SetDefault => {
+            app.config.download_dir = dir;
+            save_settings(app);
+        }
+        FolderPromptMode::DownloadTo => {
+            // One-off: download the selected row into `dir` without touching
+            // the configured default. `download_selected` copies
+            // `config.download_dir` into the queue item synchronously, so a
+            // temporary swap is safe — the original is restored right after.
+            let previous = std::mem::replace(&mut app.config.download_dir, dir);
+            download_selected(app).await;
+            app.config.download_dir = previous;
+        }
+    }
+    app.state.folder_prompt.open = false;
+    app.state.folder_prompt.edit_buffer.clear();
 }

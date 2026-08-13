@@ -17,7 +17,7 @@
 //! * **Speeds are MiB/s**, because that is the unit librqbit reports. The
 //!   conversion happens here so no second converter exists in the UI.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
@@ -28,7 +28,7 @@ use librqbit::api::TorrentIdOrHash;
 use librqbit::dht::Id20;
 use librqbit::http_api::HttpApi;
 use librqbit::{
-    AddTorrent, AddTorrentOptions, Api, ManagedTorrent, Session, SessionOptions,
+    AddTorrent, AddTorrentOptions, Api, ByteBuf, ManagedTorrent, Session, SessionOptions,
     SessionPersistenceConfig,
 };
 
@@ -39,7 +39,8 @@ type ManagedTorrentHandle = Arc<ManagedTorrent>;
 
 use crate::core::error::EngineError;
 use crate::core::types::{
-    AddRequest, Engine, EngineFuture, EngineItemState, EngineSnapshot, EngineStats, InfoHash,
+    AddBytesRequest, AddRequest, Engine, EngineFuture, EngineItemState, EngineSnapshot,
+    EngineStats, InfoHash,
 };
 
 /// Bytes in a MiB, for the speed→ETA conversion.
@@ -56,6 +57,12 @@ pub struct RqbitEngine {
     handles: Mutex<HashMap<InfoHash, ManagedTorrentHandle>>,
     /// The loopback stream server (FR-57), started lazily on first watch.
     stream: Mutex<Option<Arc<StreamServer>>>,
+    /// Infohashes whose `.torrent` bytes have already been written to the
+    /// local cache, so the poll captures each torrent exactly once (FR-37).
+    cache_written: Mutex<HashSet<InfoHash>>,
+    /// The state root, for the FR-37 `.torrent` cache under
+    /// `<state>/cache/torrents/<hash>.torrent`.
+    state_dir: PathBuf,
 }
 
 /// One running librqbit HTTP API — the Stremio-style stream server. Binds
@@ -138,6 +145,30 @@ fn is_video(path: &std::path::Path) -> bool {
         .is_some_and(|e| VIDEO.contains(&e.to_ascii_lowercase().as_str()))
 }
 
+/// The infohash a `.torrent` payload will be keyed under (`FR-02`/`FR-39`).
+///
+/// Parsed from the file itself rather than guessed: the queue item's id must
+/// be the exact hash the engine reports snapshots under and that a restart
+/// restores, or the download would run invisible to the queue. `None` for
+/// bytes that are not a parseable `.torrent`.
+fn torrent_info_hash_from_bytes(bytes: &[u8]) -> Option<InfoHash> {
+    let meta = librqbit::torrent_from_bytes::<ByteBuf>(bytes).ok()?;
+    Some(meta.info_hash.as_string())
+}
+
+/// Writes bytes atomically: a temp file in the same directory is renamed over
+/// the target, so a crash mid-write can never leave a truncated `.torrent`
+/// that a later re-seed would fail to parse (`FR-37`).
+fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let tmp = path.with_extension("torrent.tmp");
+    std::fs::write(&tmp, bytes)?;
+    std::fs::rename(&tmp, path)?;
+    Ok(())
+}
+
 impl RqbitEngine {
     /// Starts a session.
     ///
@@ -188,6 +219,8 @@ impl RqbitEngine {
             session,
             handles: Mutex::new(HashMap::new()),
             stream: Mutex::new(None),
+            cache_written: Mutex::new(HashSet::new()),
+            state_dir: state_dir.to_path_buf(),
         })
     }
 
@@ -250,6 +283,35 @@ impl RqbitEngine {
         handle
             .with_metadata(|meta| meta.torrent_bytes.to_vec())
             .ok()
+    }
+
+    /// FR-37: once a torrent's metadata is available, its `.torrent` bytes are
+    /// written to `<state>/cache/torrents/<hash>.torrent` so a later re-seed
+    /// can verify on-disk files without re-fetching from the swarm.
+    ///
+    /// Runs from the poll. The written-set makes the capture a one-time write
+    /// per torrent; a torrent whose metadata has not arrived yet (or whose
+    /// write failed) simply is retried on a later poll.
+    fn cache_metadata_if_new(&self, hash: &InfoHash, handle: &ManagedTorrentHandle) {
+        let mut written = self
+            .cache_written
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if written.contains(hash) {
+            return;
+        }
+        let Ok(bytes) = handle.with_metadata(|meta| meta.torrent_bytes.to_vec()) else {
+            return;
+        };
+        if bytes.is_empty() {
+            return;
+        }
+        let Some(path) = crate::core::paths::torrent_cache_file(&self.state_dir, hash) else {
+            return;
+        };
+        if write_atomic(&path, &bytes).is_ok() {
+            written.insert(hash.clone());
+        }
     }
 
     pub async fn shutdown(&self) {
@@ -342,6 +404,37 @@ impl Engine for RqbitEngine {
         })
     }
 
+    fn torrent_info_hash(&self, bytes: &[u8]) -> Option<InfoHash> {
+        torrent_info_hash_from_bytes(bytes)
+    }
+
+    fn add_bytes<'a>(&'a self, req: AddBytesRequest) -> EngineFuture<'a, Result<(), EngineError>> {
+        Box::pin(async move {
+            let opts = AddTorrentOptions {
+                output_folder: Some(req.dir.to_string_lossy().into_owned()),
+                // Same resume-onto-existing-files stance as `add`: a re-seed
+                // of a `.torrent`-added item verifies what is on disk.
+                overwrite: true,
+                ..Default::default()
+            };
+            let response = self
+                .session
+                .add_torrent(AddTorrent::from_bytes(req.bytes.clone()), Some(opts))
+                .await
+                .map_err(|e| EngineError::Backend(e.to_string()))?;
+
+            let handle = response
+                .into_handle()
+                .ok_or_else(|| EngineError::Backend("engine returned no torrent handle".into()))?;
+            // Key by the infohash inside the file, not by anything the caller
+            // invented: the queue item carries this exact hash (from
+            // `torrent_info_hash`), and a restart restores under it too.
+            let hash = handle.info_hash().as_string();
+            self.handles().insert(hash, handle);
+            Ok(())
+        })
+    }
+
     fn pause<'a>(&'a self, id: &'a str) -> EngineFuture<'a, Result<(), EngineError>> {
         Box::pin(async move {
             let handle = self.handle(id).ok_or(EngineError::NotFound)?;
@@ -388,7 +481,12 @@ impl Engine for RqbitEngine {
             .collect();
         let mut out: Vec<EngineSnapshot> = handles
             .into_iter()
-            .map(|(hash, handle)| to_snapshot(hash, &handle))
+            .map(|(hash, handle)| {
+                // FR-37: capture the `.torrent` bytes to the local cache the
+                // moment metadata is available (one write per torrent).
+                self.cache_metadata_if_new(&hash, &handle);
+                to_snapshot(hash, &handle)
+            })
             .collect();
         // Stable order so the UI list does not shuffle between frames.
         out.sort_by(|a, b| a.id.cmp(&b.id));
@@ -505,5 +603,53 @@ mod tests {
     fn the_engine_state_lives_under_our_state_dir_so_one_env_var_moves_everything() {
         let root = Path::new("/state");
         assert_eq!(engine_state_dir(root), Path::new("/state/engine"));
+    }
+
+    /// A minimal but structurally valid single-file `.torrent` (bencode), so
+    /// the parse helper is tested against real metainfo rather than a mock.
+    fn tiny_torrent() -> Vec<u8> {
+        let mut b = Vec::new();
+        b.extend_from_slice(b"d4:infod6:lengthi5e4:name3:foo12:piece lengthi16384e6:pieces20:");
+        b.extend_from_slice(&[b'x'; 20]);
+        b.extend_from_slice(b"ee");
+        b
+    }
+
+    #[test]
+    fn a_torrent_payload_yields_its_infohash_for_the_queue_key() {
+        let hash = torrent_info_hash_from_bytes(&tiny_torrent()).expect("a valid .torrent parses");
+        assert_eq!(hash.len(), 40, "the id is a 40-hex infohash");
+        assert!(hash.chars().all(|c| c.is_ascii_hexdigit()));
+
+        // Garbage must never be accepted: an unparseable file is user error,
+        // surfaced loudly, not silently keyed under a made-up id.
+        assert_eq!(torrent_info_hash_from_bytes(b"not bencode at all"), None);
+        assert_eq!(torrent_info_hash_from_bytes(&[]), None);
+
+        // Determinism: the same file always yields the same key (FR-56 dedupe
+        // depends on it).
+        assert_eq!(torrent_info_hash_from_bytes(&tiny_torrent()), Some(hash));
+    }
+
+    #[test]
+    fn the_torrent_cache_write_is_atomic_and_hash_keyed() {
+        let root =
+            std::env::temp_dir().join(format!("harbour-fr37-cache-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let hash = "0123456789abcdef0123456789abcdef01234567";
+        let path = crate::core::paths::torrent_cache_file(&root, hash).expect("valid hash");
+        let payload = tiny_torrent();
+
+        write_atomic(&path, &payload).expect("first write");
+        assert_eq!(std::fs::read(&path).expect("written"), payload);
+
+        // A second capture replaces the file; it never appends or duplicates.
+        write_atomic(&path, b"newer bytes").expect("overwrite");
+        assert_eq!(std::fs::read(&path).expect("replaced"), b"newer bytes");
+
+        // No temp litter is left behind after a successful write.
+        assert!(!path.with_extension("torrent.tmp").exists());
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

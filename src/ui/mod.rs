@@ -58,6 +58,10 @@ pub struct SearchState {
     /// renders as unknown — not as offline.
     pub source_health: HashMap<SourceId, SourceStatus>,
     pub source_counts: HashMap<SourceId, usize>,
+    /// True when the current query is empty (FR-12): an empty query is a
+    /// browse-mode search — the indexer treats it as curated, and the UI can
+    /// say so instead of pretending nothing was searched.
+    pub browsing: bool,
 }
 
 impl Default for SearchState {
@@ -70,6 +74,7 @@ impl Default for SearchState {
             focus: true,
             source_health: HashMap::new(),
             source_counts: HashMap::new(),
+            browsing: false,
         }
     }
 }
@@ -97,8 +102,36 @@ pub struct AppState {
     pub downloads: DownloadsState,
     /// The single channel for engine and config errors (`UR-13`).
     pub error_banner: Option<String>,
+    /// The folder-prompt overlay (FR-29/40), if open.
+    pub folder_prompt: FolderPrompt,
     /// The item being watched, if watch mode is active (FR-57).
     pub now_playing: Option<NowPlaying>,
+}
+
+/// The folder-prompt overlay (FR-29/40): a minimal inline text input for a
+/// target directory, opened by shift+D (download the selected row into a
+/// folder you pick) or o (change + persist the default download folder).
+/// Mirrors the settings overlay's inline edit — `open` gates key ownership
+/// and `edit_buffer` is the path being typed; Enter commits, Esc cancels.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct FolderPrompt {
+    /// The prompt is up and owns the keyboard.
+    pub open: bool,
+    /// What Enter commits: a one-off download dir or the persisted default.
+    pub mode: FolderPromptMode,
+    /// The path being typed, seeded with the current default download dir.
+    pub edit_buffer: String,
+}
+
+/// What committing the folder prompt does (FR-29 vs FR-40).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FolderPromptMode {
+    /// shift+D: download the selected search result into this folder,
+    /// without touching the configured default.
+    #[default]
+    DownloadTo,
+    /// o: persist this folder as the new default download folder.
+    SetDefault,
 }
 
 /// Watch-mode state (FR-57..FR-59): what the now-playing screen shows while an

@@ -256,6 +256,7 @@ async fn the_queue_drives_the_real_engine() {
                 name: "Sintel".into(),
                 source: None,
                 magnet: Some(SINTEL.into()),
+                bytes: None,
                 dir: downloads,
                 size_bytes: 0,
             },

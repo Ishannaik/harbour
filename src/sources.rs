@@ -40,17 +40,47 @@ const DEF: SourceDef = SourceDef {
     reports_health: true,
 };
 
-/// The search answer: raw concatenated results from every enabled scraper.
-/// The client's [`crate::search::merge`] dedupes them by infohash.
-#[derive(Debug, Deserialize)]
-struct SearchResponse {
-    results: Vec<TorrentResult>,
-}
-
 /// The magnet answer.
 #[derive(Debug, Deserialize)]
 struct MagnetResponse {
     magnet: String,
+}
+
+/// Parses the indexer's search answer, dropping malformed rows instead of
+/// failing the whole response (`FR-14`).
+///
+/// One scraper's schema drift (or a truncated row) must not sink the other
+/// results: each `results` entry is converted to a [`TorrentResult`]
+/// individually, and rows that fail to deserialize — or that are missing an
+/// `info_hash`/`name` — are skipped. The only hard errors are a wrong outer
+/// shape (not JSON, no `results` array) or a response where *every* row
+/// fails, because an all-dead answer is more likely a wire-contract break
+/// than a scrape hiccup.
+fn parse_results(body: &str) -> Result<Vec<TorrentResult>, SourceError> {
+    let outer: serde_json::Value = serde_json::from_str(body)
+        .map_err(|e| SourceError::Parse(format!("indexer search response: {e}")))?;
+    let rows = outer
+        .get("results")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| {
+            SourceError::Parse("indexer search response: missing \"results\" array".into())
+        })?;
+    let valid: Vec<TorrentResult> = rows
+        .iter()
+        .filter_map(|row| {
+            let result: TorrentResult = serde_json::from_value(row.clone()).ok()?;
+            if result.info_hash.is_empty() || result.name.trim().is_empty() {
+                return None;
+            }
+            Some(result)
+        })
+        .collect();
+    if valid.is_empty() && !rows.is_empty() {
+        return Err(SourceError::Parse(
+            "indexer search response: no valid rows".into(),
+        ));
+    }
+    Ok(valid)
 }
 
 /// One HTTP-backed [`Source`]: every search and magnet resolution is a single
@@ -131,9 +161,10 @@ impl Source for HttpSource {
                 url.push_str(&excluded.join(","));
             }
             let body = self.get(&url, ctx).await?;
-            let response: SearchResponse = serde_json::from_str(&body)
-                .map_err(|e| SourceError::Parse(format!("indexer search response: {e}")))?;
-            Ok(response.results)
+            // One malformed row must not sink the whole answer (FR-14): the
+            // indexer concatenates every scraper's rows, and one schema drift
+            // would otherwise hide the other nine sites' results.
+            parse_results(&body)
         })
     }
 
@@ -323,6 +354,61 @@ mod tests {
             "the query rides the q param: {}",
             requests[0]
         );
+    }
+
+    #[tokio::test]
+    async fn a_malformed_row_is_dropped_not_fatal() {
+        // FR-14: one scraper's schema drift (wrong-type hash, missing name)
+        // must not sink the valid rows around it.
+        let body = format!(
+            r#"{{"results":[
+                {{"info_hash":123,"name":"broken row"}},
+                {{"info_hash":"","name":"empty hash"}},
+                {{"info_hash":"{HASH}","name":"Dune: Part Two [1080p]","size_bytes":2147483648,
+                  "seeders":512,"leechers":24,"num_files":1,"source":"yts",
+                  "magnet":"magnet:?xt=urn:btih:{HASH}&dn=dune","added":1786000000}},
+                {{"info_hash":"fedcba9876543210fedcba9876543210fedcba98","name":"   ",
+                  "size_bytes":1,"seeders":1,"leechers":1,"source":"nyaa"}}
+            ]}}"#
+        );
+        let (base, handle) = spawn_indexer(vec![(200, body)]);
+        let source = HttpSource::new(base);
+        let rows = source
+            .search("dune", &ctx(HashSet::new()))
+            .await
+            .expect("a single bad row is not a search failure");
+        assert_eq!(rows.len(), 1, "only the well-formed row survives: {rows:?}");
+        assert_eq!(rows[0].info_hash, HASH);
+        handle.join().expect("indexer thread");
+    }
+
+    #[tokio::test]
+    async fn a_response_where_every_row_fails_is_an_error() {
+        // All rows dead is a wire-contract break, not a scrape hiccup: only
+        // then (or a wrong outer shape) is the response a hard failure.
+        let body = r#"{"results":[
+            {"info_hash":123,"name":"one"},
+            {"info_hash":456,"name":"two"}
+        ]}"#
+        .to_string();
+        let (base, handle) = spawn_indexer(vec![(200, body)]);
+        let source = HttpSource::new(base);
+        let result = source.search("dune", &ctx(HashSet::new())).await;
+        assert!(
+            matches!(result, Err(SourceError::Parse(_))),
+            "an all-malformed answer is a parse error: {result:?}"
+        );
+        handle.join().expect("indexer thread");
+
+        // A missing "results" array is the same class of error.
+        let (base, handle) = spawn_indexer(vec![(200, r#"{"error":"no rows"}"#.into())]);
+        let source = HttpSource::new(base);
+        let result = source.search("dune", &ctx(HashSet::new())).await;
+        assert!(
+            matches!(result, Err(SourceError::Parse(_))),
+            "a missing results array is a parse error: {result:?}"
+        );
+        handle.join().expect("indexer thread");
     }
 
     #[tokio::test]

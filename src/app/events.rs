@@ -4,13 +4,16 @@
 use crossterm::event::{Event, MouseButton, MouseEventKind};
 
 use crate::input::Action;
+use crate::ui::FolderPromptMode;
 use crate::ui::Screen;
 use crate::ui::player::PickerMode;
 
 use super::actions::{
     download_selected, move_selection, remove_selected, retry_selected, toggle_pause,
 };
-use super::settings::settings_activate;
+use super::settings::{
+    cancel_folder_prompt, commit_folder_prompt, open_folder_prompt, settings_activate,
+};
 use super::watch::{
     choose_player, end_watch, open_player_picker, start_watch, start_watch_ephemeral,
 };
@@ -25,6 +28,11 @@ pub(crate) async fn handle_event(app: &mut App, event: Event) {
         // The settings overlay is modal: while it is up, a click must not
         // reach the screen underneath (the overlay is painted over it).
         if app.settings_open {
+            return;
+        }
+        // The folder prompt (FR-29/40) is modal the same way: its panel is
+        // painted over the screen, so a click behind it must not select rows.
+        if app.state.folder_prompt.open {
             return;
         }
         if mouse.kind == MouseEventKind::Down(MouseButton::Left) {
@@ -57,11 +65,14 @@ pub(crate) async fn handle_event(app: &mut App, event: Event) {
     let action = crate::input::map_with_focus(
         key,
         app.state.screen,
-        app.help_open,
-        app.picker.open,
-        app.picker.mode == PickerMode::Custom,
-        app.settings_open,
-        app.state.search.focus,
+        crate::input::FocusFlags {
+            help_open: app.help_open,
+            picker_open: app.picker.open,
+            picker_custom: app.picker.mode == PickerMode::Custom,
+            settings_open: app.settings_open,
+            folder_open: app.state.folder_prompt.open,
+            search_focus: app.state.search.focus,
+        },
     );
 
     apply_action(app, action).await;
@@ -154,6 +165,20 @@ async fn apply_action(app: &mut App, action: Action) {
             app.state.search.query.push(c);
         }
         Action::Download => download_selected(app).await,
+        Action::DownloadToFolder => open_folder_prompt(app, FolderPromptMode::DownloadTo),
+        Action::ChangeDefaultFolder => open_folder_prompt(app, FolderPromptMode::SetDefault),
+        Action::FolderType(c) => {
+            if app.state.folder_prompt.open {
+                app.state.folder_prompt.edit_buffer.push(c);
+            }
+        }
+        Action::FolderBackspace => {
+            if app.state.folder_prompt.open {
+                app.state.folder_prompt.edit_buffer.pop();
+            }
+        }
+        Action::FolderConfirm => commit_folder_prompt(app).await,
+        Action::FolderCancel => cancel_folder_prompt(app),
         Action::TogglePause => toggle_pause(app).await,
         Action::Retry => retry_selected(app).await,
         Action::Remove => remove_selected(app).await,
