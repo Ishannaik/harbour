@@ -26,10 +26,12 @@ its add-ons:
   (librqbit), the queue, persistence, watch-now, and settings. It ships **zero
   scrapers** and implements only the neutral `Source` interface. It's a
   BitTorrent client, period — legal everywhere.
-- **`harbour-indexer` — the search service (separate, user-run).** Owns the
+- **`harbour-indexer` — the search service (separate, self-hosted).** Owns the
   torrent-index scrapers, the resilient fetch layer, and the search cache. It
-  exposes a tiny JSON API. The client talks to it over HTTP; **you** point the
-  client at whatever indexer you run (`indexer_url` in the config).
+  exposes a tiny JSON API. The client talks to it over HTTP; **you** run and
+  point the client at whatever indexer you host (`indexer_url` in the config).
+  The indexer is deliberately **not** hosted on GitHub — it's the piece you
+  self-host, the same model as Stremio addons, Jackett, and Prowlarr.
 
 The client never scrapes anything itself. You bring your own indexer — the
 same model as Stremio addons, Jackett, and Prowlarr.
@@ -40,7 +42,7 @@ same model as Stremio addons, Jackett, and Prowlarr.
 # client
 cargo build --release
 
-# indexer (separate repo: github.com/Ishannaik/harbour-indexer)
+# indexer (separate, self-hosted — not on GitHub)
 cargo build --release
 ```
 
