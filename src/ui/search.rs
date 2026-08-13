@@ -586,11 +586,8 @@ fn result_line(
     } else {
         colors.text()
     };
-    let seed_fg = if result.seeders > 0 {
-        colors.success()
-    } else {
-        colors.muted()
-    };
+    let seed_fg = health_color(result.seeders, colors);
+    let leech_fg = health_color(result.leechers, colors);
     let chip_fg = if state.source_counts.contains_key(&result.source) {
         colors.text()
     } else {
@@ -603,7 +600,7 @@ fn result_line(
         Span::raw(" "),
         Span::styled(seeds, Style::default().fg(seed_fg.to_ratatui())),
         Span::raw(" "),
-        Span::styled(leeches, Style::default().fg(colors.muted().to_ratatui())),
+        Span::styled(leeches, Style::default().fg(leech_fg.to_ratatui())),
         Span::raw(" "),
     ];
     if let Some(q) = quality {
@@ -615,6 +612,19 @@ fn result_line(
         Style::default().fg(chip_fg.to_ratatui()),
     ));
     row_line(spans, selected, colors)
+}
+
+/// Health tier for a seeder/leecher count (FR-24): >=100 is a healthy swarm
+/// (success), 1–99 is alive but thin (warning), 0 is unseeded (dim). Same
+/// three tiers for both columns, so a row's health reads at a glance.
+fn health_color(count: u32, colors: &ThemeColors) -> Color {
+    if count >= 100 {
+        colors.success()
+    } else if count > 0 {
+        colors.warning()
+    } else {
+        colors.dim()
+    }
 }
 
 /// Quality tag from a release name — the second chip on a result row.
@@ -673,20 +683,26 @@ fn chip_label(id: SourceId) -> &'static str {
     }
 }
 
-/// Human-readable size in GB/MB/KB (binary units, matching the wireframe's
-/// "48.2 GB"); 0 bytes renders '—' — sources like FanSubs report no size
-/// (docs/sources.md §3.7), so a fake number would be worse than none.
+/// Human-readable size in binary units (B/KiB/MiB/GiB/TiB, one decimal from
+/// 1 KiB up), mirroring the downloads view's `human_bytes` exactly so the two
+/// views speak one size language; 0 bytes renders '—' — sources like
+/// FanSubs report no size (docs/sources.md §3.7), so a fake number would
+/// be worse than none.
 fn fmt_size(bytes: u64) -> String {
     if bytes == 0 {
         return "—".to_string();
     }
-    let mb = bytes as f64 / (1024.0 * 1024.0);
-    if mb >= 1024.0 {
-        format!("{:.1} GB", mb / 1024.0)
-    } else if mb >= 1.0 {
-        format!("{:.0} MB", mb)
+    const UNITS: &[&str] = &["B", "KiB", "MiB", "GiB", "TiB"];
+    let mut value = bytes as f64;
+    let mut unit = 0;
+    while value >= 1024.0 && unit < UNITS.len() - 1 {
+        value /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{bytes} B")
     } else {
-        format!("{:.0} KB", bytes as f64 / 1024.0)
+        format!("{value:.1} {}", UNITS[unit])
     }
 }
 
@@ -819,6 +835,77 @@ mod tests {
         assert_eq!(quality_tag("The Movie hdr10"), None);
         assert_eq!(quality_tag("The Movie 1080"), Some("1080p"));
         assert_eq!(quality_tag("The Movie"), None);
+    }
+
+    #[test]
+    fn fmt_size_renders_binary_units_with_one_decimal() {
+        // FR-23: B/KiB/MiB/GiB/TiB, one decimal from 1 KiB up; 0 is a dash
+        // (sources that don't report a size), never a fake "0 B".
+        assert_eq!(fmt_size(0), "—");
+        assert_eq!(fmt_size(512), "512 B");
+        assert_eq!(fmt_size(1024), "1.0 KiB");
+        assert_eq!(fmt_size(1536), "1.5 KiB");
+        assert_eq!(fmt_size(5 * 1024 * 1024), "5.0 MiB");
+        assert_eq!(fmt_size(987 * 1024 * 1024), "987.0 MiB");
+        assert_eq!(fmt_size(48 * 1024 * 1024 * 1024), "48.0 GiB");
+        assert_eq!(fmt_size(2 * 1024 * 1024 * 1024 * 1024), "2.0 TiB");
+    }
+
+    /// The fg color of the first span whose text equals `needle`.
+    fn span_color(line: &Line, needle: &str) -> ratatui::style::Color {
+        line.spans
+            .iter()
+            .find(|s| s.content.as_ref() == needle)
+            .expect("span present")
+            .style
+            .fg
+            .expect("span has a color")
+    }
+
+    #[test]
+    fn seeder_and_leecher_tiers_color_by_swarm_size() {
+        // FR-24: >=100 success, 1-99 warning, 0 dim — for both columns.
+        let theme = Theme::titanium();
+        let state = SearchState::default();
+        let success = theme.colors.success().to_ratatui();
+        let warning = theme.colors.warning().to_ratatui();
+        let dim = theme.colors.dim().to_ratatui();
+
+        let healthy = TorrentResult {
+            seeders: 500,
+            leechers: 300,
+            ..result("Dune")
+        };
+        let line = result_line(&healthy, false, &state, &theme, 60);
+        assert_eq!(
+            span_color(&line, "500"),
+            success,
+            "seeders >=100 is success"
+        );
+        assert_eq!(
+            span_color(&line, "300"),
+            success,
+            "leechers >=100 is success"
+        );
+
+        let thin = TorrentResult {
+            seeders: 50,
+            leechers: 7,
+            ..result("Dune")
+        };
+        let line = result_line(&thin, false, &state, &theme, 60);
+        assert_eq!(span_color(&line, "50"), warning, "seeders 1-99 is warning");
+        assert_eq!(span_color(&line, "7"), warning, "leechers 1-99 is warning");
+
+        let dead = TorrentResult {
+            seeders: 0,
+            leechers: 0,
+            ..result("Dune")
+        };
+        let line = result_line(&dead, false, &state, &theme, 60);
+        // Both columns render the '—' dash (unreported health) in dim.
+        assert_eq!(span_color(&line, "—"), dim, "zero seeders is dim");
+        assert_eq!(span_color(&line, "—"), dim, "zero leechers is dim");
     }
 
     #[test]

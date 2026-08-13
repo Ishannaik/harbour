@@ -48,6 +48,7 @@ keys
   d      download to the default folder
   D      download to a folder you pick
   o      change the default download folder
+  ← →    switch between the downloads and seeding tabs
   p      pause / resume seeding
   ?      show all keybinds
   q      quit
