@@ -50,7 +50,6 @@ use crate::input::Action;
 use crate::persist::{Config, Store};
 use crate::queue::{AddInput, AddOutcome, Queue};
 use crate::search::SearchEngine;
-use crate::sources::cache::SearchCache;
 use crate::theme::{Color, Theme};
 use crate::ui::player::{PickerMode, PlayerPicker};
 use crate::ui::settings::{RowKind, SettingsState, TextField};
@@ -1059,10 +1058,11 @@ pub async fn run(
     );
     queue.restore(items, safe_mode).await;
 
-    let search = SearchEngine::new(
-        crate::sources::registry(),
-        SearchCache::new(store.root().to_path_buf()),
-    );
+    // The one source: the indexer proxy. All ten site scrapers live in the
+    // user-run harbour-indexer service; the client ships zero scraping code.
+    let search = SearchEngine::new(vec![Arc::new(crate::sources::HttpSource::new(
+        config.indexer_url.clone(),
+    ))]);
 
     let (events_tx, mut events_rx) = mpsc::unbounded_channel();
     let mut app = App {
@@ -1952,11 +1952,15 @@ async fn download_selected(app: &mut App) {
 
 /// Asks the owning source for a magnet it did not supply at search time.
 async fn resolve_magnet(app: &App, result: &TorrentResult) -> Option<String> {
+    // The registry is a single `HttpSource`; a result's `source` is the *site*
+    // it came from (the indexer tags rows with it), so match by id when
+    // possible and otherwise fall back to the lone source — the indexer.
     let source = app
         .search
         .sources()
         .iter()
-        .find(|s| s.def().id == result.source)?
+        .find(|s| s.def().id == result.source)
+        .or_else(|| app.search.sources().first())?
         .clone();
     let ctx = SearchCtx {
         total_deadline: paths::source_timeout(),

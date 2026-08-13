@@ -1,9 +1,9 @@
-//! Search orchestration: fan-out, the deadline budget, merging, and the caches.
+//! Search orchestration: fan-out, the deadline budget, and merging.
 //!
 //! The engine owns this rather than the UI (`docs/plan-engine.md` §10 D1). The
-//! cache, the per-source deadlines, the host-health marker and the sticky mirror
-//! hint are all session state, and the merge reads all of it — splitting the
-//! merge into another layer would mean it reads state it does not own.
+//! per-source deadlines and the disabled-site set are session state, and the
+//! merge reads all of it — splitting the merge into another layer would mean
+//! it reads state it does not own.
 //!
 //! What the UI gets is one already-merged, already-deduplicated, already-sorted
 //! list plus per-source status events. It replaces its list wholesale; it never
@@ -12,16 +12,16 @@
 //! The shape of a search:
 //!
 //! 1. Every source starts at once, each with its own deadline and cancellation.
-//! 2. A cache hit answers without touching the network.
-//! 3. A source whose mirrors are all parked from recent hard failures is skipped
-//!    rather than re-probed — the negative TTL.
-//! 4. Results stream: each answer re-merges and emits the whole list, so the UI
+//! 2. A source the user disabled is skipped rather than spawned.
+//! 3. Results stream: each answer re-merges and emits the whole list, so the UI
 //!    fills in as sources land.
-//! 5. At the list deadline the UI stops waiting; sources still running stay
+//! 4. At the list deadline the UI stops waiting; sources still running stay
 //!    `Checking`, **not** `Offline`, and their results still land if they arrive.
+//!
+//! There is no client-side cache: it moved to the indexer with the scrapers
+//! (`docs/architecture.md`), so repeated queries hit the indexer again.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, Mutex};
 
 use tokio::sync::mpsc::UnboundedSender;
 
@@ -30,7 +30,6 @@ use crate::core::error::SourceError;
 use crate::core::types::{
     ArcSource, EngineEvent, SearchCtx, SourceId, SourceStatus, TorrentResult,
 };
-use crate::sources::cache::SearchCache;
 
 /// Merges results from every source into the one list the UI renders.
 ///
@@ -67,28 +66,23 @@ pub fn merge(results: Vec<TorrentResult>) -> Vec<TorrentResult> {
 /// Runs searches across the registry.
 pub struct SearchEngine {
     sources: Vec<ArcSource>,
-    cache: SearchCache,
-    /// Which mirror last answered, per source. This is the session state that
-    /// keeps the sources themselves stateless (`docs/sources.md` §1.1).
-    host_hints: Arc<Mutex<HashMap<SourceId, String>>>,
     /// Sources the user disabled in the sidebar: never queried, never merged.
     /// Empty = everything enabled.
     disabled: HashSet<SourceId>,
 }
 
 impl SearchEngine {
-    pub fn new(sources: Vec<ArcSource>, cache: SearchCache) -> Self {
+    pub fn new(sources: Vec<ArcSource>) -> Self {
         Self {
             sources,
-            cache,
-            host_hints: Arc::new(Mutex::new(HashMap::new())),
             disabled: HashSet::new(),
         }
     }
 
     /// Replaces the disabled-source set before a search. The app owns the
     /// truth (`Config.disabled_sources`); this is the engine's read-only view
-    /// so `start` can skip a disabled source before it is spawned.
+    /// so `start` can skip a disabled source before it is spawned and hand the
+    /// set to the sources that do run (the `HttpSource` sends it as `exclude`).
     pub fn set_disabled(&mut self, disabled: HashSet<SourceId>) {
         self.disabled = disabled;
     }
@@ -101,14 +95,6 @@ impl SearchEngine {
     )]
     pub fn sources(&self) -> &[ArcSource] {
         &self.sources
-    }
-
-    fn hint_for(&self, id: SourceId) -> Option<String> {
-        self.host_hints
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .get(&id)
-            .cloned()
     }
 
     /// Starts a search. Returns the token that cancels it.
@@ -127,69 +113,36 @@ impl SearchEngine {
             let source = source.clone();
             let id = source.def().id;
             // A source the user disabled is not queried at all — no fetch, no
-            // cache probe, no events, so its sidebar dot stays unknown.
+            // events, so its sidebar dot stays unknown. This also handles the
+            // `SourceId::Indexer` toggle (the whole-source switch).
             if self.disabled.contains(&id) {
                 continue;
             }
             let query = query.clone();
-            let cache = self.cache.clone();
-            let hints = self.host_hints.clone();
             let events = events.clone();
             let mut ctx = ctx.clone();
-            ctx.host_hint = self.hint_for(id);
+            // Hand the disabled-site set to the source (the HttpSource turns it
+            // into the `exclude` param), so the user's toggles reach the indexer.
+            ctx.disabled = self.disabled.clone();
 
-            tokio::spawn(run_source_search(
-                source, id, query, ctx, cache, hints, events,
-            ));
+            tokio::spawn(run_source_search(source, id, query, ctx, events));
         }
 
         cancel
     }
 }
 
-/// One source's whole search: cache, health gate, fetch, cache write.
+/// One source's whole search.
 async fn run_one(
     source: &ArcSource,
     query: &str,
     ctx: &SearchCtx,
-    cache: &SearchCache,
-    hints: &Arc<Mutex<HashMap<SourceId, String>>>,
 ) -> Result<Vec<TorrentResult>, SourceError> {
-    let id = source.def().id;
-
-    // A fresh cache entry answers without any network work at all (`FR-17`),
-    // which is what makes arrow-key browsing and repeated queries instant.
-    if let Some(hit) = cache.get(id, query) {
-        return Ok(hit);
-    }
-
-    let result = source.search(query, ctx).await;
-
-    match &result {
-        Ok(results) => {
-            // Successful answers are cached, *including empty ones*: a source
-            // that legitimately has nothing should not be re-asked on every
-            // keystroke.
-            cache.put(id, query, results);
-            if let Some(host) = ctx.host_hint.as_ref() {
-                cache.record_success(id, host);
-            }
-        }
-        Err(err) => {
-            // Failures never write a result entry — a dead source must never be
-            // resurrected from cache. They do mark the host, so a sick mirror is
-            // not re-probed for the next minute.
-            if let Some(host) = ctx.host_hint.as_ref() {
-                cache.record_failure(id, host, err);
-            }
-            let _ = hints;
-        }
-    }
-    result
+    source.search(query, ctx).await
 }
 
 /// Drives one source's whole search inside its spawn task: the status event,
-/// the fetch (with cache), then the outcome events.
+/// the fetch, then the outcome events.
 ///
 /// Module-level rather than a closure so the per-source nesting stays within
 /// the budget — the future passed to `tokio::spawn` is a single call.
@@ -198,8 +151,6 @@ async fn run_source_search(
     id: SourceId,
     query: String,
     ctx: SearchCtx,
-    cache: SearchCache,
-    hints: Arc<Mutex<HashMap<SourceId, String>>>,
     events: UnboundedSender<EngineEvent>,
 ) {
     let _ = events.send(EngineEvent::SourceStatus {
@@ -207,7 +158,7 @@ async fn run_source_search(
         status: SourceStatus::Checking,
     });
 
-    let outcome = run_one(&source, &query, &ctx, &cache, &hints).await;
+    let outcome = run_one(&source, &query, &ctx).await;
 
     if ctx.cancel.is_cancelled() {
         // A cancelled search must never touch the UI: its results
@@ -240,6 +191,7 @@ async fn run_source_search(
 mod tests {
     use super::*;
     use crate::core::types::{MagnetFuture, SearchFuture, Source, SourceDef, SourceGroup};
+    use std::sync::Arc;
     use std::sync::atomic::{AtomicU32, Ordering};
     use std::time::Duration;
 
@@ -365,39 +317,12 @@ mod tests {
         reports_health: true,
     };
 
-    fn temp_cache(tag: &str) -> SearchCache {
-        static N: AtomicU32 = AtomicU32::new(0);
-        let n = N.fetch_add(1, Ordering::Relaxed);
-        let dir =
-            std::env::temp_dir().join(format!("harbour-search-{tag}-{}-{n}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("temp dir");
-        SearchCache::new(dir)
-    }
-
     fn collect(rx: &mut tokio::sync::mpsc::UnboundedReceiver<EngineEvent>) -> Vec<EngineEvent> {
         let mut out = Vec::new();
         while let Ok(e) = rx.try_recv() {
             out.push(e);
         }
         out
-    }
-
-    /// Waits for a condition instead of sleeping a fixed amount.
-    ///
-    /// A fixed sleep is a bet that a spawned task finishes within it, and that
-    /// bet loses on a loaded CI runner — which is how a suite acquires the
-    /// intermittent failures nobody can reproduce. Polling to a generous
-    /// deadline is both faster in the common case and cannot flake.
-    async fn until(deadline: Duration, mut done: impl FnMut() -> bool) -> bool {
-        let end = tokio::time::Instant::now() + deadline;
-        while tokio::time::Instant::now() < end {
-            if done() {
-                return true;
-            }
-            tokio::time::sleep(Duration::from_millis(5)).await;
-        }
-        done()
     }
 
     /// Drains events until `want` of them have arrived, or the deadline passes.
@@ -436,7 +361,7 @@ mod tests {
             calls: Arc::new(AtomicU32::new(0)),
         });
 
-        let engine = SearchEngine::new(vec![good, bad], temp_cache("resilient"));
+        let engine = SearchEngine::new(vec![good, bad]);
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         engine.start(String::new(), SearchCtx::default(), tx);
         // Two Checking, one SourceAnswered + SourceResults, one SourceFailed.
@@ -474,7 +399,7 @@ mod tests {
             calls: Arc::new(AtomicU32::new(0)),
         });
 
-        let mut engine = SearchEngine::new(vec![cinevault, vault_index.clone()], temp_cache("disabled"));
+        let mut engine = SearchEngine::new(vec![cinevault, vault_index.clone()]);
         engine.set_disabled(HashSet::from([SourceId::VaultMovies]));
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         engine.start(String::new(), SearchCtx::default(), tx);
@@ -511,7 +436,7 @@ mod tests {
             delay: Duration::from_millis(200),
             calls: Arc::new(AtomicU32::new(0)),
         });
-        let engine = SearchEngine::new(vec![slow], temp_cache("checking"));
+        let engine = SearchEngine::new(vec![slow]);
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         engine.start(String::new(), SearchCtx::default(), tx);
 
@@ -535,7 +460,7 @@ mod tests {
             delay: Duration::from_millis(300),
             calls: Arc::new(AtomicU32::new(0)),
         });
-        let engine = SearchEngine::new(vec![slow], temp_cache("cancel"));
+        let engine = SearchEngine::new(vec![slow]);
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let cancel = engine.start(String::new(), SearchCtx::default(), tx);
 
@@ -551,80 +476,6 @@ mod tests {
                 .iter()
                 .any(|e| matches!(e, EngineEvent::SourceResults { .. })),
             "stale results from a replaced query must never reach the UI"
-        );
-    }
-
-    #[tokio::test]
-    async fn a_second_identical_search_is_served_from_cache() {
-        let calls = Arc::new(AtomicU32::new(0));
-        let source = Arc::new(ScriptedSource {
-            def: &CineVault_DEF,
-            rows: vec![result("aaa", 10, SourceId::CineVault, 1)],
-            error: None,
-            delay: Duration::ZERO,
-            calls: calls.clone(),
-        });
-        let engine = SearchEngine::new(vec![source], temp_cache("cachehit"));
-
-        for _ in 0..2 {
-            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-            engine.start("dune".into(), SearchCtx::default(), tx);
-            // Wait for the source to actually settle before searching again,
-            // or the second search races the first one's cache write.
-            drain_until(&mut rx, 3, Duration::from_secs(5)).await;
-        }
-        assert_eq!(
-            calls.load(Ordering::SeqCst),
-            1,
-            "FR-17: the second search must not touch the source"
-        );
-    }
-
-    #[tokio::test]
-    async fn an_empty_answer_is_cached_too() {
-        let calls = Arc::new(AtomicU32::new(0));
-        let source = Arc::new(ScriptedSource {
-            def: &CineVault_DEF,
-            rows: Vec::new(),
-            error: None,
-            delay: Duration::ZERO,
-            calls: calls.clone(),
-        });
-        let engine = SearchEngine::new(vec![source], temp_cache("emptycache"));
-        for _ in 0..2 {
-            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-            engine.start("nothing".into(), SearchCtx::default(), tx);
-            drain_until(&mut rx, 3, Duration::from_secs(5)).await;
-        }
-        assert_eq!(
-            calls.load(Ordering::SeqCst),
-            1,
-            "browsing a source with nothing to show must not re-hit it"
-        );
-    }
-
-    #[tokio::test]
-    async fn a_failure_is_never_cached() {
-        let calls = Arc::new(AtomicU32::new(0));
-        let source = Arc::new(ScriptedSource {
-            def: &CineVault_DEF,
-            rows: Vec::new(),
-            error: Some(SourceError::Network("refused".into())),
-            delay: Duration::ZERO,
-            calls: calls.clone(),
-        });
-        let engine = SearchEngine::new(vec![source], temp_cache("nocachefail"));
-        for _ in 0..2 {
-            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-            engine.start("dune".into(), SearchCtx::default(), tx);
-            drain_until(&mut rx, 2, Duration::from_secs(5)).await;
-            // The call counter is what this asserts on, so wait on it directly.
-            until(Duration::from_secs(5), || calls.load(Ordering::SeqCst) > 0).await;
-        }
-        assert_eq!(
-            calls.load(Ordering::SeqCst),
-            2,
-            "a dead source must never be resurrected from cache"
         );
     }
 }
