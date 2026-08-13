@@ -69,7 +69,9 @@ impl Ticker {
     /// the true inter-frame period (≈ 1/fps), which is the `dt` eased values
     /// should be advanced by. Call it at the top of the frame loop, before
     /// `next()`.
-    #[allow(dead_code)] // staged: the app loop's real-dt easing (the view advances eased bars by a nominal frame)
+    /// staged: the app loop's real-dt easing (the view advances eased bars by
+    /// a nominal frame instead).
+    #[allow(dead_code)]
     pub fn elapsed(&self) -> Duration {
         // Saturating on both sides: `last` predates the first boundary (the
         // `checked_sub` fallback keeps `last` when we are still inside the
