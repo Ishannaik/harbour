@@ -210,6 +210,16 @@ pub(crate) fn apply_event(app: &mut App, event: EngineEvent) {
                     SourceStatus::Online
                 },
             );
+            // The indexer answers with a per-site report (FR-15/18): fold its
+            // statuses into the ten sidebar dots. Only sites the indexer
+            // actually ran appear — anything it did not report keeps whatever
+            // dot it had, and a report never overwrites with Unknown.
+            for (site, (status, count)) in app.search.reported_source_health() {
+                if status != SourceStatus::Unknown {
+                    app.state.search.source_health.insert(site, status);
+                    app.state.search.source_counts.insert(site, count as usize);
+                }
+            }
             app.state.search.searching = still_searching(app);
         }
         EngineEvent::SourceResults { source, results } => {
@@ -345,7 +355,7 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::{Arc, Mutex};
 
-    use crate::core::types::Engine as _;
+    use crate::core::types::{Engine as _, SearchFuture, Source, SourceDef, SourceId};
     use crate::engine::fake::FakeEngine;
     use crate::persist::{Config, Store};
     use crate::queue::Queue;
@@ -440,5 +450,74 @@ mod tests {
         );
         assert!(app.queue.items().is_empty());
         assert!(engine.is_empty());
+    }
+
+    /// A source that reports per-site health without a network: the merge path
+    /// in `apply_event` reads it after `SourceAnswered`, exactly like the lone
+    /// `HttpSource` does with the indexer's `sources` array.
+    struct ReportingSource;
+
+    const REPORTING_DEF: SourceDef = SourceDef {
+        id: SourceId::Indexer,
+        label: "Reporting",
+        groups: &[],
+        homepage: "http://127.0.0.1:8765",
+        reports_health: true,
+    };
+
+    impl Source for ReportingSource {
+        fn def(&self) -> &'static SourceDef {
+            &REPORTING_DEF
+        }
+        fn search<'a>(&'a self, _query: &'a str, _ctx: &'a SearchCtx) -> SearchFuture<'a> {
+            Box::pin(async move { Ok(Vec::new()) })
+        }
+        fn reported_source_health(&self) -> HashMap<SourceId, (SourceStatus, u32)> {
+            HashMap::from([
+                (SourceId::Yts, (SourceStatus::Online, 3)),
+                (SourceId::Nyaa, (SourceStatus::Empty, 0)),
+                (SourceId::FitGirl, (SourceStatus::Offline, 0)),
+            ])
+        }
+    }
+
+    #[test]
+    fn reported_site_health_merges_into_the_sidebar_after_a_search() {
+        // FR-15/18: when the indexer answers, its per-site report must paint
+        // the ten sidebar dots — not just the proxy source's own dot.
+        let (mut app, _root) = test_app(Arc::new(FakeEngine::new()), "health-merge");
+        app.search = SearchEngine::new(vec![Arc::new(ReportingSource)]);
+        apply_event(
+            &mut app,
+            EngineEvent::SourceAnswered {
+                source: SourceId::Indexer,
+                count: 2,
+            },
+        );
+        assert_eq!(
+            app.state.search.source_health.get(&SourceId::Yts),
+            Some(&SourceStatus::Online),
+            "an online site gets a live dot"
+        );
+        assert_eq!(
+            app.state.search.source_health.get(&SourceId::Nyaa),
+            Some(&SourceStatus::Empty),
+            "an empty site is reachable-but-nothing-matched"
+        );
+        assert_eq!(
+            app.state.search.source_health.get(&SourceId::FitGirl),
+            Some(&SourceStatus::Offline),
+            "a failed site reads as down"
+        );
+        assert_eq!(
+            app.state.search.source_counts.get(&SourceId::Yts),
+            Some(&3),
+            "the reported count lands too"
+        );
+        assert_eq!(
+            app.state.search.source_health.get(&SourceId::Indexer),
+            Some(&SourceStatus::Online),
+            "the proxy source's own dot still comes from the event"
+        );
     }
 }

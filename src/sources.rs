@@ -9,21 +9,26 @@
 //!
 //! Wire contract (both sides must match exactly):
 //!
-//! * `GET {base}/search?q={query}&exclude={csv}` → `{"results":[TorrentResult…]}`
-//!   — `exclude` lists site `SourceId`s to skip, empty string = none.
+//! * `GET {base}/search?q={query}&exclude={csv}` →
+//!   `{"results":[TorrentResult…], "sources":[SourceReport…]}` — `exclude`
+//!   lists site `SourceId`s to skip, empty string = none. `sources` is the
+//!   indexer's per-site health (`id`/`status`/`count`), which the app folds
+//!   into the sidebar dots; an old indexer that omits it is tolerated.
 //! * `GET {base}/magnet?hash={info_hash}&source={SourceId}` → `{"magnet":…}`
 //!   or `404 {"error":…}`.
 //!
 //! A non-200 answer or a timeout is a hard host failure: the UI shows the
 //! error banner and marks the source `Offline` — never a silent empty list.
 
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use serde::Deserialize;
 
 use crate::core::error::SourceError;
 use crate::core::types::{
-    MagnetFuture, SearchCtx, SearchFuture, Source, SourceDef, SourceId, TorrentResult,
+    MagnetFuture, SearchCtx, SearchFuture, Source, SourceDef, SourceId, SourceStatus, TorrentResult,
 };
 
 #[cfg(test)]
@@ -44,6 +49,14 @@ const DEF: SourceDef = SourceDef {
 #[derive(Debug, Deserialize)]
 struct MagnetResponse {
     magnet: String,
+}
+
+/// One row of the indexer's per-site report (`sources` array).
+#[derive(Debug, Deserialize)]
+struct SourceReport {
+    id: String,
+    status: String,
+    count: u32,
 }
 
 /// Parses the indexer's search answer, dropping malformed rows instead of
@@ -84,11 +97,17 @@ fn parse_results(body: &str) -> Result<Vec<TorrentResult>, SourceError> {
 }
 
 /// One HTTP-backed [`Source`]: every search and magnet resolution is a single
-/// GET to the indexer. Stateless by contract, like every source.
+/// GET to the indexer. Stateless by contract, like every source — except the
+/// one shared per-site health store, which is the *indexer's* report, not
+/// source state: it rides the search answer and is handed back to the app.
 #[derive(Debug, Clone)]
 pub struct HttpSource {
     base_url: String,
     client: reqwest::Client,
+    /// The indexer's last per-site report (`sources` array), keyed by site id.
+    /// Shared so the app can read it after a search completes; clones of this
+    /// source (there is only ever one) all see the same store.
+    health: Arc<Mutex<HashMap<SourceId, (SourceStatus, u32)>>>,
 }
 
 impl HttpSource {
@@ -105,7 +124,11 @@ impl HttpSource {
                 eprintln!("harbour: falling back to a default HTTP client ({err})");
                 reqwest::Client::new()
             });
-        Self { base_url, client }
+        Self {
+            base_url,
+            client,
+            health: Arc::new(Mutex::new(HashMap::new())),
+        }
     }
 
     /// GETs `url` (already URL-encoded) inside the search budget.
@@ -132,6 +155,53 @@ impl HttpSource {
             .text()
             .await
             .map_err(|e| SourceError::Network(format!("reading indexer response: {e}")))
+    }
+
+    /// Records the indexer's per-site report (`sources` array) into the shared
+    /// store, replacing the previous report wholesale — the array covers every
+    /// source the indexer ran for this query.
+    ///
+    /// Defensive by contract: an answer without a `sources` array (an old
+    /// indexer, or a test stub) leaves the store untouched, and one malformed
+    /// entry never sinks the rest — it is skipped like a malformed row.
+    fn record_sources(&self, body: &str) {
+        let outer: serde_json::Value = match serde_json::from_str(body) {
+            Ok(value) => value,
+            Err(_) => return,
+        };
+        let Some(report) = outer.get("sources") else {
+            return;
+        };
+        let mut entries: HashMap<SourceId, (SourceStatus, u32)> = HashMap::new();
+        for entry in report.as_array().into_iter().flatten() {
+            let Ok(row) = serde_json::from_value::<SourceReport>(entry.clone()) else {
+                continue;
+            };
+            let status = match row.status.as_str() {
+                "online" => SourceStatus::Online,
+                "empty" => SourceStatus::Empty,
+                "offline" => SourceStatus::Offline,
+                // An unknown status string is a contract break for that entry;
+                // skipping it beats inventing a state the indexer never sent.
+                _ => continue,
+            };
+            let Some(id) = SourceId::parse(&row.id) else {
+                continue;
+            };
+            entries.insert(id, (status, row.count));
+        }
+        // Poison recovery: a thread that panicked while holding the lock must
+        // not take search health down with it — recover the guard and carry on.
+        let mut guard = self.health.lock().unwrap_or_else(|e| e.into_inner());
+        *guard = entries;
+    }
+
+    /// Snapshot of the per-site health the indexer last reported for a search,
+    /// keyed by site id. Empty until a search has answered with a report (or
+    /// when the indexer does not send one).
+    pub fn reported_status(&self) -> HashMap<SourceId, (SourceStatus, u32)> {
+        let guard = self.health.lock().unwrap_or_else(|e| e.into_inner());
+        guard.clone()
     }
 }
 
@@ -161,11 +231,18 @@ impl Source for HttpSource {
                 url.push_str(&excluded.join(","));
             }
             let body = self.get(&url, ctx).await?;
+            // The per-site report rides the same answer; an indexer that does
+            // not send one leaves the store untouched (FR-15/18).
+            self.record_sources(&body);
             // One malformed row must not sink the whole answer (FR-14): the
             // indexer concatenates every scraper's rows, and one schema drift
             // would otherwise hide the other nine sites' results.
             parse_results(&body)
         })
+    }
+
+    fn reported_source_health(&self) -> HashMap<SourceId, (SourceStatus, u32)> {
+        self.reported_status()
     }
 
     fn resolve_magnet<'a>(
@@ -492,6 +569,93 @@ mod tests {
             matches!(result, Err(SourceError::Network(_))),
             "connection refused is a source error: {result:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn the_sources_array_populates_the_health_store() {
+        // FR-15/18: the indexer's per-site report rides the search answer and
+        // must land in the store so the app can paint the sidebar dots.
+        let body = r#"{
+            "results": [],
+            "sources": [
+                {"id": "yts", "status": "online", "count": 3},
+                {"id": "nyaa", "status": "empty", "count": 0},
+                {"id": "fitgirl", "status": "offline", "count": 0}
+            ]
+        }"#
+        .to_string();
+        let (base, handle) = spawn_indexer(vec![(200, body)]);
+        let source = HttpSource::new(base);
+        source
+            .search("dune", &ctx(HashSet::new()))
+            .await
+            .expect("search");
+        let report = source.reported_status();
+        assert_eq!(report.get(&SourceId::Yts), Some(&(SourceStatus::Online, 3)));
+        assert_eq!(report.get(&SourceId::Nyaa), Some(&(SourceStatus::Empty, 0)));
+        assert_eq!(
+            report.get(&SourceId::FitGirl),
+            Some(&(SourceStatus::Offline, 0))
+        );
+        handle.join().expect("indexer thread");
+    }
+
+    #[tokio::test]
+    async fn a_malformed_sources_entry_is_skipped_not_fatal() {
+        // One bad entry (unknown id, unknown status, wrong-typed count) must
+        // not sink the healthy ones around it — same rule as result rows.
+        let body = r#"{
+            "results": [],
+            "sources": [
+                {"id": "not-a-source", "status": "online", "count": 1},
+                {"id": "yts", "status": "flying", "count": 1},
+                {"id": "nyaa", "status": "empty", "count": "lots"},
+                {"id": "fitgirl", "status": "offline", "count": 0}
+            ]
+        }"#
+        .to_string();
+        let (base, handle) = spawn_indexer(vec![(200, body)]);
+        let source = HttpSource::new(base);
+        source
+            .search("dune", &ctx(HashSet::new()))
+            .await
+            .expect("search");
+        let report = source.reported_status();
+        assert_eq!(
+            report.len(),
+            1,
+            "only the healthy entry survives: {report:?}"
+        );
+        assert_eq!(
+            report.get(&SourceId::FitGirl),
+            Some(&(SourceStatus::Offline, 0))
+        );
+        handle.join().expect("indexer thread");
+    }
+
+    #[tokio::test]
+    async fn an_answer_without_sources_keeps_the_previous_report() {
+        // Defensive: an old indexer (or a stub) omits the array; the store must
+        // keep whatever the last report said instead of being wiped.
+        let with =
+            r#"{"results":[],"sources":[{"id":"yts","status":"online","count":3}]}"#.to_string();
+        let without = r#"{"results":[]}"#.to_string();
+        let (base, handle) = spawn_indexer(vec![(200, with), (200, without)]);
+        let source = HttpSource::new(base);
+        source
+            .search("dune", &ctx(HashSet::new()))
+            .await
+            .expect("search");
+        source
+            .search("other", &ctx(HashSet::new()))
+            .await
+            .expect("search");
+        assert_eq!(
+            source.reported_status().get(&SourceId::Yts),
+            Some(&(SourceStatus::Online, 3)),
+            "a report-less answer leaves the store as it was"
+        );
+        handle.join().expect("indexer thread");
     }
 
     #[tokio::test]

@@ -12,7 +12,7 @@
 //!   makes them either stale between writes or a whole-file rewrite per poll
 //!   tick, and `FR-50` says resume state comes from the engine anyway.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::future::Future;
 use std::path::PathBuf;
@@ -256,6 +256,15 @@ pub trait Source: Send + Sync + 'static {
     /// Must be abort-safe: the engine drops the future on cancellation or when
     /// the deadline expires.
     fn search<'a>(&'a self, query: &'a str, ctx: &'a SearchCtx) -> SearchFuture<'a>;
+
+    /// Per-site health this source last reported, if any.
+    ///
+    /// The default reports nothing. The lone `HttpSource` overrides it with the
+    /// indexer's `sources` array, so the app can paint the ten *site* sidebar
+    /// dots from one indexer answer without running its own probes (FR-15/18).
+    fn reported_source_health(&self) -> HashMap<SourceId, (SourceStatus, u32)> {
+        HashMap::new()
+    }
 
     /// Produce the magnet for a result whose `magnet` is `None`.
     ///
