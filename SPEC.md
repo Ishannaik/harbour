@@ -94,6 +94,11 @@ requiring private announces; GPU/ASCII-image rendering.
   tpb-movies (Movies, JSON API apibay.org), x1337-movies (Movies, HTML scrape),
   eztv (TV, RSS), tpb-tv (TV, JSON API apibay.org), x1337-tv (TV, HTML scrape),
   nyaa (Anime, RSS), subsplease (Anime, RSS), bittorrented (Movies, HTML scrape).
+  The fan-out happens **inside the user-run indexer** (`harbour-indexer`): the
+  client sends one `GET /search` to `indexer_url` and the indexer runs the
+  enabled scrapers concurrently, returning the concatenated results. The client
+  never scrapes; user-disabled sources are sent as `exclude` so they are never
+  queried.
 - **FR-12** Enter with an empty query triggers curated top-list browsing (per-source
   curated items, same result display as search).
 - **FR-13** Results stream into the list as each source answers — the UI renders partial
