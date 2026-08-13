@@ -12,6 +12,7 @@
 //!   makes them either stale between writes or a whole-file rewrite per poll
 //!   tick, and `FR-50` says resume state comes from the engine anyway.
 
+use std::collections::HashSet;
 use std::fmt;
 use std::future::Future;
 use std::path::PathBuf;
@@ -42,6 +43,12 @@ pub type InfoHash = String;
 /// which the search cache requires because it persists results verbatim.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum SourceId {
+    /// The client-side proxy source (`src/sources.rs`): every search goes to
+    /// the user-run indexer over HTTP. Deliberately **not** in [`SourceId::ALL`]
+    /// — `ALL` is the ten toggleable *sites* the indexer searches, and the
+    /// sidebar/settings iterate it.
+    #[serde(rename = "indexer")]
+    Indexer,
     #[serde(rename = "fitgirl")]
     FitGirl,
     #[serde(rename = "yts")]
@@ -84,6 +91,7 @@ impl SourceId {
     /// must stay filesystem-safe and must never change casually.
     pub fn as_str(self) -> &'static str {
         match self {
+            SourceId::Indexer => "indexer",
             SourceId::FitGirl => "fitgirl",
             SourceId::Yts => "yts",
             SourceId::TpbMovies => "tpb-movies",
@@ -207,6 +215,10 @@ pub struct SearchCtx {
     /// "Start probing at this host." The engine remembers which mirror answered
     /// last so a dead primary is not retried first on every search.
     pub host_hint: Option<String>,
+    /// Sites the user disabled; the `HttpSource` sends them as the `exclude`
+    /// param so the indexer never queries them. Filled by the search engine
+    /// from its own disabled set before a search starts.
+    pub disabled: HashSet<SourceId>,
     pub cancel: CancelToken,
 }
 
@@ -216,6 +228,7 @@ impl Default for SearchCtx {
             list_deadline: Duration::from_secs(3),
             total_deadline: Duration::from_secs(10),
             host_hint: None,
+            disabled: HashSet::new(),
             cancel: CancelToken::new(),
         }
     }
