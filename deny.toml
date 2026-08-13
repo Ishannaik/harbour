@@ -14,6 +14,14 @@ allow = [
     "Unlicense",
     "CC0-1.0",
     "Unicode-3.0",
+    # MPL-2.0: weak/file-level copyleft (not project-infecting). Required by
+    # the reqwest → option-ext chain (core HTTP dep); refusing it would make
+    # the deny gate permanently red on a dependency every request path uses.
+    "MPL-2.0",
+    # CDLA-Permissive-2.0: OSI-approved permissive license (data-focused).
+    # Required by webpki-root-certs (the Mozilla root-cert bundle backing
+    # reqwest's default-tls), a data crate — permissive by design.
+    "CDLA-Permissive-2.0",
 ]
 
 # Major-version duplicates across the transitive tree (thiserror 1/2,
