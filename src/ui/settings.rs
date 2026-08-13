@@ -160,6 +160,7 @@ pub fn row_label(index: usize) -> Option<&'static str> {
 /// Sidebar label per source — mirrors `ui/search.rs`'s matrix labels.
 fn source_label(id: SourceId) -> &'static str {
     match id {
+        SourceId::Indexer => "Indexer",
         SourceId::GamesHub => "GamesHub",
         SourceId::CineVault => "CineVault",
         SourceId::VaultMovies => "VaultIndex",

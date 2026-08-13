@@ -13,8 +13,8 @@ verbatim — no alternatives.
 ## 1. Vision
 
 harbour is a terminal-native torrent client that opens straight into a search bar: type a
-query, press Enter, and curated results stream in from 10 hand-picked sources (GamesHub, CineVault,
-VaultIndex, ReelIndex, ShowPort, TsukiBase, FanSubs, TorrentHub) as each one answers, tagged with size,
+query, press Enter, and curated results stream in from 10 hand-picked sources (defined by the
+user-run indexer, not the client) as each one answers, tagged with size,
 seeders, and leechers. Downloads run in the background while you keep searching — queued,
 throttled by a concurrency cap, resumable across restarts, and seeding by default on
 completion — all rendered with omp-grade terminal polish: 30fps synchronized output, zero
@@ -89,11 +89,12 @@ requiring private announces; GPU/ASCII-image rendering.
 
 ### 4.2 Search & browse (FR-11 … FR-22)
 
-- **FR-11** Enter with a non-empty query searches all 10 sources in parallel:
-  gameshub (Games, HTML scrape), cinevault (Movies, JSON API, cinevault.mx/.am/.rs fallback hosts),
-  vault-movies (Movies, JSON API mirror-api.org), reel-movies (Movies, HTML scrape),
-  showport (TV, RSS), vault-tv (TV, JSON API mirror-api.org), reel-tv (TV, HTML scrape),
-  tsukibase (Anime, RSS), fansubs (Anime, RSS), torrent-hub (Movies, HTML scrape).
+- **FR-11** Enter with a non-empty query searches all 10 curated sources in parallel
+  (sources are defined by the user-run indexer, not the client). The fan-out
+  happens **inside the indexer** (`harbour-indexer`): the client sends one
+  `GET /search` to `indexer_url` and the indexer runs the enabled scrapers
+  concurrently, returning the concatenated results. The client never scrapes;
+  user-disabled sources are sent as `exclude` so they are never queried.
 - **FR-12** Enter with an empty query triggers curated top-list browsing (per-source
   curated items, same result display as search).
 - **FR-13** Results stream into the list as each source answers — the UI renders partial
@@ -451,10 +452,10 @@ requiring private announces; GPU/ASCII-image rendering.
 - **OQ-4** Non-goals carry feasibility spikes in phase 7 (cs.rin.ru/online-fix.me
   scraping, cover art via sixel/halfblocks, headless daemons); their specs are deferred
   until the spikes conclude.
-- **OQ-5** ShowPort/TsukiBase/FanSubs RSS mirrors can rotate hosts like CineVault's; the canonical
-  host list per source lives in `docs/sources.md` and may gain fallbacks without a spec
-  change.
-- **OQ-6** `torrent-hub` is an HTML scrape with no defined mirror policy; whether it gets
-  multi-host fallback like CineVault is decided when its first scrape fixture lands.
+- **OQ-5** RSS/JSON mirrors can rotate hosts; the canonical host list per source lives in
+  the `harbour-indexer` repo and may gain fallbacks without a spec change.
+- **OQ-6** HTML-scrape sources have no defined mirror policy; whether one gets multi-host
+  fallback like the JSON sources is decided when its first scrape fixture lands — an
+  indexer-repo concern, not a client one.
 - **OQ-7** Minimum supported terminal size (UR-12 says 80×24) may be raised if watch-mode
   playback controls require more room — revisit in phase 6.

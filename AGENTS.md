@@ -9,10 +9,10 @@ handshake between the three workstreams.
 | --- | --- | --- | --- |
 | **Terminal UI** | Ishan | theme schema, animation loop, splash / search / downloads views, now-playing panel | 1 (UI parts), 2, 6 (UI) |
 | **Engine & Foundation** | Sarthak (expert) | crate skeleton, shared-types freeze, librqbit integration, queue, persistence, bootguard, resume | 1 (types), 4, 5 |
-| **Sources & Cache** | Dhruv | 10 scrapers, magnet builder, resilient fetch, search cache, offline health | 3, 7 (spikes) |
+| **Sources (indexer)** | Dhruv | the `harbour-indexer` repo: scrapers, magnet builder, resilient fetch, search cache, offline health | 3, 7 (spikes) |
 
 - **Sarthak (expert)** owns the load-bearing contracts and reviews all PRs.
-- **Dhruv (newbie)** takes the sources on-ramp: RSS first (ShowPort, TsukiBase) → JSON (CineVault, VaultIndex) → HTML (ReelIndex, GamesHub, TorrentHub). Each scraper is a complete, testable deliverable on its own.
+- **Dhruv (newbie)** owns the indexer on-ramp (in `harbour-indexer`, a separate repo): the shared fetch layer and one scraper at a time, each a complete, testable deliverable.
 - **Ishan** owns the UI. Shared types belong to Sarthak (phase 1); the UI builds against the frozen types on fake data until integration.
 
 ## Commands
@@ -31,7 +31,7 @@ Quality gates (FR-62..FR-66): CI enforces fmt/clippy/tests/audits on every PR; `
 
 1. **Never push to `main`.** Branch per workstream: `ui/*`, `engine/*`, `sources/*`. Integrate via PR with ≥1 review (Sarthak reviews engine + sources; anyone reviews UI).
 2. **SPEC.md is the referee.** Disagreement → SPEC wins. Behavior missing from SPEC → add it to SPEC first, then implement.
-3. **Read before coding:** `SPEC.md`, `docs/design.md`, `docs/architecture.md`, and your track's doc (`docs/sources.md` or `docs/theming.md`).
+3. **Read before coding:** `SPEC.md`, `docs/design.md`, `docs/architecture.md`, and your track's doc (`docs/theming.md`; indexer work is documented in the `harbour-indexer` repo).
 4. **Shared-types freeze** (`TorrentResult`, `Source` trait, `QueueStatus`, engine event enum) is Sarthak's, lands in phase 1. Everything compiles against it.
 5. **Small PRs** (<400 lines, one concern), description references SPEC/FR numbers.
 6. **Comments explain why, not what.** Invariants and tradeoffs get a comment at the decision site. `///` rustdoc on public items.
@@ -43,7 +43,7 @@ Quality gates (FR-62..FR-66): CI enforces fmt/clippy/tests/audits on every PR; `
 
 - **UI:** `cargo run` → splash renders, views navigable on fake data; ratatui buffer-snapshot tests.
 - **Engine:** integration test gated behind `HARBOUR_TEST_NET=1` with a real tiny magnet; queue/persist unit tests.
-- **Sources:** fixture tests per scraper (`docs/sources.md` §parsing); manual smoke: `harbour` search shows results from live sources.
+- **Sources (indexer):** fixture tests per scraper (`harbour-indexer` repo §parsing); manual smoke: `harbour` search shows results once an indexer is running.
 
 ## Shared vocabulary (normative)
 

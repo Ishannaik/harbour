@@ -54,6 +54,10 @@ pub struct Config {
     /// merged. Empty = everything enabled (additive: configs written by
     /// older builds keep working).
     pub disabled_sources: Vec<SourceId>,
+    /// Base URL of the user-run indexer service (`harbour-indexer`). The
+    /// client ships zero scrapers; every search and magnet resolution is one
+    /// HTTP call to this address. Defaults to the indexer's default bind.
+    pub indexer_url: String,
     /// Global download cap in MiB/s; None = unlimited (librqbit's session
     /// rate limiter, applied live from settings).
     pub download_limit_mib: Option<u64>,
@@ -93,6 +97,7 @@ impl Default for Config {
             trackers: Vec::new(),
             player: None,
             disabled_sources: Vec::new(),
+            indexer_url: "http://127.0.0.1:8765".into(),
             download_limit_mib: None,
             upload_limit_mib: None,
             alt_download_limit_mib: None,
@@ -556,6 +561,7 @@ mod tests {
             trackers: vec!["udp://tracker.example:80".into()],
             player: Some("mpv".into()),
             disabled_sources: vec![SourceId::GamesHub, SourceId::TsukiBase],
+            indexer_url: "http://127.0.0.1:9999".into(),
             download_limit_mib: Some(25),
             upload_limit_mib: Some(10),
             alt_download_limit_mib: Some(100),
@@ -586,6 +592,10 @@ mod tests {
         assert_eq!(cfg.theme, "titanium");
         assert!(cfg.seed_by_default);
         assert!(cfg.trackers.is_empty());
+        assert_eq!(
+            cfg.indexer_url, "http://127.0.0.1:8765",
+            "a first run points at the indexer's default bind"
+        );
     }
 
     #[test]
@@ -614,6 +624,10 @@ mod tests {
         assert!(
             cfg.disabled_sources.is_empty(),
             "a config without the key keeps every source enabled"
+        );
+        assert_eq!(
+            cfg.indexer_url, "http://127.0.0.1:8765",
+            "unspecified keys keep their default"
         );
     }
 
