@@ -30,8 +30,8 @@ use std::time::{Duration, Instant};
 
 use crate::core::error::EngineError;
 use crate::core::types::{
-    AddRequest, CompletedItem, Engine, EngineEvent, EngineItemState, EngineStats, InfoHash,
-    ItemView, QueueItem, QueueStatus, SourceId, project_status,
+    AddBytesRequest, AddRequest, CompletedItem, Engine, EngineEvent, EngineItemState, EngineStats,
+    InfoHash, ItemView, QueueItem, QueueStatus, SourceId, project_status,
 };
 
 /// How long a freshly (re-)started seed is exempt from the file-gone detector.
@@ -62,6 +62,10 @@ pub struct AddInput {
     /// `None` when the magnet still has to be resolved from a detail page; the
     /// item is accepted and stays `Queued` until it is supplied.
     pub magnet: Option<String>,
+    /// Raw `.torrent` bytes when this item is added from a file rather than a
+    /// magnet (`FR-02`/`FR-39`). Mutually exclusive with `magnet` in practice;
+    /// an item with either may start.
+    pub bytes: Option<Vec<u8>>,
     pub dir: PathBuf,
     pub size_bytes: u64,
 }
@@ -75,7 +79,8 @@ pub enum AddOutcome {
     Queued,
     /// Already known — focus the existing row instead of creating a duplicate.
     Duplicate,
-    /// Known and previously failed; it has been reset and retried.
+    /// Known and previously failed or flagged missing; it has been reset and
+    /// retried (a `Failed` retry, or a `Missing` re-check, `FR-46`).
     Retried,
 }
 
@@ -168,16 +173,21 @@ impl Queue {
     ///
     /// Duplicate detection is by infohash (`FR-56`): a second add of a known id
     /// focuses the existing row. A previously *failed* item is the exception —
-    /// re-adding it is how a user retries.
+    /// re-adding it is how a user retries. A `Missing` item is the other
+    /// (`FR-46`): its files were flagged gone, so re-adding is the explicit
+    /// re-check that restarts it against whatever is on disk.
     pub async fn add(&mut self, input: AddInput, now_ms: i64) -> AddOutcome {
         if let Some(existing) = self.items.iter_mut().find(|i| i.id == input.id) {
-            if existing.status != QueueStatus::Failed {
+            if !matches!(existing.status, QueueStatus::Failed | QueueStatus::Missing) {
                 return AddOutcome::Duplicate;
             }
             existing.status = QueueStatus::Queued;
             existing.error = None;
             if existing.magnet.is_none() {
                 existing.magnet = input.magnet;
+            }
+            if existing.bytes.is_none() {
+                existing.bytes = input.bytes;
             }
             self.promote().await;
             return AddOutcome::Retried;
@@ -192,6 +202,7 @@ impl Queue {
             now_ms,
         );
         item.total_bytes = input.size_bytes;
+        item.bytes = input.bytes;
         let id = item.id.clone();
         self.items.push(item);
         self.runtime.insert(id.clone(), Runtime::default());
@@ -214,9 +225,10 @@ impl Queue {
     /// Starts queued items oldest-first while slots are free.
     ///
     /// With no cap this still runs, because items restored from a previously
-    /// capped run come back `Queued` and must start. An item without a magnet
-    /// is skipped rather than started — it is waiting on resolution, not on a
-    /// slot — and must not block the items behind it.
+    /// capped run come back `Queued` and must start. An item with neither a
+    /// magnet nor `.torrent` bytes is skipped rather than started — it is
+    /// waiting on resolution, not on a slot — and must not block the items
+    /// behind it.
     pub async fn promote(&mut self) {
         loop {
             if !self.slot_free() {
@@ -225,7 +237,9 @@ impl Queue {
             let next = self
                 .items
                 .iter()
-                .filter(|i| i.status == QueueStatus::Queued && i.magnet.is_some())
+                .filter(|i| {
+                    i.status == QueueStatus::Queued && (i.magnet.is_some() || i.bytes.is_some())
+                })
                 .min_by_key(|i| i.added_at_epoch_ms)
                 .map(|i| i.id.clone());
             let Some(id) = next else { return };
@@ -237,25 +251,44 @@ impl Queue {
         }
     }
 
+    /// Hands one durable item to the engine: from its `.torrent` bytes when it
+    /// was added from a file, otherwise from its magnet.
+    async fn add_item_to_engine(&self, item: &QueueItem) -> Result<(), EngineError> {
+        let trackers = self.trackers.clone();
+        match &item.bytes {
+            Some(bytes) => {
+                self.engine
+                    .add_bytes(AddBytesRequest {
+                        bytes: bytes.clone(),
+                        dir: item.dir.clone(),
+                        trackers,
+                    })
+                    .await
+            }
+            None => {
+                let magnet = item.magnet.clone().unwrap_or_default();
+                self.engine
+                    .add(AddRequest {
+                        id: item.id.clone(),
+                        magnet,
+                        dir: item.dir.clone(),
+                        trackers,
+                    })
+                    .await
+            }
+        }
+    }
+
     /// Hands one item to the engine. Returns false if it failed to start.
     async fn start(&mut self, id: &str) -> bool {
         let Some(idx) = self.items.iter().position(|i| i.id == id) else {
             return false;
         };
-        let (magnet, dir) = {
-            let item = &self.items[idx];
-            match &item.magnet {
-                Some(m) => (m.clone(), item.dir.clone()),
-                None => return false,
-            }
-        };
-        let req = AddRequest {
-            id: id.to_owned(),
-            magnet,
-            dir,
-            trackers: self.trackers.clone(),
-        };
-        match self.engine.add(req).await {
+        let item = &self.items[idx];
+        if item.magnet.is_none() && item.bytes.is_none() {
+            return false;
+        }
+        match self.add_item_to_engine(item).await {
             Ok(()) => {
                 let item = &mut self.items[idx];
                 item.status = QueueStatus::Downloading;
@@ -527,25 +560,17 @@ impl Queue {
         let seeds: Vec<InfoHash> = self
             .items
             .iter()
-            .filter(|i| i.status == QueueStatus::Seeding && i.magnet.is_some())
+            .filter(|i| {
+                i.status == QueueStatus::Seeding && (i.magnet.is_some() || i.bytes.is_some())
+            })
             .map(|i| i.id.clone())
             .collect();
         for id in seeds {
-            let (magnet, dir) = {
-                // `id` was collected from `self.items` moments ago; the item
-                // cannot have vanished in between (no mutation in this loop).
-                let item = self
-                    .get(&id)
-                    .unwrap_or_else(|| unreachable!("id came from self.items"));
-                (item.magnet.clone().unwrap_or_default(), item.dir.clone())
-            };
-            let req = AddRequest {
-                id: id.clone(),
-                magnet,
-                dir,
-                trackers: self.trackers.clone(),
-            };
-            if let Err(err) = self.engine.add(req).await
+            let item = self
+                .get(&id)
+                .cloned()
+                .unwrap_or_else(|| unreachable!("id came from self.items"));
+            if let Err(err) = self.add_item_to_engine(&item).await
                 && let Some(item) = self.items.iter_mut().find(|i| i.id == id)
             {
                 // A seed that will not restart is visible and paused, not
@@ -603,6 +628,7 @@ mod tests {
             name: format!("item-{id}"),
             source: Some(SourceId::Yts),
             magnet: Some(format!("magnet:?xt=urn:btih:{}", id.repeat(40))),
+            bytes: None,
             dir: PathBuf::from("/tmp/dl"),
             size_bytes: 1000,
         }
@@ -683,6 +709,115 @@ mod tests {
         let item = q.get(&id_of("a")).unwrap();
         assert_eq!(item.status, QueueStatus::Downloading);
         assert!(item.error.is_none(), "the old error is cleared on retry");
+    }
+
+    #[tokio::test]
+    async fn re_adding_a_missing_item_rechecks_it() {
+        // FR-46: the file-gone detector flags a seed `Missing`; re-adding the
+        // same id must restart it as a re-check, not be swallowed as a
+        // duplicate — that is the only way a `Missing` row comes back.
+        let (mut q, engine) = setup(0);
+        q.add(input("a", 1), 1).await;
+        engine.deliver_metadata(&id_of("a"), "Example", 1000);
+        engine.complete(&id_of("a"));
+        let t0 = Instant::now();
+        q.tick(t0).await;
+        engine.lose_files(&id_of("a"));
+        q.tick(t0 + SEED_GRACE + Duration::from_secs(1)).await;
+        q.tick(t0 + SEED_GRACE + Duration::from_secs(2)).await;
+        assert_eq!(q.get(&id_of("a")).unwrap().status, QueueStatus::Missing);
+        assert!(!engine.contains(&id_of("a")), "the detector stopped it");
+
+        assert_eq!(q.add(input("a", 2), 2).await, AddOutcome::Retried);
+        let item = q.get(&id_of("a")).unwrap();
+        assert_eq!(
+            item.status,
+            QueueStatus::Downloading,
+            "the re-check restarts the torrent"
+        );
+        assert!(item.error.is_none());
+        assert!(engine.contains(&id_of("a")), "the engine holds it again");
+    }
+
+    #[tokio::test]
+    async fn a_torrent_bytes_add_starts_under_its_own_infohash() {
+        // FR-02/.39: an item added from raw `.torrent` bytes is keyed by the
+        // hash the engine derives from the payload, so the poll and restart
+        // both match, and a second add of the same file dedupes by hash.
+        let (mut q, engine) = setup(0);
+        let payload = b"d4:infod6:lengthi5e4:name3:fooe".to_vec();
+        let hash = engine.torrent_info_hash(&payload).expect("the fake parses");
+
+        let outcome = q
+            .add(
+                AddInput {
+                    id: hash.clone(),
+                    name: "movie".into(),
+                    source: None,
+                    magnet: None,
+                    bytes: Some(payload.clone()),
+                    dir: PathBuf::from("/tmp/dl"),
+                    size_bytes: 0,
+                },
+                1,
+            )
+            .await;
+        assert_eq!(outcome, AddOutcome::Started);
+
+        let item = q.get(&hash).expect("keyed by the file's own hash");
+        assert_eq!(item.status, QueueStatus::Downloading);
+        assert!(engine.contains(&hash), "the engine keys identically");
+        assert_eq!(q.items().len(), 1);
+
+        // Same payload again: FR-56 dedupe by infohash still holds for bytes.
+        assert_eq!(
+            q.add(
+                AddInput {
+                    id: hash.clone(),
+                    name: "movie".into(),
+                    source: None,
+                    magnet: None,
+                    bytes: Some(payload),
+                    dir: PathBuf::from("/tmp/dl"),
+                    size_bytes: 0,
+                },
+                2,
+            )
+            .await,
+            AddOutcome::Duplicate
+        );
+        assert_eq!(q.items().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_queued_torrent_bytes_item_keeps_its_bytes() {
+        // A file-add behind a full cap must not lose its payload: the bytes
+        // stay on the durable item until a slot frees (FR-39).
+        let (mut q, _e) = setup(1);
+        let payload = b"d4:infod6:lengthi5e4:name3:fooe".to_vec();
+        let hash = {
+            let engine = q.engine().clone();
+            // the fake derives the id from the payload
+            engine.torrent_info_hash(&payload).expect("parses")
+        };
+        q.add(input("b", 2), 2).await; // takes the single slot
+        q.add(
+            AddInput {
+                id: hash.clone(),
+                name: "movie".into(),
+                source: None,
+                magnet: None,
+                bytes: Some(payload.clone()),
+                dir: PathBuf::from("/tmp/dl"),
+                size_bytes: 0,
+            },
+            1,
+        )
+        .await;
+
+        let item = q.get(&hash).unwrap();
+        assert_eq!(item.status, QueueStatus::Queued, "waits for a slot");
+        assert_eq!(item.bytes.as_deref(), Some(payload.as_slice()));
     }
 
     #[tokio::test]

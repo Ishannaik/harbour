@@ -14,7 +14,8 @@ use std::sync::Mutex;
 
 use crate::core::error::EngineError;
 use crate::core::types::{
-    AddRequest, Engine, EngineFuture, EngineItemState, EngineSnapshot, EngineStats, InfoHash,
+    AddBytesRequest, AddRequest, Engine, EngineFuture, EngineItemState, EngineSnapshot,
+    EngineStats, InfoHash,
 };
 
 #[derive(Debug, Clone)]
@@ -39,6 +40,22 @@ impl FakeTorrent {
             name: None,
         }
     }
+}
+
+/// A deterministic infohash for `.torrent` bytes.
+///
+/// The real engine hashes the bencoded info dict (SHA-1); a fake cannot parse
+/// bencode, so it derives a stable 40-hex id from the bytes instead. That is
+/// enough for the queue's keying contract — the same payload always lands
+/// under the same id — which is exactly what the `.torrent`-enqueue tests
+/// exercise (`FR-02`/`FR-39`).
+fn fake_hash(bytes: &[u8]) -> InfoHash {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for &b in bytes {
+        h ^= u64::from(b);
+        h = h.wrapping_mul(0x100_0000_01b3);
+    }
+    format!("{:040x}", h)
 }
 
 /// In-memory engine. Cheap to clone-share behind an `Arc`.
@@ -171,6 +188,30 @@ impl Engine for FakeEngine {
             // error: the queue treats add as idempotent (FR-56).
             self.map()
                 .entry(req.id)
+                .or_insert_with(|| FakeTorrent::new(0));
+            Ok(())
+        })
+    }
+
+    fn torrent_info_hash(&self, bytes: &[u8]) -> Option<InfoHash> {
+        Some(fake_hash(bytes))
+    }
+
+    fn add_bytes<'a>(&'a self, req: AddBytesRequest) -> EngineFuture<'a, Result<(), EngineError>> {
+        Box::pin(async move {
+            if let Some(err) = self
+                .next_add_error
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .take()
+            {
+                return Err(err);
+            }
+            // Same idempotent-entry policy as `add`, keyed by the hash the
+            // payload maps to — mirroring how the real engine keys by the
+            // infohash inside the file.
+            self.map()
+                .entry(fake_hash(&req.bytes))
                 .or_insert_with(|| FakeTorrent::new(0));
             Ok(())
         })
