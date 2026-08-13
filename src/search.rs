@@ -97,6 +97,19 @@ impl SearchEngine {
         &self.sources
     }
 
+    /// Per-site health the sources reported on their last search, merged into
+    /// one map. With the lone `HttpSource` this is the indexer's `sources`
+    /// array; a source that never reports contributes nothing.
+    pub fn reported_source_health(&self) -> HashMap<SourceId, (SourceStatus, u32)> {
+        let mut all: HashMap<SourceId, (SourceStatus, u32)> = HashMap::new();
+        for source in &self.sources {
+            for (id, report) in source.reported_source_health() {
+                all.insert(id, report);
+            }
+        }
+        all
+    }
+
     /// Starts a search. Returns the token that cancels it.
     ///
     /// Cancellation is the caller's handle on `FR-20`: a new query cancels the

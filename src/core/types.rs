@@ -12,7 +12,7 @@
 //!   makes them either stale between writes or a whole-file rewrite per poll
 //!   tick, and `FR-50` says resume state comes from the engine anyway.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::future::Future;
 use std::path::PathBuf;
@@ -257,6 +257,15 @@ pub trait Source: Send + Sync + 'static {
     /// the deadline expires.
     fn search<'a>(&'a self, query: &'a str, ctx: &'a SearchCtx) -> SearchFuture<'a>;
 
+    /// Per-site health this source last reported, if any.
+    ///
+    /// The default reports nothing. The lone `HttpSource` overrides it with the
+    /// indexer's `sources` array, so the app can paint the ten *site* sidebar
+    /// dots from one indexer answer without running its own probes (FR-15/18).
+    fn reported_source_health(&self) -> HashMap<SourceId, (SourceStatus, u32)> {
+        HashMap::new()
+    }
+
     /// Produce the magnet for a result whose `magnet` is `None`.
     ///
     /// The default is correct for every source that already returns one, so
@@ -341,6 +350,13 @@ pub struct QueueItem {
     /// a paused download, and survives restarts so a restored seed is not
     /// mistaken for an unfinished one.
     pub finished: bool,
+    /// The raw `.torrent` bytes this item was added from, when it was added
+    /// from a file rather than a magnet (`FR-02`/`FR-39`). Persisted so a
+    /// queued file-add survives a restart; absent for the ordinary magnet
+    /// path. `#[serde(default)]` keeps ledgers written before this field
+    /// readable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bytes: Option<Vec<u8>>,
     /// Total size once metadata has arrived; 0 before that.
     pub total_bytes: u64,
     /// Why this item is `Failed`, kept so the reason survives a restart.
@@ -367,6 +383,7 @@ impl QueueItem {
             dir,
             status: QueueStatus::Queued,
             finished: false,
+            bytes: None,
             total_bytes: 0,
             error: None,
             added_at_epoch_ms,
@@ -536,6 +553,21 @@ pub struct AddRequest {
     pub trackers: Vec<String>,
 }
 
+/// What the engine is asked to start from a `.torrent` file's raw bytes
+/// (`FR-02`/`FR-39`).
+///
+/// No `id`: a `.torrent` carries its own infohash, so the engine derives it
+/// from the payload (see [`Engine::torrent_info_hash`]) and the caller keys
+/// the queue item by it — the same id the engine then reports snapshots
+/// under, and the same id a restart restores.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AddBytesRequest {
+    pub bytes: Vec<u8>,
+    pub dir: PathBuf,
+    /// Extra announce URLs appended to whatever the file carries.
+    pub trackers: Vec<String>,
+}
+
 /// One engine observation, as read by the queue's poll.
 #[derive(Debug, Clone, PartialEq)]
 pub struct EngineSnapshot {
@@ -582,6 +614,30 @@ pub trait Engine: Send + Sync {
     /// default no-op — the trait is frozen, so every implementor compiles;
     /// librqbit's session limiter applies instantly, no restart needed.
     fn set_speed_limits(&self, _download_mib: Option<u64>, _upload_mib: Option<u64>) {}
+
+    /// The infohash `.torrent` bytes will be keyed under, without adding them.
+    ///
+    /// `None` when the payload is not a parseable `.torrent`, or the engine
+    /// cannot answer. Additive: the trait is frozen, so a default keeps every
+    /// implementor compiling.
+    fn torrent_info_hash(&self, _bytes: &[u8]) -> Option<InfoHash> {
+        None
+    }
+
+    /// Adds a torrent from raw `.torrent` bytes (`FR-02`/`FR-39`).
+    ///
+    /// The engine keys the torrent by the infohash inside the file — the one
+    /// [`Engine::torrent_info_hash`] reported — so the caller's item id always
+    /// matches the engine's snapshots and a restart's restoration. Additive
+    /// default: an engine that cannot add from bytes fails loudly rather than
+    /// pretending the item started.
+    fn add_bytes<'a>(&'a self, _req: AddBytesRequest) -> EngineFuture<'a, Result<(), EngineError>> {
+        Box::pin(async move {
+            Err(EngineError::Unavailable(
+                "this engine cannot add .torrent files".into(),
+            ))
+        })
+    }
 }
 
 /// Events pushed from the engine and the search layer to the app state.

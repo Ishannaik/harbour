@@ -24,17 +24,23 @@ pub const BINDINGS: &[(&str, &str)] = &[
     ("tab", "switch between search and downloads"),
     // Search results pane: plain keys act on the selected row.
     ("d", "search results: download the selected row"),
+    ("shift+D", "search results: download to a folder you pick"),
+    ("o", "change the default download folder"),
     ("w", "watch — results: stream now · downloads: watch item"),
     ("s", "search results: settings · downloads: seeding tab"),
     (
         "esc",
-        "results → search input · input: clear query · overlays: close",
+        "results → search input · input: clear query · overlays & folder prompt: close",
     ),
     (
         "type",
         "results → back to the input, typing what you pressed",
     ),
     // Downloads screen.
+    (
+        "← →",
+        "downloads: switch between the downloads and seeding tabs",
+    ),
     ("p", "downloads: pause or resume the selected item"),
     ("r", "downloads: retry a failed item"),
     ("x", "downloads: remove the selected item (keeps files)"),
@@ -176,7 +182,7 @@ mod tests {
     fn the_bindings_users_reach_for_first_are_present() {
         // UR-10: `?` must show exactly what the app implements. These are the
         // ones a user cannot discover any other way.
-        for key in ["enter", "d", "p", "q", "?", "tab"] {
+        for key in ["enter", "d", "shift+D", "o", "← →", "p", "q", "?", "tab"] {
             assert!(
                 BINDINGS.iter().any(|(k, _)| *k == key),
                 "`{key}` is implemented but undocumented"

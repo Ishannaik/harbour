@@ -2,10 +2,17 @@
 //! recently-downloaded section, and the Seeding tab (docs/design.md §2.3).
 //!
 //! Pure paint: `draw` renders `DownloadsState` + `Theme`; the app loop owns
-//! input and the 30fps tick. `ItemView::progress` is already the eased
-//! *display* value (queue layer, tau = 200ms), so the view never animates —
-//! an unchanged queue repaints byte-identical frames. All colors come from
-//! the theme subset (docs/theming.md), so custom themes work unchanged.
+//! input and the 30fps tick. The engine's raw progress is eased before
+//! render (FR-33): `ItemView::progress` reports what the engine has done,
+//! and the smoothed *display* value lives here — one [`EasedValue`] per
+//! torrent id, advanced by a nominal frame period per draw so the bar eases
+//! toward a moved target instead of snapping. A bar whose target has not
+//! moved sits at rest and repaints byte-identical frames. All colors come
+//! from the theme subset (docs/theming.md), so custom themes work unchanged.
+
+use std::collections::HashMap;
+use std::sync::{LazyLock, Mutex};
+use std::time::Duration;
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -14,6 +21,7 @@ use ratatui::symbols::border::Set as BorderSet;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 
+use crate::anim::EasedValue;
 use crate::core::types::{CompletedItem, ItemView, QueueStatus};
 use crate::theme::{Theme, ThemeColors};
 use crate::ui::DownloadsState;
@@ -30,8 +38,64 @@ const HISTORY_ROWS: usize = 5;
 /// Bottom hint — the actions that matter on this screen.
 const HINT: &str = "s seeding · p pause · r retry · x remove · w watch · tab search · q quit";
 
+/// Smoothing time constant for display progress (spec §3): a 200ms filter
+/// eases a moved bar without ever snapping it.
+const EASE_TAU: Duration = Duration::from_millis(200);
+/// Nominal frame period — the app loop redraws at 30fps, and each draw call
+/// advances the eased bars by exactly one frame. A skipped frame (slow
+/// render, or the user being on another screen) simply eases a little
+/// slower; the display never jumps.
+const FRAME_DT: Duration = Duration::from_millis(33);
+
+/// Smoothed display progress per torrent id (FR-33).
+///
+/// The view is pure — `draw` receives `&DownloadsState` and the app loop owns
+/// the tick — so the eased values live here, advanced once per draw call.
+/// New ids are seeded at the engine's current value (a restored mid-download
+/// renders where it is, not from 0) and converge as the target moves between
+/// polls. Ids that leave the queue are pruned in `draw`, so the map cannot
+/// grow with the session's churn.
+/// `HashMap::new` is not const, so the map lives behind a [`LazyLock`]; the
+/// lock is taken once per item per frame and never held across a draw.
+static EASED_BARS: LazyLock<Mutex<HashMap<String, EasedValue>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// The display progress for `item`: the raw engine value passed through the
+/// 200ms exponential smoother, advanced by one nominal frame. Renders the
+/// raw value if the lock is ever poisoned — a frame must not die over a
+/// smoother.
+fn eased_progress(item: &ItemView) -> f64 {
+    match EASED_BARS.lock() {
+        Ok(mut bars) => {
+            let bar = bars
+                .entry(item.item.id.clone())
+                .or_insert_with(|| EasedValue::new(item.progress(), EASE_TAU));
+            bar.set_target(item.progress());
+            bar.update(FRAME_DT);
+            bar.value()
+        }
+        Err(_) => item.progress(),
+    }
+}
+
+/// Drops eased state for torrents no longer in the queue.
+///
+/// Runs once per draw, and only when the map outgrew the item list — the
+/// only situation in which an id can have left — so the common case pays
+/// nothing and stale ids never accumulate.
+fn prune_eased(items: &[ItemView]) {
+    if EASED_BARS.lock().map(|b| b.len()).unwrap_or(0) <= items.len() {
+        return;
+    }
+    let live: std::collections::HashSet<&str> = items.iter().map(|v| v.item.id.as_str()).collect();
+    if let Ok(mut bars) = EASED_BARS.lock() {
+        bars.retain(|id, _| live.contains(id.as_str()));
+    }
+}
+
 /// Renders the downloads screen: tabs, queue/seeding body, hint line.
 pub fn draw(frame: &mut Frame, area: Rect, state: &DownloadsState, theme: &Theme) {
+    prune_eased(&state.items);
     let colors = &theme.colors;
     let bg = colors.bg().to_ratatui();
     let accent = colors.accent().to_ratatui();
@@ -230,7 +294,10 @@ fn bar_line(item: &ItemView, width: usize, selected: bool, theme: &Theme) -> Lin
     let colors = &theme.colors;
     let accent = colors.accent().to_ratatui();
     let muted = colors.muted().to_ratatui();
-    let pct = (item.progress() * 100.0).round() as u32;
+    // One eased advance per item per frame; the same display value drives
+    // both the bar and the percent label so they always agree (FR-33).
+    let display = eased_progress(item);
+    let pct = (display * 100.0).round() as u32;
     let peers = item
         .peers()
         .map(|p| p.to_string())
@@ -250,7 +317,7 @@ fn bar_line(item: &ItemView, width: usize, selected: bool, theme: &Theme) -> Lin
         .map(|s| s.content.chars().count())
         .sum::<usize>();
     let bar_w = width.saturating_sub(suffix_w + 2);
-    let mut spans = bar_spans(item, bar_w, theme);
+    let mut spans = bar_spans(display, bar_w, theme);
     if bar_w > 0 {
         spans.push(Span::raw("  "));
     }
@@ -259,16 +326,16 @@ fn bar_line(item: &ItemView, width: usize, selected: bool, theme: &Theme) -> Lin
 }
 
 /// Progress bar glyphs: `fill` cells, a `half` cell past the fractional
-/// midpoint, then `empty` cells. `progress` is already eased (module docs),
-/// so this is a pure render of the smoothed display value.
-fn bar_spans(item: &ItemView, width: usize, theme: &Theme) -> Vec<Span<'static>> {
+/// midpoint, then `empty` cells. `progress` is the eased display value
+/// (FR-33), so this is a pure render of the smoothed bar.
+fn bar_spans(progress: f64, width: usize, theme: &Theme) -> Vec<Span<'static>> {
     if width == 0 {
         return Vec::new();
     }
     let colors = &theme.colors;
     let accent = colors.accent().to_ratatui();
     let dim = colors.dim().to_ratatui();
-    let scaled = item.progress() * width as f64;
+    let scaled = progress * width as f64;
     let mut full = scaled.floor() as usize;
     let frac = scaled - full as f64;
     let mut out = Vec::new();
@@ -421,5 +488,134 @@ fn truncate(s: &str, max: usize) -> String {
         let mut out: String = s.chars().take(max - 1).collect();
         out.push('…');
         out
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::types::{EngineStats, QueueItem};
+
+    /// A downloading item with a controllable raw progress. Ids must be
+    /// unique per test: `EASED_BARS` is a process-wide map, and a shared id
+    /// would let one test's eased value leak into another's.
+    fn item_at(id: &str, progress: f64) -> ItemView {
+        let mut item = QueueItem::new(
+            id.to_string(),
+            "eased test item".to_string(),
+            None,
+            None,
+            std::path::PathBuf::from("~/harbour/downloads"),
+            0,
+        );
+        item.status = QueueStatus::Downloading;
+        item.total_bytes = 1000;
+        ItemView::new(
+            item,
+            Some(EngineStats {
+                progress,
+                downloaded_bytes: (1000.0 * progress) as u64,
+                total_bytes: 1000,
+                speed_mib: 0.0,
+                upload_speed_mib: 0.0,
+                uploaded_bytes: 0,
+                peers: Some(12),
+                eta: Some(Duration::from_secs(1800)),
+            }),
+        )
+    }
+
+    #[test]
+    fn eased_progress_seeds_at_the_engine_value() {
+        // A fresh id renders exactly the engine's value — a restored
+        // mid-download must not animate from 0.
+        let item = item_at("eased-seed", 0.5);
+        assert!(
+            (eased_progress(&item) - 0.5).abs() < 1e-9,
+            "first render must match the raw value"
+        );
+        // An unchanged target stays put on later frames (byte-identical
+        // repaints once the bar is at rest).
+        assert!((eased_progress(&item) - 0.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn eased_progress_eases_toward_a_moved_target() {
+        let mut item = item_at("eased-move", 0.0);
+        assert_eq!(eased_progress(&item), 0.0, "seeds at raw 0");
+
+        // The engine jumps to 50%: the display eases by exactly one filter
+        // step, never snaps, and never overshoots.
+        item.stats = Some(item_at("eased-move", 0.5).stats.expect("item has stats"));
+        let first = eased_progress(&item);
+        let expected = crate::anim::eased(0.0, 0.5, FRAME_DT, EASE_TAU);
+        assert!(
+            (first - expected).abs() < 1e-9,
+            "first step must be one eased frame: {first} vs {expected}"
+        );
+        assert!(first > 0.0 && first < 0.5, "partway, not snapped: {first}");
+
+        let mut prev = first;
+        for _ in 0..300 {
+            let v = eased_progress(&item);
+            assert!(v >= prev && v <= 0.5, "overshoot: {prev} -> {v}");
+            prev = v;
+        }
+        assert!((prev - 0.5).abs() < 1e-6, "converges to target: {prev}");
+    }
+
+    #[test]
+    fn bar_spans_draws_fill_half_and_empty_cells() {
+        let theme = Theme::titanium();
+        let fill = theme.symbols.progress_fill.as_ref();
+        let half = theme.symbols.progress_half.as_ref();
+        let empty = theme.symbols.progress_empty.as_ref();
+
+        // 50% of a 20-cell bar: 10 fill, frac == 0 so no half, 10 empty.
+        let spans = bar_spans(0.5, 20, &theme);
+        assert_eq!(spans[0].content, fill.repeat(10));
+        assert_eq!(spans[1].content, empty.repeat(10));
+
+        // 2.5% of 20 cells: scaled = 0.5 → a half cell past the midpoint,
+        // no full cell.
+        let spans = bar_spans(0.025, 20, &theme);
+        assert_eq!(spans[0].content, half.to_string());
+        assert_eq!(spans[1].content, empty.repeat(19));
+
+        // Complete: all fill, no empty run.
+        let spans = bar_spans(1.0, 20, &theme);
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0].content, fill.repeat(20));
+    }
+
+    #[test]
+    fn bar_line_percent_matches_the_eased_bar() {
+        // The engine reports 50% but the smoother sits at 0 — exactly the
+        // frame after a poll jumps the target. The percent label and the bar
+        // must both render the eased value, or the two would disagree.
+        let item = item_at("eased-line", 0.5);
+        EASED_BARS
+            .lock()
+            .expect("eased bars lock")
+            .insert(item.item.id.clone(), EasedValue::new(0.0, EASE_TAU));
+        let expected = crate::anim::eased(0.0, 0.5, FRAME_DT, EASE_TAU);
+
+        let line = bar_line(&item, 60, false, &Theme::titanium());
+        let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        let pct = format!("{:>3}%", (expected * 100.0).round() as u32);
+        assert!(
+            text.contains(&pct),
+            "label must show the eased percent {pct}, got: {text}"
+        );
+
+        // The bar's fill run must match the same eased value cell-for-cell.
+        let suffix = format!("{pct}  0.0 MiB/s  peers 12  eta 30:00");
+        let bar_w = 60usize.saturating_sub(suffix.chars().count() + 2);
+        let fill_cells = (expected * bar_w as f64).floor() as usize;
+        let theme = Theme::titanium();
+        assert_eq!(
+            line.spans[0].content,
+            theme.symbols.progress_fill.as_ref().repeat(fill_cells)
+        );
     }
 }

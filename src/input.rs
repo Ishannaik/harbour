@@ -36,6 +36,21 @@ pub enum Action {
     FocusSearchInput,
     /// Download the highlighted result.
     Download,
+    /// Download the highlighted result into a folder you pick (shift+D,
+    /// FR-29) — opens the folder prompt.
+    DownloadToFolder,
+    /// Change + persist the default download folder (`o`, FR-40) — opens the
+    /// folder prompt in set-default mode.
+    ChangeDefaultFolder,
+    /// Append a character to the folder-prompt path.
+    FolderType(char),
+    /// Delete the last character from the folder-prompt path.
+    FolderBackspace,
+    /// Commit the folder prompt: download to the entered folder (shift+D)
+    /// or persist it as the new default (`o`).
+    FolderConfirm,
+    /// Close the folder prompt without committing.
+    FolderCancel,
     /// Pause or resume the highlighted item.
     TogglePause,
     /// Retry the highlighted failed item.
@@ -104,6 +119,26 @@ fn is_hard_quit(key: &KeyEvent) -> bool {
 /// input) or browsing the installed-player list (where `c` switches modes).
 /// The settings overlay (`settings_open`) is the same modal shape again:
 /// `esc`/arrows/enter/typing all belong to it while it is up.
+/// The overlay/input flags that drive focus-aware key mapping (FR-29/40).
+///
+/// Folded into one struct so [`map_with_focus`] stays under the FR-67
+/// parameter ceiling — eight bare booleans is a review-sheet smell.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct FocusFlags {
+    /// The `?` help overlay owns every key while up.
+    pub help_open: bool,
+    /// The player picker owns every key while up.
+    pub picker_open: bool,
+    /// The picker is in custom-path entry mode (typing edits the path).
+    pub picker_custom: bool,
+    /// The settings overlay owns every key while up.
+    pub settings_open: bool,
+    /// The folder prompt (shift+d / o) owns every key while up.
+    pub folder_open: bool,
+    /// The search screen's input pane is focused (true: every key types).
+    pub search_focus: bool,
+}
+
 /// Maps one keypress to an action with the search input pane focused (the
 /// default). Test-only convenience: shipped code calls [`map_with_focus`].
 #[cfg(test)]
@@ -118,25 +153,31 @@ pub fn map(
     map_with_focus(
         key,
         screen,
-        help_open,
-        picker_open,
-        picker_custom,
-        settings_open,
-        true,
+        FocusFlags {
+            help_open,
+            picker_open,
+            picker_custom,
+            settings_open,
+            search_focus: true,
+            ..FocusFlags::default()
+        },
     )
 }
 
 /// The focus-aware keymap. `search_focus` selects the search screen's input
 /// pane (true: every key types) or results pane (false: plain keys act).
-pub fn map_with_focus(
-    key: KeyEvent,
-    screen: Screen,
-    help_open: bool,
-    picker_open: bool,
-    picker_custom: bool,
-    settings_open: bool,
-    search_focus: bool,
-) -> Action {
+/// `folder_open` mirrors `settings_open`: while the folder prompt (FR-29/40)
+/// is up it owns every key — typing edits the path, Enter commits, Esc
+/// cancels — exactly like the settings overlay's inline edit.
+pub fn map_with_focus(key: KeyEvent, screen: Screen, flags: FocusFlags) -> Action {
+    let FocusFlags {
+        help_open,
+        picker_open,
+        picker_custom,
+        settings_open,
+        folder_open,
+        search_focus,
+    } = flags;
     if is_hard_quit(&key) {
         return Action::Quit;
     }
@@ -185,6 +226,20 @@ pub fn map_with_focus(
         };
     }
 
+    if folder_open {
+        // The folder prompt owns every key while it is up, exactly like the
+        // overlays above: typing edits the path, Backspace deletes, Enter
+        // commits, Esc cancels. `q` still quits (the overlays' convention).
+        return match key.code {
+            KeyCode::Char('q') => Action::Quit,
+            KeyCode::Esc => Action::FolderCancel,
+            KeyCode::Enter => Action::FolderConfirm,
+            KeyCode::Backspace => Action::FolderBackspace,
+            KeyCode::Char(c) => Action::FolderType(c),
+            _ => Action::None,
+        };
+    }
+
     match screen {
         // The splash is an intro, not a state: anything moves past it.
         Screen::Splash => match key.code {
@@ -213,6 +268,8 @@ pub fn map_with_focus(
 
         Screen::Search => match key.code {
             KeyCode::Char('d') => Action::Download,
+            KeyCode::Char('D') => Action::DownloadToFolder,
+            KeyCode::Char('o') => Action::ChangeDefaultFolder,
             KeyCode::Char('w') | KeyCode::Enter => Action::Watch,
             KeyCode::Char('s') => Action::OpenSettings,
             KeyCode::Char('?') => Action::ToggleHelp,
@@ -231,10 +288,12 @@ pub fn map_with_focus(
             KeyCode::Tab | KeyCode::Esc => Action::SwitchScreen,
             KeyCode::Up => Action::MoveUp,
             KeyCode::Down => Action::MoveDown,
+            KeyCode::Left | KeyCode::Right => Action::ToggleSeeding,
             KeyCode::Char('s') => Action::ToggleSeeding,
             KeyCode::Char('p') => Action::TogglePause,
             KeyCode::Char('P') => Action::OpenPlayerPicker,
             KeyCode::Char('S') => Action::OpenSettings,
+            KeyCode::Char('o') => Action::ChangeDefaultFolder,
             KeyCode::Char('r') => Action::Retry,
             KeyCode::Char('x') => Action::Remove,
             KeyCode::Char('w') => Action::Watch,
@@ -407,33 +466,21 @@ mod tests {
     fn the_results_pane_binds_plain_letters() {
         // After Enter, the results pane maps plain keys to actions on the
         // selected row — no shift-anything needed.
-        let r = |code| map_with_focus(key(code), Screen::Search, false, false, false, false, false);
+        let r = |code| map_with_focus(key(code), Screen::Search, FocusFlags::default());
         assert_eq!(r(KeyCode::Char('d')), Action::Download);
         assert_eq!(r(KeyCode::Char('w')), Action::Watch);
         assert_eq!(r(KeyCode::Char('s')), Action::OpenSettings);
         assert_eq!(r(KeyCode::Char('?')), Action::ToggleHelp);
         assert_eq!(r(KeyCode::Char('q')), Action::Quit);
         assert_eq!(
-            map_with_focus(
-                key(KeyCode::Esc),
-                Screen::Search,
-                false,
-                false,
-                false,
-                false,
-                false
-            ),
+            map_with_focus(key(KeyCode::Esc), Screen::Search, FocusFlags::default(),),
             Action::FocusSearchInput
         );
         assert_eq!(
             map_with_focus(
                 key(KeyCode::Backspace),
                 Screen::Search,
-                false,
-                false,
-                false,
-                false,
-                false
+                FocusFlags::default(),
             ),
             Action::FocusSearchInput,
             "backspace is the reflexive way out of the results pane"
@@ -441,8 +488,8 @@ mod tests {
         // Any other printable returns to the input and types there.
         assert_eq!(r(KeyCode::Char('x')), Action::Type('x'));
         assert_eq!(
-            r(KeyCode::Char('D')),
-            Action::Type('D'),
+            r(KeyCode::Char('Z')),
+            Action::Type('Z'),
             "capitals still type"
         );
         // Enter watches the selected row (the Stremio flow); arrows navigate,
@@ -745,9 +792,131 @@ mod tests {
     }
 
     #[test]
+    fn shift_d_downloads_to_a_folder_and_o_changes_the_default() {
+        // FR-29/40: on the results pane, D downloads the selected row into a
+        // folder you pick; o changes (and persists) the default download
+        // folder. On Downloads, only o is bound — there is no search row to
+        // download from there.
+        let r = |code| map_with_focus(key(code), Screen::Search, FocusFlags::default());
+        assert_eq!(r(KeyCode::Char('D')), Action::DownloadToFolder);
+        assert_eq!(r(KeyCode::Char('o')), Action::ChangeDefaultFolder);
+        assert_eq!(
+            map(
+                key(KeyCode::Char('o')),
+                Screen::Downloads,
+                false,
+                false,
+                false,
+                false
+            ),
+            Action::ChangeDefaultFolder
+        );
+        assert_eq!(
+            map(
+                key(KeyCode::Char('D')),
+                Screen::Downloads,
+                false,
+                false,
+                false,
+                false
+            ),
+            Action::None
+        );
+        // The input pane still types capitals and o — "Dune" and "ocean"
+        // must never trigger an action (the `typing_a_capital_d` regression).
+        assert_eq!(
+            map(
+                key(KeyCode::Char('D')),
+                Screen::Search,
+                false,
+                false,
+                false,
+                false
+            ),
+            Action::Type('D')
+        );
+        assert_eq!(
+            map(
+                key(KeyCode::Char('o')),
+                Screen::Search,
+                false,
+                false,
+                false,
+                false
+            ),
+            Action::Type('o')
+        );
+    }
+
+    #[test]
+    fn the_folder_prompt_owns_its_keys_while_open() {
+        // FR-29/40: while the folder prompt is up, every key belongs to it —
+        // typing edits the path (o and s included — they are path letters,
+        // never re-open or tab toggles), Backspace deletes, Enter commits,
+        // Esc cancels, and q still quits. Screen bindings never leak through.
+        let p = |code| {
+            map_with_focus(
+                key(code),
+                Screen::Downloads,
+                FocusFlags {
+                    folder_open: true,
+                    ..FocusFlags::default()
+                },
+            )
+        };
+        assert_eq!(p(KeyCode::Char('x')), Action::FolderType('x'));
+        assert_eq!(
+            p(KeyCode::Char('o')),
+            Action::FolderType('o'),
+            "o types a path letter while the prompt is open"
+        );
+        assert_eq!(
+            p(KeyCode::Char('s')),
+            Action::FolderType('s'),
+            "s types too, never the seeding toggle"
+        );
+        assert_eq!(p(KeyCode::Backspace), Action::FolderBackspace);
+        assert_eq!(p(KeyCode::Enter), Action::FolderConfirm);
+        assert_eq!(p(KeyCode::Esc), Action::FolderCancel);
+        assert_eq!(p(KeyCode::Char('q')), Action::Quit);
+        assert_eq!(p(KeyCode::Up), Action::None, "arrows never leak through");
+        assert_eq!(
+            p(KeyCode::Tab),
+            Action::None,
+            "tab never switches screens under the prompt"
+        );
+    }
+
+    #[test]
+    fn left_and_right_arrows_switch_the_downloads_tabs() {
+        // UR-10: arrows flip the Downloads/Seeding tab, exactly like s.
+        for code in [KeyCode::Left, KeyCode::Right] {
+            assert_eq!(
+                map(key(code), Screen::Downloads, false, false, false, false),
+                Action::ToggleSeeding,
+                "{code:?} toggles the tab"
+            );
+        }
+        // The search input pane is untouched: Right is unbound there, so it
+        // neither toggles a tab nor hijacks typing.
+        assert_eq!(
+            map(
+                key(KeyCode::Right),
+                Screen::Search,
+                false,
+                false,
+                false,
+                false
+            ),
+            Action::None
+        );
+    }
+
+    #[test]
     fn typing_a_capital_d_never_downloads() {
         // The regression this guards: "Dune" starts with a capital D. In the
-        // input pane it must type; only the results pane's plain `d` acts.
+        // input pane it must type; the results pane's shift+D downloads to a
+        // folder (FR-29), and only the plain `d` downloads to the default.
         assert_eq!(
             map(
                 key(KeyCode::Char('D')),
@@ -763,11 +932,7 @@ mod tests {
             map_with_focus(
                 key(KeyCode::Char('d')),
                 Screen::Search,
-                false,
-                false,
-                false,
-                false,
-                false
+                FocusFlags::default(),
             ),
             Action::Download
         );
@@ -880,7 +1045,7 @@ mod tests {
         // UR-10: the overlay must show exactly what the app implements.
         let documented: Vec<&str> = crate::ui::help::BINDINGS.iter().map(|(k, _)| *k).collect();
         for key in [
-            "enter", "↑ ↓", "d", "tab", "s", "p", "r", "x", "esc", "?", "q",
+            "enter", "↑ ↓", "← →", "d", "shift+D", "o", "tab", "s", "p", "r", "x", "esc", "?", "q",
         ] {
             assert!(
                 documented.contains(&key),

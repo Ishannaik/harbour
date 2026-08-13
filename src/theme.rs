@@ -120,6 +120,46 @@ pub fn detect_color_mode() -> ColorMode {
     )
 }
 
+/// True when the terminal can render the unicode glyph set (UR-07).
+///
+/// Pure over explicit values so tests don't touch real env. The locale chain
+/// (LC_ALL overrides LANG) decides first: an explicit UTF-8 encoding means
+/// unicode is fine even under a C base locale (`C.UTF-8` is the common
+/// container default); a bare `C`/`POSIX` locale is ASCII by definition.
+/// When the locale is silent or unicode-agnostic, the `TERM` fallback
+/// catches the classic dumb terminals (`dumb`, `linux`). Everything else —
+/// including no signals at all — defaults to unicode, because modern
+/// terminals are unicode and guessing wrong breaks the whole glyph set.
+pub fn detect_unicode_from(lang: Option<&str>, lc_all: Option<&str>, term: Option<&str>) -> bool {
+    let locale = lc_all
+        .or(lang)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_ascii_lowercase);
+    if let Some(locale) = locale {
+        if locale.contains("utf") {
+            return true;
+        }
+        if matches!(locale.split('.').next(), Some("c" | "posix")) {
+            return false;
+        }
+    }
+    !matches!(
+        term.map(str::trim).map(str::to_ascii_lowercase).as_deref(),
+        Some("dumb") | Some("linux")
+    )
+}
+
+/// Reads the process environment; the pure logic lives in
+/// [`detect_unicode_from`] so it is unit-testable.
+pub fn detect_unicode() -> bool {
+    detect_unicode_from(
+        std::env::var("LANG").ok().as_deref(),
+        std::env::var("LC_ALL").ok().as_deref(),
+        std::env::var("TERM").ok().as_deref(),
+    )
+}
+
 /// All color tokens harbour knows — the full omp schema (67 tokens) so any
 /// valid omp theme round-trips. Views read the curated subset via the
 /// accessor methods below; the rest is validated and carried for parity.
@@ -370,7 +410,6 @@ const TITANIUM_JSON: &str = r##"{
   },
   "vars": { "panel": "#1f2335", "panel_alt": "$panel" },
   "symbols": {
-    "preset": "unicode",
     "spinnerFrames": ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
   },
   "export": {}
@@ -491,7 +530,7 @@ impl Theme {
         };
 
         let colors = parse_colors(obj.get("colors"), obj.get("vars"))?;
-        let symbols = parse_symbols(obj.get("symbols"))?;
+        let symbols = parse_symbols(obj.get("symbols"), detect_unicode())?;
 
         Ok(Theme {
             name,
@@ -888,8 +927,18 @@ fn parse_hex(s: &str) -> Result<Color, String> {
     }
 }
 
-fn parse_symbols(symbols: Option<&serde_json::Value>) -> Result<Symbols, ThemeError> {
-    let mut preset = Preset::Unicode;
+/// Parse the `symbols` block. `unicode_support` (UR-07) picks the default
+/// preset when the theme does not name one: unicode on capable terminals,
+/// ascii on dumb ones — an explicit `preset` key always wins.
+fn parse_symbols(
+    symbols: Option<&serde_json::Value>,
+    unicode_support: bool,
+) -> Result<Symbols, ThemeError> {
+    let mut preset = if unicode_support {
+        Preset::Unicode
+    } else {
+        Preset::Ascii
+    };
     let mut overrides: HashMap<String, String> = HashMap::new();
     let mut spinner: Vec<String> = DEFAULT_SPINNER.iter().map(|s| s.to_string()).collect();
 
@@ -1115,6 +1164,60 @@ mod tests {
         let json = r#"{"name":"t","colors":{},"symbols":{"preset":"comic"}}"#;
         let err = Theme::parse(json).unwrap_err();
         assert!(err.0.contains("comic"));
+    }
+
+    #[test]
+    fn unicode_detection_keeps_unicode_unless_the_terminal_says_otherwise() {
+        // UR-07: the ascii preset auto-activates only on clear no-unicode
+        // signals; everything else — including no signals at all — keeps the
+        // unicode default.
+        assert!(detect_unicode_from(None, None, None));
+        assert!(detect_unicode_from(Some("en_US.UTF-8"), None, None));
+        assert!(
+            detect_unicode_from(Some("C.UTF-8"), None, None),
+            "C.UTF-8 is unicode despite its C base (the container default)"
+        );
+        assert!(detect_unicode_from(
+            Some("de_DE"),
+            None,
+            Some("xterm-256color")
+        ));
+        assert!(detect_unicode_from(None, None, Some("xterm")));
+        // A bare C/POSIX locale is ASCII by definition.
+        assert!(!detect_unicode_from(Some("C"), None, None));
+        assert!(!detect_unicode_from(Some("POSIX"), None, None));
+        assert!(
+            !detect_unicode_from(Some("c"), None, None),
+            "case-insensitive"
+        );
+        // LC_ALL overrides LANG in the locale chain.
+        assert!(detect_unicode_from(Some("C"), Some("en_US.UTF-8"), None));
+        assert!(!detect_unicode_from(Some("en_US.UTF-8"), Some("C"), None));
+        // Dumb terminals get ascii even with a silent locale.
+        assert!(!detect_unicode_from(None, None, Some("dumb")));
+        assert!(!detect_unicode_from(None, None, Some("linux")));
+        assert!(
+            !detect_unicode_from(None, None, Some("DUMB")),
+            "case-insensitive"
+        );
+    }
+
+    #[test]
+    fn missing_symbol_preset_follows_terminal_unicode_support() {
+        // UR-07: with no explicit preset, the parse picks ascii glyphs when
+        // the terminal reports no unicode support and unicode otherwise. An
+        // explicit preset still wins over the probe.
+        let ascii = parse_symbols(None, false).unwrap();
+        assert_eq!(ascii.border_tl.as_ref(), "+");
+        assert_eq!(ascii.progress_fill.as_ref(), "#");
+        assert_eq!(ascii.dot_online.as_ref(), "*");
+        let unicode = parse_symbols(None, true).unwrap();
+        assert_eq!(unicode.border_tl.as_ref(), "╭");
+        assert_eq!(unicode.progress_fill.as_ref(), "█");
+        assert_eq!(unicode.dot_online.as_ref(), "●");
+        let explicit =
+            Theme::parse(r#"{"name":"t","colors":{},"symbols":{"preset":"ascii"}}"#).unwrap();
+        assert_eq!(explicit.symbols.border_tl.as_ref(), "+");
     }
 
     #[test]
