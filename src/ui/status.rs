@@ -13,12 +13,24 @@
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::Style;
+use ratatui::symbols::border::Set as BorderSet;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph};
+use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
 use crate::core::types::{ItemView, QueueStatus};
 use crate::theme::Theme;
-use crate::ui::{AppState, Screen};
+use crate::ui::{AppState, FolderPrompt, FolderPromptMode, Screen};
+
+/// The minimum terminal size harbour promises (UR-12): below this the views
+/// cannot lay out, so the status bar says so instead of pretending.
+pub const MIN_WIDTH: u16 = 80;
+pub const MIN_HEIGHT: u16 = 24;
+
+/// True when the terminal is smaller than the 80x24 minimum (UR-12). Pure so
+/// the resize-hint test needs no terminal.
+pub fn needs_resize_hint(width: u16, height: u16) -> bool {
+    width < MIN_WIDTH || height < MIN_HEIGHT
+}
 
 /// Left (label, accent) and middle (context, muted) segments for a screen.
 fn segments(screen: Screen, state: &AppState) -> (&'static str, String) {
@@ -147,7 +159,17 @@ pub fn draw(
 
     // --- status line ----------------------------------------------------
     let status_bg = colors.status_line_bg().to_ratatui();
-    let (label, raw_context) = segments(screen, state);
+    // UR-12: below 80x24 the views cannot lay out, so the status bar swaps
+    // its context for a resize hint instead of showing a broken screen.
+    let too_small = needs_resize_hint(frame.area().width, frame.area().height);
+    let (label, raw_context) = if too_small {
+        (
+            "resize",
+            "terminal too small — need at least 80x24".to_string(),
+        )
+    } else {
+        segments(screen, state)
+    };
     let sep = format!(" {} ", theme.symbols.border_v);
     let spinner_w = spinner_glyph.chars().count();
     let avail = status_area.width as usize;
@@ -159,11 +181,16 @@ pub fn draw(
     let context = truncate_to(&raw_context, context_w);
     let used = label.chars().count() + sep.chars().count() + context.chars().count() + spinner_w;
     let fill = avail.saturating_sub(used); // bg-colored pad; spinner hugs the right edge
+    let context_fg = if too_small {
+        colors.warning().to_ratatui()
+    } else {
+        colors.muted().to_ratatui()
+    };
 
     let line = Line::from(vec![
         Span::styled(label, Style::default().fg(colors.accent().to_ratatui())),
         Span::styled(sep, Style::default().fg(colors.border().to_ratatui())),
-        Span::styled(context, Style::default().fg(colors.muted().to_ratatui())),
+        Span::styled(context, Style::default().fg(context_fg)),
         Span::raw(" ".repeat(fill)),
         Span::styled(
             spinner_glyph.to_string(),
@@ -205,6 +232,215 @@ pub fn draw(
                 .block(block)
                 .style(Style::default().bg(colors.selected_bg().to_ratatui())),
             banner_area,
+        );
+    }
+
+    // --- folder prompt (FR-29/40) ---------------------------------------
+    // A modal inline text input (shift+D / o), painted over the whole frame
+    // so it reads as an overlay wherever the user opened it. It cannot
+    // coexist with help/picker/settings — each overlay owns every key while
+    // it is up, so none of them can open under the prompt.
+    if state.folder_prompt.open {
+        draw_folder_prompt(frame, &state.folder_prompt, theme);
+    }
+}
+
+/// Block cursor glyph at the end of the typed path — the input's focus
+/// marker, the same one the settings inline edit uses.
+const FOLDER_CURSOR: &str = "▌";
+
+/// Draws the folder-prompt modal (FR-29/40) centred over the frame, in the
+/// same panel style as the help/settings overlays: a title naming what Enter
+/// commits, one line of "path: <buffer>▌", and a hint row.
+fn draw_folder_prompt(frame: &mut Frame, prompt: &FolderPrompt, theme: &Theme) {
+    let area = frame.area();
+    let colors = &theme.colors;
+    let title = match prompt.mode {
+        FolderPromptMode::DownloadTo => " download to folder ",
+        FolderPromptMode::SetDefault => " default download folder ",
+    };
+
+    let width = 62.min(area.width.saturating_sub(4).max(30));
+    let height = 7.min(area.height);
+    let panel = Rect {
+        x: area.x + area.width.saturating_sub(width) / 2,
+        y: area.y + area.height.saturating_sub(height) / 2,
+        width: width.min(area.width),
+        height,
+    };
+
+    let border = BorderSet {
+        top_left: theme.symbols.border_tl.as_ref(),
+        top_right: theme.symbols.border_tr.as_ref(),
+        bottom_left: theme.symbols.border_bl.as_ref(),
+        bottom_right: theme.symbols.border_br.as_ref(),
+        vertical_left: theme.symbols.border_v.as_ref(),
+        vertical_right: theme.symbols.border_v.as_ref(),
+        horizontal_top: theme.symbols.border_h.as_ref(),
+        horizontal_bottom: theme.symbols.border_h.as_ref(),
+    };
+
+    // The path is truncated to the panel with the cursor glued to the end, so
+    // a long path reads as clipped, never chopped mid-glyph.
+    let prefix = "path: ";
+    let value_w = (panel.width as usize).saturating_sub(prefix.chars().count() + 4);
+    let mut value: String = prompt.edit_buffer.chars().take(value_w).collect();
+    value.push_str(FOLDER_CURSOR);
+    let lines = vec![
+        Line::from(""),
+        Line::from(vec![
+            Span::raw("  "),
+            Span::styled(
+                prefix.to_string(),
+                Style::default().fg(colors.muted().to_ratatui()),
+            ),
+            Span::styled(value, Style::default().fg(colors.accent().to_ratatui())),
+        ]),
+        Line::from(""),
+        Line::from(Span::styled(
+            "enter confirm · esc cancel".to_string(),
+            Style::default().fg(colors.muted().to_ratatui()),
+        )),
+    ];
+
+    // Clear first: without it the screen underneath shows through the panel.
+    frame.render_widget(Clear, panel);
+    frame.render_widget(
+        Paragraph::new(lines)
+            .block(
+                Block::new()
+                    .borders(Borders::ALL)
+                    .border_set(border)
+                    .border_style(Style::default().fg(colors.border().to_ratatui()))
+                    .title(Span::styled(
+                        title.to_string(),
+                        Style::default().fg(colors.accent().to_ratatui()),
+                    ))
+                    .style(Style::default().bg(colors.bg().to_ratatui())),
+            )
+            .style(Style::default().bg(colors.bg().to_ratatui())),
+        panel,
+    );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resize_hint_triggers_below_the_minimum() {
+        // UR-12: the app promises an 80x24 minimum; anything smaller shows
+        // the resize hint, the minimum itself is fine.
+        assert!(!needs_resize_hint(80, 24));
+        assert!(!needs_resize_hint(120, 40));
+        assert!(needs_resize_hint(79, 24), "too narrow");
+        assert!(needs_resize_hint(80, 23), "too short");
+        assert!(needs_resize_hint(0, 0));
+    }
+
+    #[test]
+    fn a_tiny_terminal_renders_the_resize_hint_in_the_status_bar() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let state = AppState::default();
+        let theme = Theme::titanium();
+        let backend = TestBackend::new(60, 20); // below the 80x24 minimum
+        let mut terminal = Terminal::new(backend).expect("test backend");
+        terminal
+            .draw(|f| draw(f, f.area(), Screen::Search, &state, &theme, "⠋"))
+            .expect("draw must succeed");
+        let symbols: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(
+            symbols.contains("80x24"),
+            "the hint must name the minimum, got: {symbols}"
+        );
+    }
+
+    #[test]
+    fn a_full_size_terminal_keeps_the_normal_status_context() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let mut state = AppState::default();
+        state.search.query = "dune".into();
+        let theme = Theme::titanium();
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).expect("test backend");
+        terminal
+            .draw(|f| draw(f, f.area(), Screen::Search, &state, &theme, "⠋"))
+            .expect("draw must succeed");
+        let symbols: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(symbols.contains("dune"), "query context shown");
+        assert!(!symbols.contains("80x24"), "no resize hint at the minimum");
+    }
+
+    #[test]
+    fn the_folder_prompt_renders_its_title_and_buffer() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let mut state = AppState::default();
+        state.folder_prompt.open = true;
+        state.folder_prompt.mode = FolderPromptMode::DownloadTo;
+        state.folder_prompt.edit_buffer = "D:\\media".into();
+        let theme = Theme::titanium();
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).expect("test backend");
+        terminal
+            .draw(|f| draw(f, f.area(), Screen::Search, &state, &theme, "⠋"))
+            .expect("draw must succeed");
+        let symbols: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(
+            symbols.contains("download to folder"),
+            "the panel title names the mode"
+        );
+        assert!(symbols.contains("D:\\media"), "the seeded buffer is shown");
+    }
+
+    #[test]
+    fn the_folder_prompt_set_default_mode_names_it() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let mut state = AppState::default();
+        state.folder_prompt.open = true;
+        state.folder_prompt.mode = FolderPromptMode::SetDefault;
+        state.folder_prompt.edit_buffer = "C:\\dl".into();
+        let theme = Theme::titanium();
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).expect("test backend");
+        terminal
+            .draw(|f| draw(f, f.area(), Screen::Search, &state, &theme, "⠋"))
+            .expect("draw must succeed");
+        let symbols: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(
+            symbols.contains("default download folder"),
+            "set-default mode names the commit target"
         );
     }
 }
