@@ -15,11 +15,12 @@ allow = [
     "CC0-1.0",
     "Unicode-3.0",
     # MPL-2.0: weak/file-level copyleft (not project-infecting). Required by
-    # the pre-existing scraper → cssparser chain (Servo lineage, the CSS
-    # selector engine); refusing it would make the deny gate permanently red
-    # on a core dependency. Standard in Rust ecosystems (Firefox/Servo).
+    # the reqwest → option-ext chain (core HTTP dep); refusing it would make
+    # the deny gate permanently red on a dependency every request path uses.
     "MPL-2.0",
     # CDLA-Permissive-2.0: OSI-approved permissive license (data-focused).
+    # Required by webpki-root-certs (the Mozilla root-cert bundle backing
+    # reqwest's default-tls), a data crate — permissive by design.
     "CDLA-Permissive-2.0",
 ]
 
@@ -32,8 +33,9 @@ allow = [
 multiple-versions = "allow"
 
 [advisories]
-# quick-xml DoS pair: the direct dep migrated to oxixml-xml; the vulnerable
-# copy is transitive via librqbit-upnp (hard-pinned to quick-xml 0.37.5, no
+# quick-xml DoS pair: the direct RSS-parser dep moved to the separate
+# harbour-indexer repo (out of the client); the vulnerable copy here is
+# transitive via librqbit-upnp (hard-pinned to quick-xml 0.37.5, no
 # upstream fix — librqbit 9 is RC). Surface: UPnP responses from trusted
 # local-network devices only. Mirrors the audit-check ignore in ci.yml.
 # Unmaintained transitives (backoff, bincode, crypto-hash, instant) have no
