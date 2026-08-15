@@ -168,7 +168,8 @@ impl HttpSource {
         if ctx.cancel.is_cancelled() {
             return Err(SourceError::Cancelled);
         }
-        let response = tokio::time::timeout(ctx.total_deadline, self.client.get(url).send())
+        let deadline = ctx.total_deadline + Duration::from_secs(5);
+        let response = tokio::time::timeout(deadline, self.client.get(url).send())
             .await
             .map_err(|_| SourceError::Timeout)?
             .map_err(|e| SourceError::Network(format!("indexer unreachable: {e}")))?;

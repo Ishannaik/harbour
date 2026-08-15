@@ -24,7 +24,7 @@ pub const ENV_MAX_DOWNLOADS: &str = "HARBOUR_MAX_DOWNLOADS";
 pub const ENV_SOURCE_TIMEOUT: &str = "HARBOUR_SOURCE_TIMEOUT";
 
 /// Default per-source ceiling, covering follow-up fetches (`docs/sources.md` §6).
-pub const DEFAULT_SOURCE_TIMEOUT: Duration = Duration::from_secs(10);
+pub const DEFAULT_SOURCE_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// Where all harbour state lives.
 ///

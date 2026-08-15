@@ -198,6 +198,7 @@ impl App {
         // its curated lists, so the app state says so instead of pretending
         // there is a query to edit.
         self.state.search.browsing = query.trim().is_empty();
+        self.state.error_banner = None;
         self.partial.clear();
         self.state.search.results.clear();
         self.state.search.selected = 0;
