@@ -19,7 +19,9 @@ use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::Style;
 use ratatui::symbols::border::Set as BorderSet;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph};
+use ratatui::widgets::{
+    Block, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
+};
 
 use crate::anim::EasedValue;
 use crate::core::types::{CompletedItem, ItemView, QueueStatus};
@@ -260,6 +262,16 @@ fn draw_active(
             lines.push(name_line(item, width, sel, hovered, theme));
             lines.push(bar_line(item, width, sel, hovered, theme));
         }
+        if active.len() > vis {
+            let mut scrollbar_state = ScrollbarState::new(active.len()).position(state.selected);
+            let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+                .thumb_symbol("█")
+                .track_symbol(Some("│"))
+                .begin_symbol(None)
+                .end_symbol(None)
+                .style(Style::default().fg(theme.colors.accent().to_ratatui()));
+            frame.render_stateful_widget(scrollbar, chunks[0], &mut scrollbar_state);
+        }
     }
     frame.render_widget(Paragraph::new(lines), chunks[0]);
 
@@ -307,6 +319,16 @@ fn draw_seeding(
             let hovered =
                 mouse_pos.is_some_and(|(mx, my)| mx >= area.x && mx < area.right() && my == row_y);
             lines.push(seed_row(item, i == state.selected, hovered, width, theme));
+        }
+        if seeding.len() > vis {
+            let mut scrollbar_state = ScrollbarState::new(seeding.len()).position(state.selected);
+            let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+                .thumb_symbol("█")
+                .track_symbol(Some("│"))
+                .begin_symbol(None)
+                .end_symbol(None)
+                .style(Style::default().fg(theme.colors.accent().to_ratatui()));
+            frame.render_stateful_widget(scrollbar, area, &mut scrollbar_state);
         }
     }
     frame.render_widget(Paragraph::new(lines), area);

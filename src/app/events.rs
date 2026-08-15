@@ -190,8 +190,14 @@ async fn apply_action(app: &mut App, action: Action) {
         }
         Action::MoveUp => move_selection(app, -1),
         Action::MoveDown => move_selection(app, 1),
-        Action::PageUp => move_selection(app, -8),
-        Action::PageDown => move_selection(app, 8),
+        Action::PageUp => {
+            let page = super::actions::page_size() as isize;
+            move_selection(app, -page);
+        }
+        Action::PageDown => {
+            let page = super::actions::page_size() as isize;
+            move_selection(app, page);
+        }
         Action::MoveHome => move_selection_to(app, 0),
         Action::MoveEnd => move_selection_to(app, usize::MAX),
         Action::Backspace => {

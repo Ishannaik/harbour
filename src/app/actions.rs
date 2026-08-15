@@ -65,6 +65,12 @@ pub(crate) fn move_selection_to(app: &mut App, target: usize) {
     *selected = target.min(len.saturating_sub(1));
 }
 
+/// Approximate number of visible rows in the main results pane.
+pub(crate) fn page_size() -> usize {
+    let (_, term_h) = crossterm::terminal::size().unwrap_or((80, 24));
+    (term_h as usize).saturating_sub(8).max(5)
+}
+
 pub(crate) async fn download_selected(app: &mut App) {
     let Some(result) = app.selected_result().cloned() else {
         app.warn("nothing selected to download");

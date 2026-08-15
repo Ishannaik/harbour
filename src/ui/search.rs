@@ -19,7 +19,9 @@ use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::Style;
 use ratatui::symbols::border::Set as BorderSet;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph};
+use ratatui::widgets::{
+    Block, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
+};
 
 use crate::core::types::{SourceGroup, SourceId, SourceStatus, TorrentResult};
 use crate::theme::{Color, Theme, ThemeColors};
@@ -700,6 +702,16 @@ fn draw_results(
         ));
     }
     frame.render_widget(Paragraph::new(lines), area);
+    if state.results.len() > vis {
+        let mut scrollbar_state = ScrollbarState::new(state.results.len()).position(state.selected);
+        let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+            .thumb_symbol("█")
+            .track_symbol(Some("│"))
+            .begin_symbol(None)
+            .end_symbol(None)
+            .style(Style::default().fg(theme.colors.accent().to_ratatui()));
+        frame.render_stateful_widget(scrollbar, area, &mut scrollbar_state);
+    }
 }
 
 /// One result row: name (accent when selected or hovered), then right-aligned size,
