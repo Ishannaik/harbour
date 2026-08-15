@@ -67,14 +67,12 @@ async fn handle_mouse_event(app: &mut App, mouse: crossterm::event::MouseEvent) 
         }
 
         // Row hit test:
-        let rel_row = mouse.row.saturating_sub(panel.y + 1); // 1 padding row above items
-        if rel_row > 0 {
-            let row_idx = (rel_row - 1) as usize;
-            if row_idx < crate::ui::settings::row_count() {
-                app.settings.selected = row_idx;
-                if mouse.kind == MouseEventKind::Down(MouseButton::Left) {
-                    settings_activate(app);
-                }
+        let rel_row = mouse.row.saturating_sub(panel.y + 1);
+        let row_idx = rel_row.saturating_sub(1) as usize;
+        if rel_row > 0 && row_idx < crate::ui::settings::row_count() {
+            app.settings.selected = row_idx;
+            if mouse.kind == MouseEventKind::Down(MouseButton::Left) {
+                settings_activate(app);
             }
         }
         return;
@@ -281,6 +279,9 @@ async fn apply_action(app: &mut App, action: Action) {
         Action::TogglePause => toggle_pause(app).await,
         Action::Retry => retry_selected(app).await,
         Action::Remove => remove_selected(app).await,
+        Action::Sort(col) => {
+            app.state.search.toggle_sort(col);
+        }
         Action::Watch => match app.state.screen {
             // Watch-now (2.3): stream the selected result without
             // downloading it to the library.

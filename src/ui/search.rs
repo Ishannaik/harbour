@@ -291,7 +291,7 @@ fn draw_main(
     .split(area);
     let elapsed = clock();
     draw_search_bar(frame, rows[0], state, theme, elapsed, mouse_pos);
-    draw_header(frame, rows[1], state, theme);
+    draw_header(frame, rows[1], state, theme, mouse_pos);
     draw_results(frame, rows[2], state, disabled, theme, mouse_pos);
     let hint = if state.focus { HINT } else { RESULTS_HINT };
     frame.render_widget(
@@ -501,6 +501,8 @@ fn lerp_color(a: Color, b: Color, t: f64) -> Color {
     }
 }
 
+use crate::ui::{SortColumn, SortOrder};
+
 pub(crate) const COL_SIZE_W: usize = 9;
 pub(crate) const COL_SEEDS_W: usize = 6;
 pub(crate) const COL_LEECH_W: usize = 5;
@@ -509,10 +511,87 @@ pub(crate) const COL_SOURCE_W: usize = 10;
 pub(crate) const SUFFIX_TOTAL_W: usize =
     COL_SIZE_W + COL_SEEDS_W + COL_LEECH_W + COL_QUAL_W + COL_SOURCE_W; // 38
 
-/// Results header: the count line on the left plus dim column labels
-/// ("name", "size", "seed", "leech", "quality", "source") aligned over the suffix
-/// columns `result_line` draws.
-fn draw_header(frame: &mut Frame, area: Rect, state: &SearchState, theme: &Theme) {
+/// Returns the sort column under a click or hover at `(col, row)` in the header area.
+pub fn header_sort_col_at(area: Rect, col: u16, row: u16) -> Option<SortColumn> {
+    if row != area.y {
+        return None;
+    }
+    if col >= area.x && col < area.x + 6 {
+        return Some(SortColumn::Name);
+    }
+    let suffix_x = area.right().saturating_sub(SUFFIX_TOTAL_W as u16);
+    if col < suffix_x {
+        return None;
+    }
+    let rel_x = (col - suffix_x) as usize;
+    if rel_x < COL_SIZE_W {
+        Some(SortColumn::Size)
+    } else if rel_x < COL_SIZE_W + COL_SEEDS_W {
+        Some(SortColumn::Seeds)
+    } else if rel_x < COL_SIZE_W + COL_SEEDS_W + COL_LEECH_W {
+        Some(SortColumn::Leechers)
+    } else if rel_x < COL_SIZE_W + COL_SEEDS_W + COL_LEECH_W + COL_QUAL_W {
+        None
+    } else if rel_x < SUFFIX_TOTAL_W {
+        Some(SortColumn::Source)
+    } else {
+        None
+    }
+}
+
+fn col_badge(
+    label: &str,
+    col: SortColumn,
+    current: SortColumn,
+    order: SortOrder,
+    width: usize,
+    align_right: bool,
+) -> String {
+    let arrow = if current == col {
+        match order {
+            SortOrder::Asc => "▲",
+            SortOrder::Desc => "▼",
+        }
+    } else {
+        ""
+    };
+    let text = if arrow.is_empty() {
+        label.to_string()
+    } else {
+        format!("{label}{arrow}")
+    };
+    if align_right {
+        format!("{:>width$}", text)
+    } else {
+        format!("{:<width$}", text)
+    }
+}
+
+fn header_span(
+    text: String,
+    col: SortColumn,
+    current: SortColumn,
+    hovered: bool,
+    colors: &ThemeColors,
+) -> Span<'static> {
+    let fg = if current == col {
+        colors.accent().to_ratatui()
+    } else if hovered {
+        colors.text().to_ratatui()
+    } else {
+        colors.dim().to_ratatui()
+    };
+    Span::styled(text, Style::default().fg(fg))
+}
+
+/// Results header: count line + column labels with sort indicators and hover styling.
+fn draw_header(
+    frame: &mut Frame,
+    area: Rect,
+    state: &SearchState,
+    theme: &Theme,
+    mouse_pos: Option<(u16, u16)>,
+) {
     let colors = &theme.colors;
     let latency_str = state.latency_ms.map_or(String::new(), |ms| {
         format!(" in {:.1}s", ms as f64 / 1000.0)
@@ -539,21 +618,91 @@ fn draw_header(frame: &mut Frame, area: Rect, state: &SearchState, theme: &Theme
     let count_w = width.saturating_sub(SUFFIX_TOTAL_W + 1 + 5); // 5: "name" + gap
     let count = truncate(&count, count_w);
     let pad = width.saturating_sub(5 + count.chars().count() + SUFFIX_TOTAL_W);
-    let size_hdr = format!("{:<COL_SIZE_W$}", "size");
-    let seed_hdr = format!("{:>5} ", "seed");
-    let leech_hdr = format!("{:<COL_LEECH_W$}", "leech");
-    let quality_hdr = format!("{:<COL_QUAL_W$}", "quality");
-    let source_hdr = format!("{:<COL_SOURCE_W$}", "source");
+
+    let h_col = mouse_pos.and_then(|(mx, my)| header_sort_col_at(area, mx, my));
+    let cur = state.sort_column;
+    let ord = state.sort_order;
+
+    let name_arrow = if cur == SortColumn::Name {
+        if ord == SortOrder::Asc { "▲" } else { "▼" }
+    } else {
+        ""
+    };
+    let name_label = format!("name{name_arrow}");
+
+    let size_arrow = if cur == SortColumn::Size {
+        if ord == SortOrder::Asc { "▲" } else { "▼" }
+    } else {
+        ""
+    };
+    let size_label = format!("{:<COL_SIZE_W$}", format!("size{size_arrow}"));
+
+    let seed_arrow = if cur == SortColumn::Seeds {
+        if ord == SortOrder::Asc { "▲" } else { "▼" }
+    } else {
+        ""
+    };
+    let seed_label = format!("{:>5} ", format!("seed{seed_arrow}"));
+
+    let leech_arrow = if cur == SortColumn::Leechers {
+        if ord == SortOrder::Asc { "▲" } else { "▼" }
+    } else {
+        ""
+    };
+    let leech_label = format!("{:<COL_LEECH_W$}", format!("leech{leech_arrow}"));
+
+    let quality_label = format!("{:<COL_QUAL_W$}", "quality");
+
+    let source_arrow = if cur == SortColumn::Source {
+        if ord == SortOrder::Asc { "▲" } else { "▼" }
+    } else {
+        ""
+    };
+    let source_label = format!("{:<COL_SOURCE_W$}", format!("source{source_arrow}"));
+
     let spans = vec![
-        Span::styled("name", Style::default().fg(colors.dim().to_ratatui())),
+        header_span(
+            name_label,
+            SortColumn::Name,
+            cur,
+            h_col == Some(SortColumn::Name),
+            colors,
+        ),
         Span::raw(" "),
         Span::styled(count, Style::default().fg(colors.muted().to_ratatui())),
         Span::raw(" ".repeat(pad)),
-        Span::styled(size_hdr, Style::default().fg(colors.dim().to_ratatui())),
-        Span::styled(seed_hdr, Style::default().fg(colors.dim().to_ratatui())),
-        Span::styled(leech_hdr, Style::default().fg(colors.dim().to_ratatui())),
-        Span::styled(quality_hdr, Style::default().fg(colors.dim().to_ratatui())),
-        Span::styled(source_hdr, Style::default().fg(colors.dim().to_ratatui())),
+        header_span(
+            size_label,
+            SortColumn::Size,
+            cur,
+            h_col == Some(SortColumn::Size),
+            colors,
+        ),
+        header_span(
+            seed_label,
+            SortColumn::Seeds,
+            cur,
+            h_col == Some(SortColumn::Seeds),
+            colors,
+        ),
+        header_span(
+            leech_label,
+            SortColumn::Leechers,
+            cur,
+            h_col == Some(SortColumn::Leechers),
+            colors,
+        ),
+        Span::styled(
+            quality_label,
+            Style::default().fg(colors.dim().to_ratatui()),
+        ),
+        header_span(
+            source_label,
+            SortColumn::Source,
+            cur,
+            h_col == Some(SortColumn::Source),
+            colors,
+        ),
     ];
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
@@ -661,15 +810,7 @@ fn draw_results(
             ]));
             lines.push(Line::from(""));
 
-            for (group_name, sources) in SIDEBAR {
-                for (id, label) in *sources {
-                    if !disabled.contains(id) {
-                        lines.push(searching_source_line(
-                            *id, label, group_name, state, theme, spinner,
-                        ));
-                    }
-                }
-            }
+            collect_searching_sources(&mut lines, disabled, state, theme, spinner);
             frame.render_widget(Paragraph::new(lines), area);
             return;
         }
@@ -722,6 +863,24 @@ fn draw_results(
             .begin_style(Style::default().fg(theme.colors.dim().to_ratatui()))
             .end_style(Style::default().fg(theme.colors.dim().to_ratatui()));
         frame.render_stateful_widget(scrollbar, area, &mut scrollbar_state);
+    }
+}
+
+fn collect_searching_sources<'a>(
+    lines: &mut Vec<Line<'a>>,
+    disabled: &HashSet<SourceId>,
+    state: &'a SearchState,
+    theme: &'a Theme,
+    spinner: &'a str,
+) {
+    for (group_name, sources) in SIDEBAR {
+        for (id, label) in *sources {
+            if !disabled.contains(id) {
+                lines.push(searching_source_line(
+                    *id, label, group_name, state, theme, spinner,
+                ));
+            }
+        }
     }
 }
 
@@ -1164,7 +1323,7 @@ mod tests {
         let backend = TestBackend::new(80, 1);
         let mut terminal = Terminal::new(backend).expect("test backend");
         terminal
-            .draw(|f| draw_header(f, f.area(), &state, &theme))
+            .draw(|f| draw_header(f, f.area(), &state, &theme, None))
             .expect("draw must succeed");
         let buf = terminal.backend().buffer();
         let text: String = (0..80).map(|x| buf[(x, 0)].symbol().to_string()).collect();
@@ -1193,7 +1352,7 @@ mod tests {
         let mut terminal = Terminal::new(backend).expect("test backend");
         terminal
             .draw(|f| {
-                draw_header(f, Rect::new(0, 0, width as u16, 1), &state, &theme);
+                draw_header(f, Rect::new(0, 0, width as u16, 1), &state, &theme, None);
                 let line = result_line(&state.results[0], false, false, &state, &theme, width);
                 f.render_widget(Paragraph::new(line), Rect::new(0, 1, width as u16, 1));
             })

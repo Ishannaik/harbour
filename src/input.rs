@@ -38,6 +38,8 @@ pub enum Action {
     Escape,
     /// Return focus from the search results pane to the input pane.
     FocusSearchInput,
+    /// Sort search results by a column (size, seed, leech, name, source, or default).
+    Sort(crate::ui::SortColumn),
     /// Download the highlighted result.
     Download,
     /// Download the highlighted result into a folder you pick (shift+D,
@@ -280,6 +282,11 @@ pub fn map_with_focus(key: KeyEvent, screen: Screen, flags: FocusFlags) -> Actio
             KeyCode::Char('s') => Action::OpenSettings,
             KeyCode::Char('?') => Action::ToggleHelp,
             KeyCode::Char('q') => Action::Quit,
+            KeyCode::Char('1') => Action::Sort(crate::ui::SortColumn::Seeds),
+            KeyCode::Char('2') => Action::Sort(crate::ui::SortColumn::Size),
+            KeyCode::Char('3') => Action::Sort(crate::ui::SortColumn::Leechers),
+            KeyCode::Char('4') => Action::Sort(crate::ui::SortColumn::Name),
+            KeyCode::Char('0') => Action::Sort(crate::ui::SortColumn::Default),
             KeyCode::Up => Action::MoveUp,
             KeyCode::Down => Action::MoveDown,
             KeyCode::PageUp => Action::PageUp,
@@ -360,53 +367,13 @@ pub fn mouse_to_action(
     // Status bar row clicks on the tab buttons (exactly 1 line below view_area):
     let is_status_row = row == view_area.y + view_area.height;
     if is_status_row && col >= view_area.x && col < view_area.right() {
-        if let Some(tab) = crate::ui::status::status_button_at(col, view_area.width) {
-            return match tab {
-                crate::ui::status::StatusTab::Search => {
-                    if screen == Screen::Search {
-                        Action::FocusSearchInput
-                    } else {
-                        Action::Dismiss
-                    }
-                }
-                crate::ui::status::StatusTab::Downloads => Action::SwitchScreen,
-                crate::ui::status::StatusTab::Settings => Action::OpenSettings,
-                crate::ui::status::StatusTab::Help => Action::ToggleHelp,
-            };
+        if let Some(action) = status_bar_click_action(col, view_area.width, screen) {
+            return action;
         }
     }
 
     match screen {
-        Screen::Search => {
-            // Mirrors `ui::search::draw`'s layout: a 1-cell panel border,
-            // then a 22-wide sidebar; the main column starts after both.
-            // Inside it, the search bar is SEARCH_BAR_H rows, the results
-            // header 1 row, then one result row per line. The hint line
-            // owns the last inner row, and the panel's bottom border sits
-            // one row below that.
-            let inner_x = view_area.x + 1;
-            let main_col = inner_x + SIDEBAR_WIDTH;
-            let results_top = view_area.y + 1 + SEARCH_BAR_H + 1;
-            let results_bottom = view_area.y + view_area.height.saturating_sub(2);
-            if col < inner_x {
-                // The panel's left border is not clickable.
-                Action::None
-            } else if col < main_col {
-                // A click on a sidebar source row toggles that source (2.2).
-                // The "Sources" title, group dividers, and rows past the last
-                // source map to None — nothing to toggle there.
-                sidebar_source_at(row.saturating_sub(view_area.y + 1))
-                    .map_or(Action::None, Action::ToggleSource)
-            } else if row < results_top {
-                // The panel top border and the search bar: a click here means
-                // "I want to type" — focus the input pane.
-                Action::FocusSearchInput
-            } else if row >= results_bottom {
-                Action::None
-            } else {
-                Action::ClickRow((row - results_top) as usize)
-            }
-        }
+        Screen::Search => search_mouse_action(view_area, col, row),
         Screen::Downloads => {
             // Mirrors `ui::downloads::draw`'s layout: a 1-cell panel
             // border, then a 2-row tab band (label row + underline row)
@@ -444,6 +411,52 @@ pub fn mouse_to_action(
         // `settings_open` (app.rs guards clicks while it is up).
         Screen::Settings => Action::None,
     }
+}
+
+fn status_bar_click_action(col: u16, width: u16, screen: Screen) -> Option<Action> {
+    let tab = crate::ui::status::status_button_at(col, width)?;
+    let action = match tab {
+        crate::ui::status::StatusTab::Search => {
+            if screen == Screen::Search {
+                Action::FocusSearchInput
+            } else {
+                Action::Dismiss
+            }
+        }
+        crate::ui::status::StatusTab::Downloads => Action::SwitchScreen,
+        crate::ui::status::StatusTab::Settings => Action::OpenSettings,
+        crate::ui::status::StatusTab::Help => Action::ToggleHelp,
+    };
+    Some(action)
+}
+
+fn search_mouse_action(view_area: Rect, col: u16, row: u16) -> Action {
+    let inner_x = view_area.x + 1;
+    let main_col = inner_x + SIDEBAR_WIDTH;
+    let header_row = view_area.y + 1 + SEARCH_BAR_H;
+    let results_top = header_row + 1;
+    let results_bottom = view_area.y + view_area.height.saturating_sub(2);
+    if col < inner_x {
+        return Action::None;
+    }
+    if col < main_col {
+        return sidebar_source_at(row.saturating_sub(view_area.y + 1))
+            .map_or(Action::None, Action::ToggleSource);
+    }
+    if row < results_top {
+        if row == header_row {
+            let header_w = view_area.right().saturating_sub(main_col + 1);
+            let header_area = Rect::new(main_col, header_row, header_w, 1);
+            if let Some(sort_col) = crate::ui::search::header_sort_col_at(header_area, col, row) {
+                return Action::Sort(sort_col);
+            }
+        }
+        return Action::FocusSearchInput;
+    }
+    if row >= results_bottom {
+        return Action::None;
+    }
+    Action::ClickRow((row - results_top) as usize)
 }
 
 #[cfg(test)]

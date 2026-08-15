@@ -90,6 +90,14 @@ struct PendingWatch {
     ephemeral: bool,
 }
 
+/// Cache entry for instant 0ms search returns.
+type QueryCacheEntry = (
+    Instant,
+    Vec<TorrentResult>,
+    HashMap<SourceId, usize>,
+    HashMap<SourceId, SourceStatus>,
+);
+
 /// Everything the loop needs, assembled once at boot.
 struct App {
     state: AppState,
@@ -122,19 +130,29 @@ struct App {
     /// A watch waiting on a player choice, if any.
     picker_pending: Option<PendingWatch>,
     /// Client-side query cache with 15-minute TTL: instant 0ms results.
-    query_cache: HashMap<
-        String,
-        (
-            Instant,
-            Vec<TorrentResult>,
-            HashMap<SourceId, usize>,
-            HashMap<SourceId, SourceStatus>,
-        ),
-    >,
+    query_cache: HashMap<String, QueryCacheEntry>,
     quitting: bool,
 }
 
 impl App {
+    /// Checks the query cache; returns true if fresh results were applied and no network search is needed.
+    fn try_apply_cached_search(&mut self, query: &str) -> bool {
+        let cache_ttl = std::time::Duration::from_secs(900);
+        let Some((ts, cached_results, counts, health)) = self.query_cache.get(query) else {
+            return false;
+        };
+        if ts.elapsed() >= cache_ttl || cached_results.is_empty() {
+            return false;
+        }
+        self.state.search.results = cached_results.clone();
+        self.state.search.sort_results();
+        self.state.search.source_counts = counts.clone();
+        self.state.search.source_health = health.clone();
+        self.state.search.searching = false;
+        self.state.search.latency_ms = Some(0);
+        ts.elapsed() < std::time::Duration::from_secs(60)
+    }
+
     /// Something the user should know that must not stop the app.
     fn warn(&mut self, message: impl Into<String>) {
         self.state.error_banner = Some(message.into());
@@ -189,6 +207,7 @@ impl App {
             .flat_map(|(_, results)| results.iter().cloned())
             .collect();
         self.state.search.results = crate::search::merge(all);
+        self.state.search.sort_results();
         let len = self.state.search.results.len();
         if self.state.search.selected >= len {
             self.state.search.selected = len.saturating_sub(1);
@@ -221,19 +240,8 @@ impl App {
         // there is a query to edit.
         self.state.search.browsing = query.trim().is_empty();
         self.state.error_banner = None;
-        // 0ms instant cache hit:
-        let cache_ttl = std::time::Duration::from_secs(900);
-        if let Some((ts, cached_results, counts, health)) = self.query_cache.get(&query) {
-            if ts.elapsed() < cache_ttl && !cached_results.is_empty() {
-                self.state.search.results = cached_results.clone();
-                self.state.search.source_counts = counts.clone();
-                self.state.search.source_health = health.clone();
-                self.state.search.searching = false;
-                self.state.search.latency_ms = Some(0);
-                if ts.elapsed() < std::time::Duration::from_secs(60) {
-                    return;
-                }
-            }
+        if self.try_apply_cached_search(&query) {
+            return;
         }
 
         self.partial.clear();

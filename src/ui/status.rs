@@ -287,11 +287,7 @@ pub fn draw(
                 .mouse_pos
                 .is_some_and(|(mx, my)| my == status_area.y && mx >= start_x && mx < end_x);
 
-            let style = if is_active && is_hovered {
-                Style::default()
-                    .fg(colors.accent().to_ratatui())
-                    .add_modifier(ratatui::style::Modifier::BOLD)
-            } else if is_active {
+            let style = if is_active {
                 Style::default()
                     .fg(colors.accent().to_ratatui())
                     .add_modifier(ratatui::style::Modifier::BOLD)
