@@ -343,6 +343,25 @@ pub fn mouse_to_action(
         return Action::ToggleHelp;
     }
 
+    // Status bar row or bottom hint line clicks on the tab buttons:
+    let is_bottom_or_status = row >= view_area.y + view_area.height.saturating_sub(2);
+    if is_bottom_or_status && col >= view_area.x && col < view_area.right() {
+        if let Some(tab) = crate::ui::status::status_button_at(col, view_area.width) {
+            return match tab {
+                crate::ui::status::StatusTab::Search => {
+                    if screen == Screen::Search {
+                        Action::FocusSearchInput
+                    } else {
+                        Action::Dismiss
+                    }
+                }
+                crate::ui::status::StatusTab::Downloads => Action::SwitchScreen,
+                crate::ui::status::StatusTab::Settings => Action::OpenSettings,
+                crate::ui::status::StatusTab::Help => Action::ToggleHelp,
+            };
+        }
+    }
+
     match screen {
         Screen::Search => {
             // Mirrors `ui::search::draw`'s layout: a 1-cell panel border,

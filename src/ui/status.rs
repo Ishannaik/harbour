@@ -115,6 +115,73 @@ fn truncate_to(s: &str, width: usize) -> String {
     out
 }
 
+/// Tab buttons shown in the status bar.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StatusTab {
+    Search,
+    Downloads,
+    Settings,
+    Help,
+}
+
+pub struct StatusButtonDef {
+    pub tab: StatusTab,
+    pub text: &'static str,
+    pub width: u16,
+}
+
+pub const STATUS_BUTTONS: &[StatusButtonDef] = &[
+    StatusButtonDef {
+        tab: StatusTab::Search,
+        text: "[ 🔍 Search ]",
+        width: 13,
+    },
+    StatusButtonDef {
+        tab: StatusTab::Downloads,
+        text: "[ ⬇ Downloads ]",
+        width: 15,
+    },
+    StatusButtonDef {
+        tab: StatusTab::Settings,
+        text: "[ ⚙ Settings ]",
+        width: 14,
+    },
+    StatusButtonDef {
+        tab: StatusTab::Help,
+        text: "[ ? Help ]",
+        width: 10,
+    },
+];
+
+pub const BUTTON_GAP: u16 = 1;
+pub const TOTAL_BUTTONS_WIDTH: u16 = 13 + 1 + 15 + 1 + 14 + 1 + 10; // 55
+
+/// Computes the column ranges (start_x, end_x) for the status buttons given the total status bar width.
+pub fn status_button_ranges(total_width: u16) -> Vec<(StatusTab, &'static str, u16, u16)> {
+    if total_width < TOTAL_BUTTONS_WIDTH + 4 {
+        return Vec::new();
+    }
+    let start_x = total_width.saturating_sub(TOTAL_BUTTONS_WIDTH + 2);
+    let mut current_x = start_x;
+    let mut ranges = Vec::with_capacity(STATUS_BUTTONS.len());
+    for btn in STATUS_BUTTONS {
+        let end_x = current_x + btn.width;
+        ranges.push((btn.tab, btn.text, current_x, end_x));
+        current_x = end_x + BUTTON_GAP;
+    }
+    ranges
+}
+
+/// Hit-tests a column in the status bar against the tab buttons.
+pub fn status_button_at(col: u16, total_width: u16) -> Option<StatusTab> {
+    for (tab, _, start_x, end_x) in status_button_ranges(total_width) {
+        if col >= start_x && col < end_x {
+            return Some(tab);
+        }
+    }
+    None
+}
+
 /// Draws the bottom status line plus, when `state.error_banner` is set, the
 /// error banner above it.
 ///
@@ -162,45 +229,92 @@ pub fn draw(
     // UR-12: below 80x24 the views cannot lay out, so the status bar swaps
     // its context for a resize hint instead of showing a broken screen.
     let too_small = needs_resize_hint(frame.area().width, frame.area().height);
-    let (label, raw_context) = if too_small {
-        (
+    if too_small {
+        let (label, raw_context) = (
             "resize",
             "terminal too small — need at least 80x24".to_string(),
-        )
+        );
+        let sep = format!(" {} ", theme.symbols.border_v);
+        let line = Line::from(vec![
+            Span::styled(label, Style::default().fg(colors.accent().to_ratatui())),
+            Span::styled(sep, Style::default().fg(colors.border().to_ratatui())),
+            Span::styled(raw_context, Style::default().fg(colors.warning().to_ratatui())),
+        ]);
+        frame.render_widget(
+            Paragraph::new(line).style(Style::default().bg(status_bg)),
+            status_area,
+        );
     } else {
-        segments(screen, state)
-    };
-    let sep = format!(" {} ", theme.symbols.border_v);
-    let spinner_w = spinner_glyph.chars().count();
-    let avail = status_area.width as usize;
-    // Reserve label + separator + spinner + one gap column for the
-    // right-aligned glyph; the context (ellipsized when overlong) gets the
-    // rest, so the spinner always survives a long query.
-    let context_w =
-        avail.saturating_sub(label.chars().count() + sep.chars().count() + spinner_w + 1);
-    let context = truncate_to(&raw_context, context_w);
-    let used = label.chars().count() + sep.chars().count() + context.chars().count() + spinner_w;
-    let fill = avail.saturating_sub(used); // bg-colored pad; spinner hugs the right edge
-    let context_fg = if too_small {
-        colors.warning().to_ratatui()
-    } else {
-        colors.muted().to_ratatui()
-    };
+        let (label, raw_context) = segments(screen, state);
+        let sep = format!(" {} ", theme.symbols.border_v);
+        let spinner_w = spinner_glyph.chars().count();
+        let avail = status_area.width as usize;
 
-    let line = Line::from(vec![
-        Span::styled(label, Style::default().fg(colors.accent().to_ratatui())),
-        Span::styled(sep, Style::default().fg(colors.border().to_ratatui())),
-        Span::styled(context, Style::default().fg(context_fg)),
-        Span::raw(" ".repeat(fill)),
-        Span::styled(
+        let ranges = status_button_ranges(status_area.width);
+        let buttons_start = if ranges.is_empty() {
+            avail.saturating_sub(spinner_w + 1)
+        } else {
+            ranges[0].2 as usize
+        };
+
+        let left_prefix_w = label.chars().count() + sep.chars().count();
+        let max_context_w = buttons_start.saturating_sub(left_prefix_w + 1);
+        let context = truncate_to(&raw_context, max_context_w);
+        let left_used = left_prefix_w + context.chars().count();
+        let fill_left = buttons_start.saturating_sub(left_used);
+
+        let mut spans = vec![
+            Span::styled(label, Style::default().fg(colors.accent().to_ratatui())),
+            Span::styled(sep, Style::default().fg(colors.border().to_ratatui())),
+            Span::styled(context, Style::default().fg(colors.muted().to_ratatui())),
+            Span::raw(" ".repeat(fill_left)),
+        ];
+
+        for (i, (tab, text, start_x, end_x)) in ranges.into_iter().enumerate() {
+            if i > 0 {
+                spans.push(Span::raw(" ".repeat(BUTTON_GAP as usize)));
+            }
+            let is_active = match tab {
+                StatusTab::Search => screen == Screen::Search,
+                StatusTab::Downloads => screen == Screen::Downloads,
+                StatusTab::Settings => screen == Screen::Settings,
+                StatusTab::Help => screen == Screen::Help,
+            };
+            let is_hovered = state.mouse_pos.is_some_and(|(mx, my)| {
+                my == status_area.y && mx >= start_x && mx < end_x
+            });
+
+            let style = if is_active && is_hovered {
+                Style::default()
+                    .fg(colors.accent().to_ratatui())
+                    .add_modifier(ratatui::style::Modifier::BOLD)
+            } else if is_active {
+                Style::default()
+                    .fg(colors.accent().to_ratatui())
+                    .add_modifier(ratatui::style::Modifier::BOLD)
+            } else if is_hovered {
+                Style::default()
+                    .fg(colors.text().to_ratatui())
+                    .add_modifier(ratatui::style::Modifier::BOLD)
+            } else {
+                Style::default().fg(colors.muted().to_ratatui())
+            };
+
+            spans.push(Span::styled(text, style));
+        }
+
+        spans.push(Span::raw(" "));
+        spans.push(Span::styled(
             spinner_glyph.to_string(),
             Style::default().fg(colors.accent().to_ratatui()),
-        ),
-    ]);
-    frame.render_widget(
-        Paragraph::new(line).style(Style::default().bg(status_bg)),
-        status_area,
-    );
+        ));
+
+        let line = Line::from(spans);
+        frame.render_widget(
+            Paragraph::new(line).style(Style::default().bg(status_bg)),
+            status_area,
+        );
+    }
 
     // --- error banner -----------------------------------------------------
     if let Some(msg) = &state.error_banner {
