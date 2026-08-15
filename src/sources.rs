@@ -136,6 +136,43 @@ pub fn resolve_indexer_url(configured_url: &str) -> String {
     configured_url.to_string()
 }
 
+/// Spawns the indexer executable in the background if it is not currently running.
+pub fn try_spawn_indexer() {
+    let state_root = crate::core::paths::state_dir();
+    let bin_path = state_root.join("bin").join("harbour-indexer.exe");
+    let target = if bin_path.exists() {
+        Some(bin_path)
+    } else if let Ok(current_exe) = std::env::current_exe() {
+        let sibling = current_exe.with_file_name("harbour-indexer.exe");
+        if sibling.exists() {
+            Some(sibling)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    if let Some(exe) = target {
+        use std::process::Command;
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            const CREATE_NO_WINDOW: u32 = 0x08000000;
+            let _ = Command::new(exe)
+                .creation_flags(CREATE_NO_WINDOW)
+                .spawn();
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = Command::new(exe)
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn();
+        }
+    }
+}
+
 impl HttpSource {
     /// Builds a client for `base_url` (e.g. `http://127.0.0.1:8765`).
     ///
@@ -143,6 +180,7 @@ impl HttpSource {
     /// hanging past the search budget; the caller's `total_deadline` still
     /// bounds the whole round trip.
     pub fn new(base_url: String) -> Self {
+        try_spawn_indexer();
         let resolved_url = resolve_indexer_url(&base_url);
         let client = reqwest::Client::builder()
             .connect_timeout(Duration::from_secs(5))

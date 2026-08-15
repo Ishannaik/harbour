@@ -13,7 +13,7 @@ const path = require('path');
 const http = require('http');
 const https = require('https');
 
-const VERSION = '0.1.0';
+const VERSION = '0.1.1';
 const REPO = 'Ishannaik/harbour';
 
 const PLATFORMS = {
@@ -22,6 +22,32 @@ const PLATFORMS = {
   'darwin-arm64': { bin: 'harbour', asset: 'harbour-aarch64-apple-darwin.tar.gz' },
   'linux-x64': { bin: 'harbour', asset: 'harbour-x86_64-unknown-linux-gnu.tar.gz' },
 };
+
+function homeBinDir() {
+  const homeDir = process.env.USERPROFILE || process.env.HOME || '.';
+  return path.join(homeDir, '.harbour', 'bin');
+}
+
+function stampPath() {
+  return path.join(homeBinDir(), 'VERSION');
+}
+
+function installedStamp() {
+  try {
+    return fs.readFileSync(stampPath(), 'utf8').trim();
+  } catch {
+    return '';
+  }
+}
+
+function writeStamp() {
+  fs.mkdirSync(homeBinDir(), { recursive: true });
+  fs.writeFileSync(stampPath(), `${VERSION}\n`);
+}
+
+function needsRefresh(binPath) {
+  return !fs.existsSync(binPath) || installedStamp() !== VERSION;
+}
 
 function getBinaryPath() {
   const key = `${process.platform}-${process.arch}`;
@@ -32,23 +58,17 @@ function getBinaryPath() {
     process.exit(1);
   }
 
-  // 1. Check local release build if running in repository development
+  // Dev trees always win so `npx` from the repo uses the binary you just built.
   const localTarget = path.join(__dirname, '..', '..', 'target', 'release', target.bin);
   if (fs.existsSync(localTarget)) return localTarget;
 
-  // 2. Check workspace relative target
   const wsTarget = path.join(process.cwd(), 'target', 'release', target.bin);
   if (fs.existsSync(wsTarget)) return wsTarget;
 
   const wsHarbourTarget = path.join(process.cwd(), 'harbour', 'target', 'release', target.bin);
   if (fs.existsSync(wsHarbourTarget)) return wsHarbourTarget;
 
-  // 3. Check cache dir in user home directory
-  const homeDir = process.env.USERPROFILE || process.env.HOME || '.';
-  const homeTarget = path.join(homeDir, '.harbour', 'bin', target.bin);
-  if (fs.existsSync(homeTarget)) return homeTarget;
-
-  return homeTarget;
+  return path.join(homeBinDir(), target.bin);
 }
 
 function getActiveIndexerPort() {
@@ -112,32 +132,39 @@ function downloadFile(url, dest) {
   });
 }
 
-async function run() {
-  await ensureIndexer();
-  const binPath = getBinaryPath();
-
-  if (!fs.existsSync(binPath)) {
-    const homeDir = process.env.USERPROFILE || process.env.HOME || '.';
-    const binDir = path.join(homeDir, '.harbour', 'bin');
-    fs.mkdirSync(binDir, { recursive: true });
-
-    const key = `${process.platform}-${process.arch}`;
-    const target = PLATFORMS[key];
-    const downloadUrl = `https://github.com/${REPO}/releases/download/v${VERSION}/${target.bin}`;
-
-    console.log(`\x1b[36m[harbour]\x1b[0m First run detected. Downloading native binary...`);
-    try {
-      await downloadFile(downloadUrl, binPath);
-      if (process.platform !== 'win32') {
-        fs.chmodSync(binPath, 0o755);
-      }
-      console.log(`\x1b[32m[harbour]\x1b[0m Ready!`);
-    } catch (err) {
+async function ensureHomeBinary() {
+  const key = `${process.platform}-${process.arch}`;
+  const target = PLATFORMS[key];
+  const binPath = path.join(homeBinDir(), target.bin);
+  if (!needsRefresh(binPath)) {
+    return binPath;
+  }
+  fs.mkdirSync(homeBinDir(), { recursive: true });
+  const downloadUrl = `https://github.com/${REPO}/releases/download/v${VERSION}/${target.asset}`;
+  console.log(`\x1b[36m[harbour]\x1b[0m Updating native binary to ${VERSION}...`);
+  try {
+    await downloadFile(downloadUrl, binPath);
+    if (process.platform !== 'win32') {
+      fs.chmodSync(binPath, 0o755);
+    }
+    writeStamp();
+    console.log(`\x1b[32m[harbour]\x1b[0m Updated.`);
+  } catch (err) {
+    if (fs.existsSync(binPath)) {
+      console.log(`\x1b[33m[harbour]\x1b[0m Update skipped (${err.message}); using existing binary.`);
+    } else {
       console.log(`\x1b[33m[harbour]\x1b[0m Could not auto-download (${err.message}).`);
-      console.log(`\x1b[36m[harbour]\x1b[0m Run 'cargo build --release' or download from https://github.com/${REPO}/releases`);
+      console.log(`\x1b[36m[harbour]\x1b[0m Use the zip (harbour.exe + harbour-indexer.exe) or a GitHub release.`);
       process.exit(1);
     }
   }
+  return binPath;
+}
+
+async function run() {
+  const local = getBinaryPath();
+  const binPath = fs.existsSync(local) ? local : await ensureHomeBinary();
+  await ensureIndexer();
 
   const child = spawn(binPath, process.argv.slice(2), {
     stdio: 'inherit',

@@ -1,6 +1,6 @@
 {
   "name": "harbour-cli",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Curated torrents straight from your terminal. High-performance Rust BitTorrent TUI client.",
   "bin": {
     "harbour": "bin/harbour.js",
