@@ -117,6 +117,16 @@ pub fn health_marker_file(root: &Path, source: SourceId) -> PathBuf {
         .join(format!("{}.json", source.as_str()))
 }
 
+/// Expands leading `~` in a path to the user's home directory.
+pub fn expand_home(path: &Path) -> PathBuf {
+    if let Ok(stripped) = path.strip_prefix("~") {
+        if let Some(home) = dirs::home_dir() {
+            return home.join(stripped);
+        }
+    }
+    path.to_path_buf()
+}
+
 /// Default download directory: the user's Downloads folder, `harbour` inside it.
 pub fn default_download_dir() -> PathBuf {
     match dirs::download_dir() {

@@ -211,7 +211,8 @@ impl RqbitEngine {
             session_opts.listen_port_range = Some(port..port);
         }
 
-        let session = Session::new_with_opts(download_dir.to_path_buf(), session_opts)
+        let resolved_download_dir = crate::core::paths::expand_home(download_dir);
+        let session = Session::new_with_opts(resolved_download_dir, session_opts)
             .await
             .map_err(|e| EngineError::Unavailable(e.to_string()))?;
 
@@ -382,8 +383,9 @@ fn eta(downloaded: u64, total: u64, speed_mib: f64) -> Option<Duration> {
 impl Engine for RqbitEngine {
     fn add<'a>(&'a self, req: AddRequest) -> EngineFuture<'a, Result<(), EngineError>> {
         Box::pin(async move {
+            let resolved_dir = crate::core::paths::expand_home(&req.dir);
             let opts = AddTorrentOptions {
-                output_folder: Some(req.dir.to_string_lossy().into_owned()),
+                output_folder: Some(resolved_dir.to_string_lossy().into_owned()),
                 // Resuming onto files that already exist is the normal case for
                 // us — a re-seed, or a restart mid-download. Without this
                 // librqbit refuses rather than verifying what is there.
@@ -410,8 +412,9 @@ impl Engine for RqbitEngine {
 
     fn add_bytes<'a>(&'a self, req: AddBytesRequest) -> EngineFuture<'a, Result<(), EngineError>> {
         Box::pin(async move {
+            let resolved_dir = crate::core::paths::expand_home(&req.dir);
             let opts = AddTorrentOptions {
-                output_folder: Some(req.dir.to_string_lossy().into_owned()),
+                output_folder: Some(resolved_dir.to_string_lossy().into_owned()),
                 // Same resume-onto-existing-files stance as `add`: a re-seed
                 // of a `.torrent`-added item verifies what is on disk.
                 overwrite: true,

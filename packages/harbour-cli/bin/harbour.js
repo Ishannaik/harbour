@@ -32,16 +32,23 @@ function getBinaryPath() {
     process.exit(1);
   }
 
-  // Check local release build if running in repository development
+  // 1. Check local release build if running in repository development
   const localTarget = path.join(__dirname, '..', '..', 'target', 'release', target.bin);
-  if (fs.existsSync(localTarget)) {
-    return localTarget;
-  }
+  if (fs.existsSync(localTarget)) return localTarget;
 
-  // Check cache dir in user home directory
+  // 2. Check workspace relative target
+  const wsTarget = path.join(process.cwd(), 'target', 'release', target.bin);
+  if (fs.existsSync(wsTarget)) return wsTarget;
+
+  const wsHarbourTarget = path.join(process.cwd(), 'harbour', 'target', 'release', target.bin);
+  if (fs.existsSync(wsHarbourTarget)) return wsHarbourTarget;
+
+  // 3. Check cache dir in user home directory
   const homeDir = process.env.USERPROFILE || process.env.HOME || '.';
-  const binDir = path.join(homeDir, '.harbour', 'bin');
-  return path.join(binDir, target.bin);
+  const homeTarget = path.join(homeDir, '.harbour', 'bin', target.bin);
+  if (fs.existsSync(homeTarget)) return homeTarget;
+
+  return homeTarget;
 }
 
 function getActiveIndexerPort() {
@@ -62,12 +69,21 @@ async function ensureIndexer() {
       resolve(res.statusCode === 200);
     });
     req.on('error', () => {
-      // Indexer not reachable — try to auto-spawn if present locally
-      const localIndexer = path.join(__dirname, '..', '..', '..', 'harbour-indexer', 'target', 'release', 'harbour-indexer.exe');
-      if (fs.existsSync(localIndexer)) {
-        console.log(`\x1b[36m[harbour]\x1b[0m Starting local indexer in background...`);
-        const indexerProc = spawn(localIndexer, [], { detached: true, stdio: 'ignore' });
-        indexerProc.unref();
+      // Indexer not reachable — try to auto-spawn from known locations
+      const homeDir = process.env.USERPROFILE || process.env.HOME || '.';
+      const candidates = [
+        path.join(homeDir, '.harbour', 'bin', 'harbour-indexer.exe'),
+        path.join(__dirname, '..', '..', '..', 'harbour-indexer', 'target', 'release', 'harbour-indexer.exe'),
+        path.join(process.cwd(), 'harbour-indexer', 'target', 'release', 'harbour-indexer.exe'),
+        path.join(process.cwd(), '..', 'harbour-indexer', 'target', 'release', 'harbour-indexer.exe'),
+      ];
+
+      for (const candidate of candidates) {
+        if (fs.existsSync(candidate)) {
+          const indexerProc = spawn(candidate, [], { detached: true, stdio: 'ignore' });
+          indexerProc.unref();
+          break;
+        }
       }
       resolve(false);
     });
