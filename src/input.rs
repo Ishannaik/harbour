@@ -277,7 +277,7 @@ pub fn map_with_focus(key: KeyEvent, screen: Screen, flags: FocusFlags) -> Actio
             KeyCode::Up => Action::MoveUp,
             KeyCode::Down => Action::MoveDown,
             KeyCode::Tab => Action::SwitchScreen,
-            KeyCode::Esc | KeyCode::Backspace => Action::FocusSearchInput,
+            KeyCode::Esc | KeyCode::Backspace | KeyCode::Char('/') => Action::FocusSearchInput,
             KeyCode::Char(c) => Action::Type(c),
             _ => Action::None,
         },

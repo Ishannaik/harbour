@@ -594,14 +594,16 @@ fn draw(
     ])
     .split(area);
 
+    let bg_mouse_pos = if app.settings_open || app.help_open || app.picker.open {
+        None
+    } else {
+        app.state.mouse_pos
+    };
+
     match app.state.screen {
-        Screen::Downloads => crate::ui::downloads::draw(
-            frame,
-            rows[0],
-            &app.state.downloads,
-            theme,
-            app.state.mouse_pos,
-        ),
+        Screen::Downloads => {
+            crate::ui::downloads::draw(frame, rows[0], &app.state.downloads, theme, bg_mouse_pos)
+        }
         Screen::NowPlaying => {
             if let Some(np) = &app.state.now_playing {
                 crate::ui::now_playing::draw(frame, rows[0], np, theme);
@@ -613,7 +615,7 @@ fn draw(
             &app.state.search,
             &app.disabled_sources,
             theme,
-            app.state.mouse_pos,
+            bg_mouse_pos,
         ),
     }
     crate::ui::status::draw(frame, rows[1], app.state.screen, &app.state, theme, glyph);

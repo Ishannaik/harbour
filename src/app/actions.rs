@@ -12,6 +12,22 @@ use crate::ui::Screen;
 use super::{App, now_ms};
 
 pub(crate) fn move_selection(app: &mut App, delta: isize) {
+    if app.state.screen == Screen::Search {
+        // If focus was on the search input and user moves Down, blur search and focus results
+        if app.state.search.focus && delta > 0 {
+            if !app.state.search.results.is_empty() {
+                app.state.search.focus = false;
+                app.state.search.selected = 0;
+            }
+            return;
+        }
+        // If focus is on the results list at top and user moves Up, focus back to search input
+        if !app.state.search.focus && delta < 0 && app.state.search.selected == 0 {
+            app.state.search.focus = true;
+            return;
+        }
+    }
+
     let (len, selected) = match app.state.screen {
         // The downloads selection indexes the *visible* tab's rows — the
         // view renders only the active or seeding subset, so a raw items
@@ -232,7 +248,10 @@ pub(crate) fn apply_event(app: &mut App, event: EngineEvent) {
         EngineEvent::SourceFailed {
             source, message, ..
         } => {
-            log_to_file(&format!("[SOURCE FAILED] source={:?} error='{}'", source, message));
+            log_to_file(&format!(
+                "[SOURCE FAILED] source={:?} error='{}'",
+                source, message
+            ));
             app.state
                 .search
                 .source_health

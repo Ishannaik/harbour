@@ -23,6 +23,24 @@ async fn handle_mouse_event(app: &mut App, mouse: crossterm::event::MouseEvent) 
     // Track mouse position on any mouse movement or interaction.
     app.state.mouse_pos = Some((mouse.column, mouse.row));
 
+    // Handle mouse wheel scrolling:
+    if mouse.kind == MouseEventKind::ScrollDown {
+        if app.settings_open {
+            apply_action(app, Action::SettingsMoveDown).await;
+        } else {
+            apply_action(app, Action::MoveDown).await;
+        }
+        return;
+    }
+    if mouse.kind == MouseEventKind::ScrollUp {
+        if app.settings_open {
+            apply_action(app, Action::SettingsMoveUp).await;
+        } else {
+            apply_action(app, Action::MoveUp).await;
+        }
+        return;
+    }
+
     if app.settings_open {
         let (term_w, term_h) = crossterm::terminal::size().unwrap_or((80, 24));
         let area = ratatui::layout::Rect::new(0, 0, term_w, term_h);

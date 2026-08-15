@@ -159,9 +159,7 @@ pub fn try_spawn_indexer() {
         {
             use std::os::windows::process::CommandExt;
             const CREATE_NO_WINDOW: u32 = 0x08000000;
-            let _ = Command::new(exe)
-                .creation_flags(CREATE_NO_WINDOW)
-                .spawn();
+            let _ = Command::new(exe).creation_flags(CREATE_NO_WINDOW).spawn();
         }
         #[cfg(not(windows))]
         {

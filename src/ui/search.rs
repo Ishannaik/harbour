@@ -42,8 +42,7 @@ const CURSOR: &str = "▌";
 /// with an empty query.
 const HINT: &str = "↵ search · tab downloads · s settings · ? help · esc results";
 /// The results pane owns the keyboard: plain keys act on the selected row.
-const RESULTS_HINT: &str =
-    "↵ watch now · d download · s settings · ? help · / search · esc input";
+const RESULTS_HINT: &str = "↵ watch now · d download · s settings · ? help · / search · esc input";
 /// Placeholder while the query is empty and idle.
 const PLACEHOLDER: &str = "search torrents…";
 /// Bar label while searching on an empty query — the curated-browse mode
@@ -500,22 +499,22 @@ fn lerp_color(a: Color, b: Color, t: f64) -> Color {
     }
 }
 
-const COL_SIZE_W: usize = 10;
-const COL_SEEDS_W: usize = 6;
-const COL_LEECH_W: usize = 5;
-const COL_QUAL_W: usize = 9;
-const COL_SOURCE_W: usize = 10;
-const SUFFIX_TOTAL_W: usize =
-    COL_SIZE_W + 1 + COL_SEEDS_W + 1 + COL_LEECH_W + 1 + COL_QUAL_W + 1 + COL_SOURCE_W;
+pub(crate) const COL_SIZE_W: usize = 9;
+pub(crate) const COL_SEEDS_W: usize = 6;
+pub(crate) const COL_LEECH_W: usize = 5;
+pub(crate) const COL_QUAL_W: usize = 8;
+pub(crate) const COL_SOURCE_W: usize = 10;
+pub(crate) const SUFFIX_TOTAL_W: usize =
+    COL_SIZE_W + COL_SEEDS_W + COL_LEECH_W + COL_QUAL_W + COL_SOURCE_W; // 38
 
 /// Results header: the count line on the left plus dim column labels
-/// ("name", "size", "s", "l", "quality", "source") aligned over the suffix
+/// ("name", "size", "seed", "leech", "quality", "source") aligned over the suffix
 /// columns `result_line` draws.
 fn draw_header(frame: &mut Frame, area: Rect, state: &SearchState, theme: &Theme) {
     let colors = &theme.colors;
-    let latency_str = state
-        .latency_ms
-        .map_or(String::new(), |ms| format!(" in {:.1}s", ms as f64 / 1000.0));
+    let latency_str = state.latency_ms.map_or(String::new(), |ms| {
+        format!(" in {:.1}s", ms as f64 / 1000.0)
+    });
     let count = if state.query.is_empty() {
         if state.results.is_empty() {
             "browse the curated library".to_string()
@@ -538,35 +537,21 @@ fn draw_header(frame: &mut Frame, area: Rect, state: &SearchState, theme: &Theme
     let count_w = width.saturating_sub(SUFFIX_TOTAL_W + 1 + 5); // 5: "name" + gap
     let count = truncate(&count, count_w);
     let pad = width.saturating_sub(5 + count.chars().count() + SUFFIX_TOTAL_W);
+    let size_hdr = format!("{:<COL_SIZE_W$}", "size");
+    let seed_hdr = format!("{:>5} ", "seed");
+    let leech_hdr = format!("{:<COL_LEECH_W$}", "leech");
+    let quality_hdr = format!("{:<COL_QUAL_W$}", "quality");
+    let source_hdr = format!("{:<COL_SOURCE_W$}", "source");
     let spans = vec![
         Span::styled("name", Style::default().fg(colors.dim().to_ratatui())),
         Span::raw(" "),
         Span::styled(count, Style::default().fg(colors.muted().to_ratatui())),
         Span::raw(" ".repeat(pad)),
-        Span::styled(
-            format!("{:>COL_SIZE_W$}", "size"),
-            Style::default().fg(colors.dim().to_ratatui()),
-        ),
-        Span::raw(" "),
-        Span::styled(
-            format!("{:>COL_SEEDS_W$}", "s"),
-            Style::default().fg(colors.dim().to_ratatui()),
-        ),
-        Span::raw(" "),
-        Span::styled(
-            format!("{:>COL_LEECH_W$}", "l"),
-            Style::default().fg(colors.dim().to_ratatui()),
-        ),
-        Span::raw(" "),
-        Span::styled(
-            format!("{:<COL_QUAL_W$}", "quality"),
-            Style::default().fg(colors.dim().to_ratatui()),
-        ),
-        Span::raw(" "),
-        Span::styled(
-            format!("{:<COL_SOURCE_W$}", "source"),
-            Style::default().fg(colors.dim().to_ratatui()),
-        ),
+        Span::styled(size_hdr, Style::default().fg(colors.dim().to_ratatui())),
+        Span::styled(seed_hdr, Style::default().fg(colors.dim().to_ratatui())),
+        Span::styled(leech_hdr, Style::default().fg(colors.dim().to_ratatui())),
+        Span::styled(quality_hdr, Style::default().fg(colors.dim().to_ratatui())),
+        Span::styled(source_hdr, Style::default().fg(colors.dim().to_ratatui())),
     ];
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
@@ -585,8 +570,69 @@ fn distinct_sources(results: &[TorrentResult]) -> usize {
     seen
 }
 
-/// Result list: one row per result, scrolled so the selection stays visible.
-/// The empty state names the next action instead of sitting blank.
+fn searching_source_line<'a>(
+    id: SourceId,
+    label: &'static str,
+    group_name: &SourceGroup,
+    state: &SearchState,
+    theme: &Theme,
+    spinner: &'a str,
+) -> Line<'a> {
+    let health = state
+        .source_health
+        .get(&id)
+        .copied()
+        .unwrap_or(SourceStatus::Unknown);
+    let count = state.source_counts.get(&id).copied().unwrap_or(0);
+    let (dot, status_str, style) = match health {
+        SourceStatus::Online => {
+            let text = if count > 0 {
+                format!("{count} results found")
+            } else {
+                "ready".to_string()
+            };
+            (
+                "●",
+                text,
+                Style::default().fg(theme.colors.success().to_ratatui()),
+            )
+        }
+        SourceStatus::Checking => (
+            spinner,
+            "connecting…".to_string(),
+            Style::default().fg(theme.colors.accent().to_ratatui()),
+        ),
+        SourceStatus::Offline => (
+            "○",
+            "offline".to_string(),
+            Style::default().fg(theme.colors.dim().to_ratatui()),
+        ),
+        SourceStatus::Empty => (
+            "○",
+            "0 results".to_string(),
+            Style::default().fg(theme.colors.muted().to_ratatui()),
+        ),
+        SourceStatus::Unknown => (
+            "·",
+            "querying…".to_string(),
+            Style::default().fg(theme.colors.dim().to_ratatui()),
+        ),
+    };
+    Line::from(vec![
+        Span::raw("    "),
+        Span::styled(dot, style),
+        Span::raw(" "),
+        Span::styled(
+            format!("{label:<14}"),
+            Style::default().fg(theme.colors.text().to_ratatui()),
+        ),
+        Span::styled(
+            format!("{status_str:<18} · {}", group_name.label()),
+            Style::default().fg(theme.colors.muted().to_ratatui()),
+        ),
+    ])
+}
+
 /// Result list: one row per result, scrolled so the selection stays visible.
 /// The empty state names the next action instead of sitting blank.
 fn draw_results(
@@ -615,58 +661,11 @@ fn draw_results(
 
             for (group_name, sources) in SIDEBAR {
                 for (id, label) in *sources {
-                    if disabled.contains(id) {
-                        continue;
+                    if !disabled.contains(id) {
+                        lines.push(searching_source_line(
+                            *id, label, group_name, state, theme, spinner,
+                        ));
                     }
-                    let health = state
-                        .source_health
-                        .get(id)
-                        .copied()
-                        .unwrap_or(SourceStatus::Unknown);
-                    let count = state.source_counts.get(id).copied().unwrap_or(0);
-                    let (dot, status_str, style) = match health {
-                        SourceStatus::Online => {
-                            let text = if count > 0 {
-                                format!("{count} results found")
-                            } else {
-                                "ready".to_string()
-                            };
-                            ("●", text, Style::default().fg(theme.colors.success().to_ratatui()))
-                        }
-                        SourceStatus::Checking => (
-                            spinner,
-                            "connecting…".to_string(),
-                            Style::default().fg(theme.colors.accent().to_ratatui()),
-                        ),
-                        SourceStatus::Offline => (
-                            "○",
-                            "offline".to_string(),
-                            Style::default().fg(theme.colors.dim().to_ratatui()),
-                        ),
-                        SourceStatus::Empty => (
-                            "○",
-                            "0 results".to_string(),
-                            Style::default().fg(theme.colors.muted().to_ratatui()),
-                        ),
-                        SourceStatus::Unknown => (
-                            "·",
-                            "querying…".to_string(),
-                            Style::default().fg(theme.colors.dim().to_ratatui()),
-                        ),
-                    };
-                    lines.push(Line::from(vec![
-                        Span::raw("    "),
-                        Span::styled(dot, style),
-                        Span::raw(" "),
-                        Span::styled(
-                            format!("{label:<14}"),
-                            Style::default().fg(theme.colors.text().to_ratatui()),
-                        ),
-                        Span::styled(
-                            format!("{status_str:<18} · {}", group_name.label()),
-                            Style::default().fg(theme.colors.muted().to_ratatui()),
-                        ),
-                    ]));
                 }
             }
             frame.render_widget(Paragraph::new(lines), area);
@@ -763,34 +762,23 @@ fn result_line(
     } else {
         colors.dim()
     };
-    let qual_str = quality.unwrap_or_default();
+    let size_col = format!("{:<COL_SIZE_W$}", truncate(&size, COL_SIZE_W));
+    let seed_col = format!("{:>5} ", truncate(&seeds, COL_SEEDS_W - 1));
+    let leech_col = format!("{:>4} ", truncate(&leeches, COL_LEECH_W - 1));
+    let (quality_col, quality_fg) = match quality {
+        Some(ref q) => (format!("{:<COL_QUAL_W$}", truncate(q, COL_QUAL_W)), chip_fg),
+        None => (" ".repeat(COL_QUAL_W), colors.dim()),
+    };
+    let chip_col = format!("{:<COL_SOURCE_W$}", truncate(&chip, COL_SOURCE_W));
+
     let spans = vec![
         Span::styled(name, Style::default().fg(name_fg.to_ratatui())),
         Span::raw(" ".repeat(pad)),
-        Span::styled(
-            format!("{:>COL_SIZE_W$}", size),
-            Style::default().fg(colors.muted().to_ratatui()),
-        ),
-        Span::raw(" "),
-        Span::styled(
-            format!("{:>COL_SEEDS_W$}", seeds),
-            Style::default().fg(seed_fg.to_ratatui()),
-        ),
-        Span::raw(" "),
-        Span::styled(
-            format!("{:>COL_LEECH_W$}", leeches),
-            Style::default().fg(leech_fg.to_ratatui()),
-        ),
-        Span::raw(" "),
-        Span::styled(
-            format!("{:<COL_QUAL_W$}", qual_str),
-            Style::default().fg(chip_fg.to_ratatui()),
-        ),
-        Span::raw(" "),
-        Span::styled(
-            format!("{:<COL_SOURCE_W$}", chip),
-            Style::default().fg(chip_fg.to_ratatui()),
-        ),
+        Span::styled(size_col, Style::default().fg(colors.muted().to_ratatui())),
+        Span::styled(seed_col, Style::default().fg(seed_fg.to_ratatui())),
+        Span::styled(leech_col, Style::default().fg(leech_fg.to_ratatui())),
+        Span::styled(quality_col, Style::default().fg(quality_fg.to_ratatui())),
+        Span::styled(chip_col, Style::default().fg(chip_fg.to_ratatui())),
     ];
     row_line(spans, selected, hovered, colors)
 }
@@ -881,7 +869,7 @@ fn chip_label(id: SourceId) -> &'static str {
         SourceId::Bittorrented => "bttr",
         SourceId::Eztv => "eztv",
         SourceId::Nyaa => "nyaa",
-        SourceId::SubsPlease => "subsplease",
+        SourceId::SubsPlease => "subs",
     }
 }
 
@@ -1150,19 +1138,74 @@ mod tests {
             ..SearchState::default()
         };
         let theme = Theme::titanium();
-        let backend = TestBackend::new(56, 1);
+        let backend = TestBackend::new(80, 1);
         let mut terminal = Terminal::new(backend).expect("test backend");
         terminal
             .draw(|f| draw_header(f, f.area(), &state, &theme))
             .expect("draw must succeed");
         let buf = terminal.backend().buffer();
-        let text: String = (0..56).map(|x| buf[(x, 0)].symbol().to_string()).collect();
+        let text: String = (0..80).map(|x| buf[(x, 0)].symbol().to_string()).collect();
         assert!(text.contains("name"), "name column labeled: {text}");
         assert!(text.contains("size"), "size column labeled: {text}");
+        assert!(text.contains("seed"), "seed column labeled: {text}");
+        assert!(text.contains("leech"), "leech column labeled: {text}");
+        assert!(text.contains("quality"), "quality column labeled: {text}");
         assert!(text.contains("source"), "source column labeled: {text}");
         assert!(
             text.contains("1 results from 1 sources"),
             "count line kept: {text}"
         );
+    }
+
+    #[test]
+    fn header_and_result_line_columns_align_perfectly() {
+        let state = SearchState {
+            query: "dune".into(),
+            results: vec![result("Dune: Part Two 1080p")],
+            ..SearchState::default()
+        };
+        let theme = Theme::titanium();
+        let width = 80;
+        let backend = TestBackend::new(width as u16, 2);
+        let mut terminal = Terminal::new(backend).expect("test backend");
+        terminal
+            .draw(|f| {
+                draw_header(f, Rect::new(0, 0, width as u16, 1), &state, &theme);
+                let line = result_line(&state.results[0], false, false, &state, &theme, width);
+                f.render_widget(Paragraph::new(line), Rect::new(0, 1, width as u16, 1));
+            })
+            .expect("draw must succeed");
+        let buf = terminal.backend().buffer();
+        let header: String = (0..width)
+            .map(|x| buf[(x as u16, 0)].symbol().to_string())
+            .collect();
+        let row: String = (0..width)
+            .map(|x| buf[(x as u16, 1)].symbol().to_string())
+            .collect();
+
+        // Suffix starts at column index 42 (80 - 38)
+        let size_hdr_idx = header.find("size").expect("size in header");
+        let size_row_idx = row.find("5.0 GiB").expect("size in row");
+        assert_eq!(size_hdr_idx, size_row_idx, "size column alignment");
+
+        let seed_hdr_idx = header.find("seed").expect("seed in header");
+        let seed_row_idx = row.find("120").expect("seed in row");
+        assert_eq!(
+            seed_hdr_idx - 1,
+            seed_row_idx - 2,
+            "seed column start alignment"
+        );
+
+        let leech_hdr_idx = header.find("leech").expect("leech in header");
+        let leech_row_idx = row.find("   5 ").expect("leech in row");
+        assert_eq!(leech_hdr_idx, leech_row_idx, "leech column alignment");
+
+        let qual_hdr_idx = header.find("quality").expect("quality in header");
+        let qual_row_idx = row.find("[1080p]").expect("quality in row");
+        assert_eq!(qual_hdr_idx, qual_row_idx, "quality column alignment");
+
+        let src_hdr_idx = header.rfind("source").expect("source in header");
+        let src_row_idx = row.find("[yts]").expect("source in row");
+        assert_eq!(src_hdr_idx, src_row_idx, "source column alignment");
     }
 }

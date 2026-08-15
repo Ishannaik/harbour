@@ -239,9 +239,8 @@ pub fn draw(
     let value_width = (panel.width as usize).saturating_sub(LABEL_W + 6);
     for index in 0..visible {
         let row_y = panel.y + 2 + index as u16;
-        let hovered = mouse_pos.is_some_and(|(mx, my)| {
-            mx >= panel.x && mx < panel.right() && my == row_y
-        });
+        let hovered =
+            mouse_pos.is_some_and(|(mx, my)| mx >= panel.x && mx < panel.right() && my == row_y);
         lines.push(setting_line(
             index,
             config,

@@ -238,7 +238,10 @@ pub fn draw(
         let line = Line::from(vec![
             Span::styled(label, Style::default().fg(colors.accent().to_ratatui())),
             Span::styled(sep, Style::default().fg(colors.border().to_ratatui())),
-            Span::styled(raw_context, Style::default().fg(colors.warning().to_ratatui())),
+            Span::styled(
+                raw_context,
+                Style::default().fg(colors.warning().to_ratatui()),
+            ),
         ]);
         frame.render_widget(
             Paragraph::new(line).style(Style::default().bg(status_bg)),
@@ -280,9 +283,9 @@ pub fn draw(
                 StatusTab::Settings => screen == Screen::Settings,
                 StatusTab::Help => screen == Screen::Help,
             };
-            let is_hovered = state.mouse_pos.is_some_and(|(mx, my)| {
-                my == status_area.y && mx >= start_x && mx < end_x
-            });
+            let is_hovered = state
+                .mouse_pos
+                .is_some_and(|(mx, my)| my == status_area.y && mx >= start_x && mx < end_x);
 
             let style = if is_active && is_hovered {
                 Style::default()
