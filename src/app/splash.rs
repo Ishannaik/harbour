@@ -20,8 +20,8 @@ use crate::theme::{Color, Theme};
 /// Logo convergence window: rows flicker in over this span.
 const DRAW_IN: Duration = Duration::from_millis(700);
 
-/// After this much time the splash status line flips to "ready".
-const READY_AFTER: Duration = Duration::from_millis(1600);
+/// Shimmer band sweep period.
+const SHIMMER_PERIOD: Duration = Duration::from_millis(2200);
 
 /// Border breathing period (border → accent → border).
 const BREATH_PERIOD: Duration = Duration::from_millis(3000);
