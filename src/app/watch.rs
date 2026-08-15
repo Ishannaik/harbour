@@ -254,16 +254,23 @@ async fn launch_ephemeral_session(app: &mut App, id: String, name: String, playe
 /// what lets the now-playing view honestly state "seeking supported" (FR-59)
 /// — the endpoint proved it honors Range, which is what player seeking is.
 async fn probe_stream(url: &str) -> Result<(), String> {
-    let client = reqwest::Client::builder()
+    let client = match reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_millis(500))
         .timeout(std::time::Duration::from_millis(800))
         .build()
-        .map_err(|e| format!("cannot build probe client: {e}"))?;
-    if let Ok(resp) = client.get(url).header("Range", "bytes=0-0").send().await {
-        let status = resp.status();
-        if status.is_server_error() {
-            // Give librqbit a quick 200ms grace for metadata resolution
-            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    {
+        Ok(c) => c,
+        Err(e) => return Err(format!("cannot build probe client: {e}")),
+    };
+
+    for _ in 0..6 {
+        if let Ok(resp) = client.get(url).header("Range", "bytes=0-1024").send().await {
+            let status = resp.status();
+            if status.is_success() || status == reqwest::StatusCode::PARTIAL_CONTENT {
+                return Ok(());
+            }
         }
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
     }
     Ok(())
 }

@@ -109,12 +109,14 @@ impl RqbitEngine {
         let deadline = tokio::time::Instant::now() + METADATA_GRACE;
         let file_id = loop {
             let found = handle.with_metadata(|meta| {
-                meta.file_infos
+                let mut videos: Vec<_> = meta
+                    .file_infos
                     .iter()
                     .enumerate()
                     .filter(|(_, f)| is_video(&f.relative_filename))
-                    .max_by_key(|(_, f)| f.len)
-                    .map(|(i, _)| i)
+                    .collect();
+                videos.sort_by(|(_, a), (_, b)| a.relative_filename.cmp(&b.relative_filename));
+                videos.first().map(|(i, _)| *i)
             });
             match found {
                 Ok(Some(i)) => break i,
