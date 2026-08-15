@@ -136,7 +136,7 @@ pub(crate) async fn download_selected(app: &mut App) {
 }
 
 /// Asks the owning source for a magnet it did not supply at search time.
-async fn resolve_magnet(app: &App, result: &TorrentResult) -> Option<String> {
+pub(crate) async fn resolve_magnet(app: &App, result: &TorrentResult) -> Option<String> {
     // The registry is a single `HttpSource`; a result's `source` is the *site*
     // it came from (the indexer tags rows with it), so match by id when
     // possible and otherwise fall back to the lone source — the indexer.

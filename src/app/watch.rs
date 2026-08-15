@@ -189,12 +189,12 @@ pub(crate) async fn start_watch_ephemeral(app: &mut App) {
         app.warn("nothing selected to watch");
         return;
     };
-    let Some(magnet) = result.magnet.clone() else {
-        app.warn(format!(
-            "{}: this source hides its magnet behind a detail page — watch-now needs \
-             the magnet link; press d to download it instead",
-            result.name
-        ));
+    let magnet = match &result.magnet {
+        Some(magnet) => Some(magnet.clone()),
+        None => super::actions::resolve_magnet(app, &result).await,
+    };
+    let Some(magnet) = magnet else {
+        app.warn(format!("could not get a magnet link for {}", result.name));
         return;
     };
     // Re-key on the magnet's own infohash, exactly like `download_selected`.
