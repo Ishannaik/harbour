@@ -226,6 +226,13 @@ pub fn draw(
                 " error ",
                 Style::default().fg(colors.error().to_ratatui()),
             ))
+            .title(
+                Line::from(Span::styled(
+                    " [✕ dismiss] ",
+                    Style::default().fg(colors.accent().to_ratatui()),
+                ))
+                .alignment(ratatui::layout::Alignment::Right),
+            )
             .style(Style::default().bg(colors.selected_bg().to_ratatui()));
         frame.render_widget(
             Paragraph::new(content)

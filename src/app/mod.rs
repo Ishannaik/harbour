@@ -230,6 +230,28 @@ impl App {
         self.search_cancel = Some(ctx.cancel.clone());
         self.search.start(query, ctx, self.events_tx.clone());
     }
+
+    /// Fetches results for a single newly enabled source without blanking existing results on screen.
+    fn fetch_single_source(&mut self, source_id: SourceId) {
+        let query = self.state.search.query.clone();
+        self.state
+            .search
+            .source_health
+            .insert(source_id, SourceStatus::Checking);
+        self.state.search.searching = true;
+
+        let exclude_all_except_id: HashSet<SourceId> = SourceId::ALL
+            .iter()
+            .copied()
+            .filter(|&s| s != source_id)
+            .collect();
+        let ctx = SearchCtx {
+            total_deadline: paths::source_timeout(),
+            disabled: exclude_all_except_id,
+            ..SearchCtx::default()
+        };
+        self.search.start(query, ctx, self.events_tx.clone());
+    }
 }
 
 /// Reads terminal events on a dedicated thread.
@@ -555,7 +577,7 @@ fn draw(
 
     match app.state.screen {
         Screen::Downloads => {
-            crate::ui::downloads::draw(frame, rows[0], &app.state.downloads, theme)
+            crate::ui::downloads::draw(frame, rows[0], &app.state.downloads, theme, app.state.mouse_pos)
         }
         Screen::NowPlaying => {
             if let Some(np) = &app.state.now_playing {
@@ -568,6 +590,7 @@ fn draw(
             &app.state.search,
             &app.disabled_sources,
             theme,
+            app.state.mouse_pos,
         ),
     }
     crate::ui::status::draw(frame, rows[1], app.state.screen, &app.state, theme, glyph);
@@ -610,7 +633,7 @@ fn status_height(app: &App) -> u16 {
 
 /// Banner rows: two borders plus one or two content rows, or zero when there is
 /// nothing to say. Mirrors `ui::status::draw`.
-fn banner_height(message: Option<&str>) -> u16 {
+pub(crate) fn banner_height(message: Option<&str>) -> u16 {
     message.map_or(0, |m| 2 + m.lines().count().clamp(1, 2) as u16)
 }
 

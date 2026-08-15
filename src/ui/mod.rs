@@ -106,6 +106,8 @@ pub struct AppState {
     pub folder_prompt: FolderPrompt,
     /// The item being watched, if watch mode is active (FR-57).
     pub now_playing: Option<NowPlaying>,
+    /// Current mouse position (col, row) for hover highlighting and hit testing.
+    pub mouse_pos: Option<(u16, u16)>,
 }
 
 /// The folder-prompt overlay (FR-29/40): a minimal inline text input for a
