@@ -462,6 +462,12 @@ pub async fn run(
         // The splash is a timed intro, not a state to be stuck in.
         if app.state.screen == Screen::Splash && started.elapsed() >= SPLASH_DURATION {
             app.state.screen = Screen::Search;
+            if app.state.search.results.is_empty()
+                && !app.state.search.searching
+                && app.state.search.query.is_empty()
+            {
+                app.start_search(String::new());
+            }
         }
 
         // FR-59: when the player exits, the watch session ends and the TUI

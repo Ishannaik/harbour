@@ -82,7 +82,15 @@ async fn apply_action(app: &mut App, action: Action) {
     match action {
         Action::None => {}
         Action::Quit => app.quitting = true,
-        Action::Dismiss => app.state.screen = Screen::Search,
+        Action::Dismiss => {
+            app.state.screen = Screen::Search;
+            if app.state.search.results.is_empty()
+                && !app.state.search.searching
+                && app.state.search.query.is_empty()
+            {
+                app.start_search(String::new());
+            }
+        }
         Action::ToggleHelp => app.help_open = !app.help_open,
         Action::SwitchScreen => {
             app.state.screen = match app.state.screen {
