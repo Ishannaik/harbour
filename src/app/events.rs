@@ -56,9 +56,9 @@ pub(crate) async fn handle_event(app: &mut App, event: Event) {
         // size on every draw.
         return;
     };
-    // Windows reports both press and release; acting on both would double
-    // every keystroke.
-    if key.kind != crossterm::event::KeyEventKind::Press {
+    // Ignore key release events (Windows reports both press and release);
+    // keep Press and Repeat.
+    if key.kind == crossterm::event::KeyEventKind::Release {
         return;
     }
 

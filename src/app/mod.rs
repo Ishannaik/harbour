@@ -240,14 +240,21 @@ fn spawn_input_thread() -> mpsc::UnboundedReceiver<Event> {
     let (tx, rx) = mpsc::unbounded_channel();
     std::thread::spawn(move || {
         loop {
-            let Ok(ev) = event::read() else {
-                // A terminal that stops producing events is not recoverable
-                // here, and spinning on the error would peg a core.
-                return;
-            };
-            if tx.send(ev).is_err() {
-                // The app has gone; so should we.
-                return;
+            match event::poll(std::time::Duration::from_millis(20)) {
+                Ok(true) => match event::read() {
+                    Ok(ev) => {
+                        if tx.send(ev).is_err() {
+                            return;
+                        }
+                    }
+                    Err(_) => {
+                        std::thread::sleep(std::time::Duration::from_millis(10));
+                    }
+                },
+                Ok(false) => {}
+                Err(_) => {
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
             }
         }
     });
