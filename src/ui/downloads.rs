@@ -304,9 +304,8 @@ fn draw_seeding(
         let start = scroll_start(&seeding, state.selected, vis);
         for (rel_idx, &(i, item)) in seeding.iter().skip(start).take(vis.max(1)).enumerate() {
             let row_y = area.y + rel_idx as u16;
-            let hovered = mouse_pos.is_some_and(|(mx, my)| {
-                mx >= area.x && mx < area.right() && my == row_y
-            });
+            let hovered =
+                mouse_pos.is_some_and(|(mx, my)| mx >= area.x && mx < area.right() && my == row_y);
             lines.push(seed_row(item, i == state.selected, hovered, width, theme));
         }
     }
@@ -677,7 +676,7 @@ mod tests {
             .insert(item.item.id.clone(), EasedValue::new(0.0, EASE_TAU));
         let expected = crate::anim::eased(0.0, 0.5, FRAME_DT, EASE_TAU);
 
-        let line = bar_line(&item, 60, false, &Theme::titanium());
+        let line = bar_line(&item, 60, false, false, &Theme::titanium());
         let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
         let pct = format!("{:>3}%", (expected * 100.0).round() as u32);
         assert!(

@@ -277,7 +277,10 @@ fn hovered_sidebar_source_renders_highlighted() {
     let buf = terminal.backend().buffer();
     let selected_bg = theme.colors.selected_bg().to_ratatui();
     let found_on_row = (1..20).any(|x| buf[(x, 3)].bg == selected_bg);
-    assert!(found_on_row, "hovered sidebar source row must have selectedBg");
+    assert!(
+        found_on_row,
+        "hovered sidebar source row must have selectedBg"
+    );
 }
 
 #[test]

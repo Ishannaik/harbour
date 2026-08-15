@@ -231,14 +231,14 @@ impl App {
         self.search.start(query, ctx, self.events_tx.clone());
     }
 
-    /// Fetches results for a single newly enabled source without blanking existing results on screen.
+    /// Fetches results for a single newly enabled source without blanking
+    /// existing results on screen.
     fn fetch_single_source(&mut self, source_id: SourceId) {
         let query = self.state.search.query.clone();
         self.state
             .search
             .source_health
             .insert(source_id, SourceStatus::Checking);
-        self.state.search.searching = true;
 
         let exclude_all_except_id: HashSet<SourceId> = SourceId::ALL
             .iter()
@@ -278,9 +278,7 @@ fn poll_and_send_event(tx: &mpsc::UnboundedSender<Event>) -> bool {
 /// responsive without the async runtime ever waiting on a keypress.
 fn spawn_input_thread() -> mpsc::UnboundedReceiver<Event> {
     let (tx, rx) = mpsc::unbounded_channel();
-    std::thread::spawn(move || {
-        while poll_and_send_event(&tx) {}
-    });
+    std::thread::spawn(move || while poll_and_send_event(&tx) {});
     rx
 }
 
@@ -579,9 +577,13 @@ fn draw(
     .split(area);
 
     match app.state.screen {
-        Screen::Downloads => {
-            crate::ui::downloads::draw(frame, rows[0], &app.state.downloads, theme, app.state.mouse_pos)
-        }
+        Screen::Downloads => crate::ui::downloads::draw(
+            frame,
+            rows[0],
+            &app.state.downloads,
+            theme,
+            app.state.mouse_pos,
+        ),
         Screen::NowPlaying => {
             if let Some(np) = &app.state.now_playing {
                 crate::ui::now_playing::draw(frame, rows[0], np, theme);

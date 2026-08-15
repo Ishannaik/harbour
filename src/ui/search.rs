@@ -192,9 +192,8 @@ fn draw_sidebar(
         )));
         for (id, label) in *sources {
             let row_y = area.y + lines.len() as u16;
-            let hovered = mouse_pos.is_some_and(|(mx, my)| {
-                mx >= area.x && mx < area.right() && my == row_y
-            });
+            let hovered =
+                mouse_pos.is_some_and(|(mx, my)| mx >= area.x && mx < area.right() && my == row_y);
             lines.push(source_line(
                 *id,
                 disabled.contains(id),
@@ -328,7 +327,11 @@ fn draw_search_bar(
     });
     let accent = Style::default().fg(colors.accent().to_ratatui());
     let muted = Style::default().fg(colors.muted().to_ratatui());
-    let border_style = if input_focused || is_hovered { accent } else { muted };
+    let border_style = if input_focused || is_hovered {
+        accent
+    } else {
+        muted
+    };
     let inner = (area.width - 2) as usize;
     let fill = s.border_h.as_ref().repeat(inner);
     let (top, bottom) = (
@@ -577,9 +580,8 @@ fn draw_results(
         .enumerate()
     {
         let row_y = area.y + rel_idx as u16;
-        let hovered = mouse_pos.is_some_and(|(mx, my)| {
-            mx >= area.x && mx < area.right() && my == row_y
-        });
+        let hovered =
+            mouse_pos.is_some_and(|(mx, my)| mx >= area.x && mx < area.right() && my == row_y);
         lines.push(result_line(
             result,
             i == state.selected,
@@ -929,7 +931,7 @@ mod tests {
             leechers: 300,
             ..result("Dune")
         };
-        let line = result_line(&healthy, false, &state, &theme, 60);
+        let line = result_line(&healthy, false, false, &state, &theme, 60);
         assert_eq!(
             span_color(&line, "500"),
             success,
@@ -946,7 +948,7 @@ mod tests {
             leechers: 7,
             ..result("Dune")
         };
-        let line = result_line(&thin, false, &state, &theme, 60);
+        let line = result_line(&thin, false, false, &state, &theme, 60);
         assert_eq!(span_color(&line, "50"), warning, "seeders 1-99 is warning");
         assert_eq!(span_color(&line, "7"), warning, "leechers 1-99 is warning");
 
@@ -955,7 +957,7 @@ mod tests {
             leechers: 0,
             ..result("Dune")
         };
-        let line = result_line(&dead, false, &state, &theme, 60);
+        let line = result_line(&dead, false, false, &state, &theme, 60);
         // Both columns render the '—' dash (unreported health) in dim.
         assert_eq!(span_color(&line, "—"), dim, "zero seeders is dim");
         assert_eq!(span_color(&line, "—"), dim, "zero leechers is dim");
@@ -966,7 +968,14 @@ mod tests {
         let mut state = SearchState::default();
         state.source_counts.insert(SourceId::Yts, 3);
         let theme = Theme::titanium();
-        let line = result_line(&result("Dune 2021 1080p BLURAY"), false, &state, &theme, 60);
+        let line = result_line(
+            &result("Dune 2021 1080p BLURAY"),
+            false,
+            false,
+            &state,
+            &theme,
+            60,
+        );
         let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
         let q = text.find("[1080p]").expect("quality chip rendered");
         let c = text.find("[yts]").expect("source chip rendered");
@@ -978,7 +987,7 @@ mod tests {
         let mut state = SearchState::default();
         state.source_counts.insert(SourceId::Yts, 3);
         let theme = Theme::titanium();
-        let line = result_line(&result("Dune"), false, &state, &theme, 60);
+        let line = result_line(&result("Dune"), false, false, &state, &theme, 60);
         let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(!text.contains("[1080p]"), "no quality chip: {text}");
         assert!(text.contains("[yts]"), "source chip still rendered: {text}");

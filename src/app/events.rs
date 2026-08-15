@@ -255,8 +255,12 @@ async fn apply_action(app: &mut App, action: Action) {
             }
 
             if !was_disabled {
-                // When disabling a source, DO NOT call app.start_search(query)!
-                // Instant in-memory filtering:
+                // When disabling a source:
+                // Instant in-memory filtering (0ms, no network):
+                app.state
+                    .search
+                    .results
+                    .retain(|r| !app.disabled_sources.contains(&r.source));
                 app.partial
                     .retain(|source, _| !app.disabled_sources.contains(source));
                 app.remerge();
