@@ -11,3 +11,7 @@ lines:
 	awk 'length($0) > 100 {print FILENAME":"FNR": "length($0)}' $(git ls-files '*.rs')
 audit:
 	cargo audit
+start:
+	@powershell -NoProfile -ExecutionPolicy Bypass -File ./start-harbour.ps1
+run *args:
+	@powershell -NoProfile -ExecutionPolicy Bypass -File ./start-harbour.ps1 {{args}}
