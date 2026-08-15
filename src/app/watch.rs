@@ -255,22 +255,27 @@ async fn launch_ephemeral_session(app: &mut App, id: String, name: String, playe
 /// — the endpoint proved it honors Range, which is what player seeking is.
 async fn probe_stream(url: &str) -> Result<(), String> {
     let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(15))
+        .timeout(std::time::Duration::from_secs(5))
         .build()
         .map_err(|e| format!("cannot build probe client: {e}"))?;
-    let resp = client
-        .get(url)
-        .header("Range", "bytes=0-0")
-        .send()
-        .await
-        .map_err(|e| format!("the swarm did not answer within 15s ({e})"))?;
-    if resp.status().is_success() {
-        Ok(())
-    } else {
+    let start = std::time::Instant::now();
+    let mut last_status = None;
+    while start.elapsed() < std::time::Duration::from_secs(15) {
+        if let Ok(resp) = client.get(url).header("Range", "bytes=0-0").send().await {
+            let status = resp.status();
+            if status.is_success() || status == reqwest::StatusCode::PARTIAL_CONTENT {
+                return Ok(());
+            }
+            last_status = Some(status);
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    }
+    if let Some(status) = last_status {
         Err(format!(
-            "the stream refused the request ({})",
-            resp.status()
+            "the stream returned HTTP {status} (swarm warming up, please retry in a moment)"
         ))
+    } else {
+        Err("the swarm did not answer within 15s".to_string())
     }
 }
 

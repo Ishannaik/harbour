@@ -40,10 +40,10 @@ const CURSOR: &str = "▌";
 /// Every printable key types on this screen (so "dune" can never fire a
 /// download on the `d`); downloading is shift+D mid-query, or plain `d`
 /// with an empty query.
-const HINT: &str = "type to search · enter run/browse · tab downloads · ctrl+c quit";
+const HINT: &str = "↵ search · tab downloads · s settings · ? help · esc results";
 /// The results pane owns the keyboard: plain keys act on the selected row.
 const RESULTS_HINT: &str =
-    "enter watch now · d download · s settings · ? help · type to refine · esc input";
+    "↵ watch now · d download · s settings · ? help · / search · esc input";
 /// Placeholder while the query is empty and idle.
 const PLACEHOLDER: &str = "search torrents…";
 /// Bar label while searching on an empty query — the curated-browse mode
@@ -500,11 +500,17 @@ fn lerp_color(a: Color, b: Color, t: f64) -> Color {
     }
 }
 
+const COL_SIZE_W: usize = 10;
+const COL_SEEDS_W: usize = 6;
+const COL_LEECH_W: usize = 5;
+const COL_QUAL_W: usize = 9;
+const COL_SOURCE_W: usize = 10;
+const SUFFIX_TOTAL_W: usize =
+    COL_SIZE_W + 1 + COL_SEEDS_W + 1 + COL_LEECH_W + 1 + COL_QUAL_W + 1 + COL_SOURCE_W;
+
 /// Results header: the count line on the left plus dim column labels
-/// ("name", "size", "s", "l", "source") right-aligned over the suffix
-/// block `result_line` draws — a new user can read a row without guessing
-/// which number is which. One row, not two: `input.rs`'s mouse mapping
-/// derives the results top from `SEARCH_BAR_H + 1`.
+/// ("name", "size", "s", "l", "quality", "source") aligned over the suffix
+/// columns `result_line` draws.
 fn draw_header(frame: &mut Frame, area: Rect, state: &SearchState, theme: &Theme) {
     let colors = &theme.colors;
     let latency_str = state
@@ -528,22 +534,39 @@ fn draw_header(frame: &mut Frame, area: Rect, state: &SearchState, theme: &Theme
             latency_str
         )
     };
-    // Same cells and single-space gaps as the row suffix, so the labels sit
-    // over their columns; the block's right edge is the row's right edge.
-    let suffix = ["size", "s", "l", "source"].join(" ");
-    let suffix_w = suffix.chars().count();
     let width = area.width as usize;
-    // "name" labels the left column; the count text follows it, truncated
-    // before it can collide with the right-aligned labels.
-    let count_w = width.saturating_sub(suffix_w + 1 + 5); // 5: "name" + gap
+    let count_w = width.saturating_sub(SUFFIX_TOTAL_W + 1 + 5); // 5: "name" + gap
     let count = truncate(&count, count_w);
-    let pad = width.saturating_sub(5 + count.chars().count() + suffix_w);
+    let pad = width.saturating_sub(5 + count.chars().count() + SUFFIX_TOTAL_W);
     let spans = vec![
         Span::styled("name", Style::default().fg(colors.dim().to_ratatui())),
         Span::raw(" "),
         Span::styled(count, Style::default().fg(colors.muted().to_ratatui())),
         Span::raw(" ".repeat(pad)),
-        Span::styled(suffix, Style::default().fg(colors.dim().to_ratatui())),
+        Span::styled(
+            format!("{:>COL_SIZE_W$}", "size"),
+            Style::default().fg(colors.dim().to_ratatui()),
+        ),
+        Span::raw(" "),
+        Span::styled(
+            format!("{:>COL_SEEDS_W$}", "s"),
+            Style::default().fg(colors.dim().to_ratatui()),
+        ),
+        Span::raw(" "),
+        Span::styled(
+            format!("{:>COL_LEECH_W$}", "l"),
+            Style::default().fg(colors.dim().to_ratatui()),
+        ),
+        Span::raw(" "),
+        Span::styled(
+            format!("{:<COL_QUAL_W$}", "quality"),
+            Style::default().fg(colors.dim().to_ratatui()),
+        ),
+        Span::raw(" "),
+        Span::styled(
+            format!("{:<COL_SOURCE_W$}", "source"),
+            Style::default().fg(colors.dim().to_ratatui()),
+        ),
     ];
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
@@ -712,17 +735,9 @@ fn result_line(
     } else {
         "—".into()
     };
-    let quality_w = quality.as_ref().map_or(0, |q| q.chars().count());
-    let suffix_w = size.chars().count()
-        + seeds.chars().count()
-        + leeches.chars().count()
-        + quality_w
-        + chip.chars().count()
-        + 3
-        + usize::from(quality.is_some());
-    let name_width = width.saturating_sub(suffix_w + 1);
+    let name_width = width.saturating_sub(SUFFIX_TOTAL_W + 1);
     let name = marquee_text(&result.name, name_width, selected || hovered, clock());
-    let pad = width.saturating_sub(name.chars().count() + suffix_w);
+    let pad = width.saturating_sub(name.chars().count() + SUFFIX_TOTAL_W);
     let name_fg = if selected || hovered {
         colors.accent()
     } else {
@@ -748,24 +763,35 @@ fn result_line(
     } else {
         colors.dim()
     };
-    let mut spans = vec![
+    let qual_str = quality.unwrap_or_default();
+    let spans = vec![
         Span::styled(name, Style::default().fg(name_fg.to_ratatui())),
         Span::raw(" ".repeat(pad)),
-        Span::styled(size, Style::default().fg(colors.muted().to_ratatui())),
+        Span::styled(
+            format!("{:>COL_SIZE_W$}", size),
+            Style::default().fg(colors.muted().to_ratatui()),
+        ),
         Span::raw(" "),
-        Span::styled(seeds, Style::default().fg(seed_fg.to_ratatui())),
+        Span::styled(
+            format!("{:>COL_SEEDS_W$}", seeds),
+            Style::default().fg(seed_fg.to_ratatui()),
+        ),
         Span::raw(" "),
-        Span::styled(leeches, Style::default().fg(leech_fg.to_ratatui())),
+        Span::styled(
+            format!("{:>COL_LEECH_W$}", leeches),
+            Style::default().fg(leech_fg.to_ratatui()),
+        ),
         Span::raw(" "),
+        Span::styled(
+            format!("{:<COL_QUAL_W$}", qual_str),
+            Style::default().fg(chip_fg.to_ratatui()),
+        ),
+        Span::raw(" "),
+        Span::styled(
+            format!("{:<COL_SOURCE_W$}", chip),
+            Style::default().fg(chip_fg.to_ratatui()),
+        ),
     ];
-    if let Some(q) = quality {
-        spans.push(Span::styled(q, Style::default().fg(chip_fg.to_ratatui())));
-        spans.push(Span::raw(" "));
-    }
-    spans.push(Span::styled(
-        chip,
-        Style::default().fg(chip_fg.to_ratatui()),
-    ));
     row_line(spans, selected, hovered, colors)
 }
 
@@ -1033,7 +1059,7 @@ mod tests {
     fn span_color(line: &Line, needle: &str) -> ratatui::style::Color {
         line.spans
             .iter()
-            .find(|s| s.content.as_ref() == needle)
+            .find(|s| s.content.trim() == needle)
             .expect("span present")
             .style
             .fg

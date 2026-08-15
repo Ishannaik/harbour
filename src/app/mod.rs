@@ -638,6 +638,7 @@ fn draw(
             &app.disabled_sources,
             &app.settings,
             theme,
+            app.state.mouse_pos,
         );
     }
 }
@@ -736,6 +737,7 @@ mod app_tests {
             watch: None,
             picker: PlayerPicker::default(),
             picker_pending: None,
+            query_cache: HashMap::new(),
             quitting: false,
         };
 

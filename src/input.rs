@@ -343,9 +343,9 @@ pub fn mouse_to_action(
         return Action::ToggleHelp;
     }
 
-    // Status bar row or bottom hint line clicks on the tab buttons:
-    let is_bottom_or_status = row >= view_area.y + view_area.height.saturating_sub(2);
-    if is_bottom_or_status && col >= view_area.x && col < view_area.right() {
+    // Status bar row clicks on the tab buttons (exactly 1 line below view_area):
+    let is_status_row = row == view_area.y + view_area.height;
+    if is_status_row && col >= view_area.x && col < view_area.right() {
         if let Some(tab) = crate::ui::status::status_button_at(col, view_area.width) {
             return match tab {
                 crate::ui::status::StatusTab::Search => {

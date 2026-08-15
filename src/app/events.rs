@@ -24,8 +24,39 @@ async fn handle_mouse_event(app: &mut App, mouse: crossterm::event::MouseEvent) 
     app.state.mouse_pos = Some((mouse.column, mouse.row));
 
     if app.settings_open {
-        if mouse.kind == MouseEventKind::Down(MouseButton::Left) {
-            app.settings_open = false;
+        let (term_w, term_h) = crossterm::terminal::size().unwrap_or((80, 24));
+        let area = ratatui::layout::Rect::new(0, 0, term_w, term_h);
+        let panel = crate::ui::settings::panel_rect(area, crate::ui::settings::row_count());
+        let in_panel = mouse.column >= panel.x
+            && mouse.column < panel.right()
+            && mouse.row >= panel.y
+            && mouse.row < panel.bottom();
+
+        if !in_panel {
+            if mouse.kind == MouseEventKind::Down(MouseButton::Left) {
+                app.settings_open = false;
+            }
+            return;
+        }
+
+        // Check if clicking [✕] button on top border:
+        if mouse.row == panel.y && mouse.column >= panel.right().saturating_sub(6) {
+            if mouse.kind == MouseEventKind::Down(MouseButton::Left) {
+                app.settings_open = false;
+            }
+            return;
+        }
+
+        // Row hit test:
+        let rel_row = mouse.row.saturating_sub(panel.y + 1); // 1 padding row above items
+        if rel_row > 0 {
+            let row_idx = (rel_row - 1) as usize;
+            if row_idx < crate::ui::settings::row_count() {
+                app.settings.selected = row_idx;
+                if mouse.kind == MouseEventKind::Down(MouseButton::Left) {
+                    settings_activate(app);
+                }
+            }
         }
         return;
     }
