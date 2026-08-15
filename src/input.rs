@@ -113,6 +113,10 @@ pub enum Action {
     EpisodePageDown,
     EpisodeChoose(Option<usize>),
     EpisodeClose,
+    /// Clear all completed / finished items from the downloads queue.
+    ClearCompleted,
+    /// Open the selected downloaded item or containing directory in the file manager.
+    OpenFolder,
 }
 
 /// Ctrl-C always quits, everywhere — a terminal convention users rely on more
@@ -337,9 +341,10 @@ pub fn map_with_focus(key: KeyEvent, screen: Screen, flags: FocusFlags) -> Actio
             KeyCode::Char('p') => Action::TogglePause,
             KeyCode::Char('P') => Action::OpenPlayerPicker,
             KeyCode::Char('S') => Action::OpenSettings,
-            KeyCode::Char('o') => Action::ChangeDefaultFolder,
+            KeyCode::Char('o') | KeyCode::Enter => Action::OpenFolder,
+            KeyCode::Char('c') | KeyCode::Char('C') => Action::ClearCompleted,
             KeyCode::Char('r') => Action::Retry,
-            KeyCode::Char('x') => Action::Remove,
+            KeyCode::Delete | KeyCode::Char('x') => Action::Remove,
             KeyCode::Char('w') => Action::Watch,
             _ => Action::None,
         },
@@ -880,7 +885,7 @@ mod tests {
                 false,
                 false
             ),
-            Action::ChangeDefaultFolder
+            Action::OpenFolder
         );
         assert_eq!(
             map(

@@ -35,7 +35,10 @@ pub(crate) fn settings_activate(app: &mut App) {
 /// their labels say.
 fn settings_toggle_row(app: &mut App) {
     match app.settings.selected {
-        3 => app.config.seed_by_default = !app.config.seed_by_default,
+        3 => {
+            app.config.seed_by_default = !app.config.seed_by_default;
+            app.queue.set_seed_by_default(app.config.seed_by_default);
+        }
         9 => {
             app.config.use_alt_rates = !app.config.use_alt_rates;
             apply_rate_limits(app);

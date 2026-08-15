@@ -393,5 +393,7 @@ async fn apply_action(app: &mut App, action: Action) {
         Action::EpisodeClose => {
             app.episode_picker.open = false;
         }
+        Action::ClearCompleted => super::actions::clear_completed(app).await,
+        Action::OpenFolder => super::actions::open_selected_item(app),
     }
 }

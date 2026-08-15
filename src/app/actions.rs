@@ -464,6 +464,35 @@ pub(crate) async fn enqueue_torrent(app: &mut App, path: &std::path::Path) {
     app.refresh_downloads();
 }
 
+/// Clears all completed / seeding items from the queue (files remain on disk).
+pub(crate) async fn clear_completed(app: &mut App) {
+    let cleared = app.queue.clear_completed().await;
+    if !cleared.is_empty() {
+        app.refresh_downloads();
+        persist(app);
+    }
+}
+
+/// Opens the selected downloaded item or its directory in the OS file manager.
+pub(crate) fn open_selected_item(app: &mut App) {
+    let Some(item) = app
+        .visible_items()
+        .get(app.state.downloads.selected)
+        .map(|v| &v.item)
+    else {
+        return;
+    };
+    let dir = &item.dir;
+    #[cfg(windows)]
+    {
+        let _ = std::process::Command::new("explorer").arg(dir).spawn();
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = open::that_detached(dir);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

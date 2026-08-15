@@ -96,6 +96,7 @@ pub struct Queue {
     /// reached it pauses itself (qBittorrent `max_ratio` + `max_ratio_act` =
     /// stop). The seed keeps its files; it is a paused seed, per AGENTS.
     stop_ratio: Option<f64>,
+    pub seed_by_default: bool,
     trackers: Vec<String>,
 }
 
@@ -112,6 +113,7 @@ impl Queue {
             runtime: HashMap::new(),
             max_downloads,
             stop_ratio: None,
+            seed_by_default: true,
             trackers: Vec::new(),
         }
     }
@@ -129,6 +131,31 @@ impl Queue {
     /// Live seed-stop ratio policy from settings; `None` disables it.
     pub fn set_stop_ratio(&mut self, ratio: Option<f64>) {
         self.stop_ratio = ratio;
+    }
+
+    /// Live auto-seeding policy from settings.
+    pub fn set_seed_by_default(&mut self, val: bool) {
+        self.seed_by_default = val;
+    }
+
+    /// Removes all completed / seeding items from the queue, keeping their files on disk.
+    pub async fn clear_completed(&mut self) -> Vec<InfoHash> {
+        let completed: Vec<InfoHash> = self
+            .items
+            .iter()
+            .filter(|i| {
+                i.finished || matches!(i.status, QueueStatus::Seeding | QueueStatus::Missing)
+            })
+            .map(|i| i.id.clone())
+            .collect();
+
+        for id in &completed {
+            let _ = self.engine.remove(id, false).await;
+            self.items.retain(|i| &i.id != id);
+            self.runtime.remove(id);
+        }
+        self.promote().await;
+        completed
     }
 
     pub fn items(&self) -> &[QueueItem] {
@@ -420,6 +447,10 @@ impl Queue {
                     id: snap.id.clone(),
                 });
                 freed_slot = true;
+                if !self.seed_by_default {
+                    item.status = QueueStatus::Paused;
+                    ratio_paused.push(snap.id.clone());
+                }
             }
 
             let status_changed = projected != previous;

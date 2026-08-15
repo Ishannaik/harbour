@@ -38,7 +38,8 @@ const TAB_GAP: &str = "   ";
 /// Cap on recently-downloaded rows; no scrolling in phase 2.
 const HISTORY_ROWS: usize = 5;
 /// Bottom hint — the actions that matter on this screen.
-const HINT: &str = "s seeding · p pause · r retry · x remove · w watch · tab search · q quit";
+const HINT: &str =
+    "o open · c clear completed · p pause · r retry · x remove · w watch · s seeding";
 
 /// Smoothing time constant for display progress (spec §3): a 200ms filter
 /// eases a moved bar without ever snapping it.

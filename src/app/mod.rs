@@ -445,6 +445,7 @@ pub async fn run(
         quitting: false,
     };
 
+    app.queue.set_seed_by_default(app.config.seed_by_default);
     app.state.screen = Screen::Splash;
     app.refresh_downloads();
 
