@@ -223,6 +223,7 @@ pub(crate) async fn start_watch_ephemeral(app: &mut App) {
             magnet,
             dir: dir.clone(),
             trackers: app.config.trackers.clone(),
+            only_files: None,
         })
         .await
     {

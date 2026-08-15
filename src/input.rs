@@ -113,6 +113,17 @@ pub enum Action {
     EpisodePageDown,
     EpisodeChoose(Option<usize>),
     EpisodeClose,
+    // --- Batch file picker: selective multi-file download ---
+    BatchUp,
+    BatchDown,
+    BatchPageUp,
+    BatchPageDown,
+    BatchToggle(Option<usize>),
+    BatchSelectAll,
+    BatchUnselectAll,
+    BatchInvert,
+    BatchConfirm,
+    BatchClose,
     /// Clear all completed / finished items from the downloads queue.
     ClearCompleted,
     /// Open the selected downloaded item or containing directory in the file manager.
@@ -150,6 +161,8 @@ pub struct FocusFlags {
     pub picker_custom: bool,
     /// The episode picker modal owns every key while up.
     pub episode_picker_open: bool,
+    /// The batch file picker modal owns every key while up.
+    pub batch_picker_open: bool,
     /// The settings overlay owns every key while up.
     pub settings_open: bool,
     /// The folder prompt (shift+d / o) owns every key while up.
@@ -194,6 +207,7 @@ pub fn map_with_focus(key: KeyEvent, screen: Screen, flags: FocusFlags) -> Actio
         picker_open,
         picker_custom,
         episode_picker_open,
+        batch_picker_open,
         settings_open,
         folder_open,
         search_focus,
@@ -220,6 +234,23 @@ pub fn map_with_focus(key: KeyEvent, screen: Screen, flags: FocusFlags) -> Actio
             KeyCode::PageUp => Action::EpisodePageUp,
             KeyCode::PageDown => Action::EpisodePageDown,
             KeyCode::Enter => Action::EpisodeChoose(None),
+            _ => Action::None,
+        };
+    }
+
+    if batch_picker_open {
+        return match key.code {
+            KeyCode::Char('q') => Action::Quit,
+            KeyCode::Esc => Action::BatchClose,
+            KeyCode::Up | KeyCode::Char('k') => Action::BatchUp,
+            KeyCode::Down | KeyCode::Char('j') => Action::BatchDown,
+            KeyCode::PageUp => Action::BatchPageUp,
+            KeyCode::PageDown => Action::BatchPageDown,
+            KeyCode::Char(' ') => Action::BatchToggle(None),
+            KeyCode::Char('a') | KeyCode::Char('A') => Action::BatchSelectAll,
+            KeyCode::Char('u') | KeyCode::Char('U') => Action::BatchUnselectAll,
+            KeyCode::Char('i') | KeyCode::Char('I') => Action::BatchInvert,
+            KeyCode::Enter => Action::BatchConfirm,
             _ => Action::None,
         };
     }

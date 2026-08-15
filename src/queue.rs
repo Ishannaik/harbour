@@ -23,7 +23,7 @@
 
 #![allow(dead_code)]
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -68,6 +68,8 @@ pub struct AddInput {
     pub bytes: Option<Vec<u8>>,
     pub dir: PathBuf,
     pub size_bytes: u64,
+    /// Selected file indices for batch downloads (None = download all).
+    pub only_files: Option<HashSet<usize>>,
 }
 
 /// Outcome of [`Queue::add`], so callers can tell the user what happened.
@@ -230,6 +232,7 @@ impl Queue {
         );
         item.total_bytes = input.size_bytes;
         item.bytes = input.bytes;
+        item.only_files = input.only_files;
         let id = item.id.clone();
         self.items.push(item);
         self.runtime.insert(id.clone(), Runtime::default());
@@ -289,6 +292,7 @@ impl Queue {
                         bytes: bytes.clone(),
                         dir: item.dir.clone(),
                         trackers,
+                        only_files: item.only_files.clone(),
                     })
                     .await
             }
@@ -300,6 +304,7 @@ impl Queue {
                         magnet,
                         dir: item.dir.clone(),
                         trackers,
+                        only_files: item.only_files.clone(),
                     })
                     .await
             }
@@ -662,6 +667,7 @@ mod tests {
             bytes: None,
             dir: PathBuf::from("/tmp/dl"),
             size_bytes: 1000,
+            only_files: None,
         }
         .with_time(at)
     }
@@ -789,6 +795,7 @@ mod tests {
                     bytes: Some(payload.clone()),
                     dir: PathBuf::from("/tmp/dl"),
                     size_bytes: 0,
+                    only_files: None,
                 },
                 1,
             )
@@ -811,6 +818,7 @@ mod tests {
                     bytes: Some(payload),
                     dir: PathBuf::from("/tmp/dl"),
                     size_bytes: 0,
+                    only_files: None,
                 },
                 2,
             )
@@ -841,8 +849,9 @@ mod tests {
                 bytes: Some(payload.clone()),
                 dir: PathBuf::from("/tmp/dl"),
                 size_bytes: 0,
+                only_files: None,
             },
-            1,
+            3,
         )
         .await;
 

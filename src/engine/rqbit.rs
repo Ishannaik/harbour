@@ -425,9 +425,7 @@ impl Engine for RqbitEngine {
             let resolved_dir = crate::core::paths::expand_home(&req.dir);
             let opts = AddTorrentOptions {
                 output_folder: Some(resolved_dir.to_string_lossy().into_owned()),
-                // Resuming onto files that already exist is the normal case for
-                // us — a re-seed, or a restart mid-download. Without this
-                // librqbit refuses rather than verifying what is there.
+                only_files: req.only_files.map(|s| s.into_iter().collect()),
                 overwrite: true,
                 ..Default::default()
             };
@@ -454,8 +452,7 @@ impl Engine for RqbitEngine {
             let resolved_dir = crate::core::paths::expand_home(&req.dir);
             let opts = AddTorrentOptions {
                 output_folder: Some(resolved_dir.to_string_lossy().into_owned()),
-                // Same resume-onto-existing-files stance as `add`: a re-seed
-                // of a `.torrent`-added item verifies what is on disk.
+                only_files: req.only_files.map(|s| s.into_iter().collect()),
                 overwrite: true,
                 ..Default::default()
             };

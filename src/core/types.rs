@@ -361,6 +361,9 @@ pub struct QueueItem {
     pub total_bytes: u64,
     /// Why this item is `Failed`, kept so the reason survives a restart.
     pub error: Option<String>,
+    /// Selected file indices for selective batch downloads.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub only_files: Option<HashSet<usize>>,
     pub added_at_epoch_ms: i64,
 }
 
@@ -386,6 +389,7 @@ impl QueueItem {
             bytes: None,
             total_bytes: 0,
             error: None,
+            only_files: None,
             added_at_epoch_ms,
         }
     }
@@ -551,6 +555,8 @@ pub struct AddRequest {
     pub dir: PathBuf,
     /// Extra announce URLs appended to whatever the magnet carries.
     pub trackers: Vec<String>,
+    /// Specific file indices to download (None = download everything).
+    pub only_files: Option<HashSet<usize>>,
 }
 
 /// What the engine is asked to start from a `.torrent` file's raw bytes
@@ -566,6 +572,8 @@ pub struct AddBytesRequest {
     pub dir: PathBuf,
     /// Extra announce URLs appended to whatever the file carries.
     pub trackers: Vec<String>,
+    /// Specific file indices to download (None = download everything).
+    pub only_files: Option<HashSet<usize>>,
 }
 
 /// One engine observation, as read by the queue's poll.

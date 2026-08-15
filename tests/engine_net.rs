@@ -89,6 +89,7 @@ async fn metadata_arrives_from_a_real_swarm() {
             magnet: SINTEL.into(),
             dir: root.join("downloads"),
             trackers: Vec::new(),
+            only_files: None,
         })
         .await
         .expect("add accepted");
@@ -144,6 +145,7 @@ async fn pause_reports_unknown_peers_not_zero() {
             magnet: SINTEL.into(),
             dir: root.join("downloads"),
             trackers: Vec::new(),
+            only_files: None,
         })
         .await
         .expect("add accepted");
@@ -207,6 +209,7 @@ async fn a_restarted_session_restores_its_torrents() {
                 magnet: SINTEL.into(),
                 dir: downloads.clone(),
                 trackers: Vec::new(),
+                only_files: None,
             })
             .await
             .expect("add accepted");
@@ -259,6 +262,7 @@ async fn the_queue_drives_the_real_engine() {
                 bytes: None,
                 dir: downloads,
                 size_bytes: 0,
+                only_files: None,
             },
             1_786_000_000_000,
         )

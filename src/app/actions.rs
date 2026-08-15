@@ -101,6 +101,19 @@ pub(crate) async fn download_selected(app: &mut App) {
     let id = crate::core::magnet::info_hash_from_magnet(&magnet)
         .unwrap_or_else(|| result.info_hash.clone());
 
+    // Check if torrent contains multiple files (e.g. season pack / batch release)
+    let video_files = app.queue.engine().list_video_files(&id).await;
+    if video_files.len() > 1 {
+        app.batch_picker.open_for(
+            id,
+            result.name.clone(),
+            Some(magnet),
+            app.config.download_dir.clone(),
+            video_files,
+        );
+        return;
+    }
+
     let outcome = app
         .queue
         .add(
@@ -112,6 +125,7 @@ pub(crate) async fn download_selected(app: &mut App) {
                 bytes: None,
                 dir: app.config.download_dir.clone(),
                 size_bytes: result.size_bytes,
+                only_files: None,
             },
             now_ms(),
         )
@@ -129,6 +143,65 @@ pub(crate) async fn download_selected(app: &mut App) {
         AddOutcome::Queued => app.warn(format!(
             "{} is queued — it starts when a slot frees",
             result.name
+        )),
+    }
+    persist(app);
+    app.refresh_downloads();
+}
+
+/// Confirms selection in batch picker and begins downloading chosen files.
+pub(crate) async fn confirm_batch_download(app: &mut App) {
+    if !app.batch_picker.open {
+        return;
+    }
+    let id = app.batch_picker.torrent_id.clone();
+    let name = app.batch_picker.torrent_name.clone();
+    let magnet = app.batch_picker.magnet.clone();
+    let dir = app.batch_picker.dir.clone();
+    let checked = app.batch_picker.checked.clone();
+    let size = app.batch_picker.selected_size_bytes();
+    let total_files = app.batch_picker.files.len();
+    app.batch_picker.open = false;
+
+    if checked.is_empty() {
+        app.warn("no files selected to download");
+        return;
+    }
+
+    let only_files = if checked.len() < total_files {
+        Some(checked)
+    } else {
+        None
+    };
+
+    let outcome = app
+        .queue
+        .add(
+            AddInput {
+                id,
+                name: name.clone(),
+                source: None,
+                magnet,
+                bytes: None,
+                dir,
+                size_bytes: size,
+                only_files,
+            },
+            now_ms(),
+        )
+        .await;
+
+    match outcome {
+        AddOutcome::Duplicate => {
+            app.warn(format!("{name} is already in your downloads"));
+            app.state.screen = Screen::Downloads;
+        }
+        AddOutcome::Started | AddOutcome::Retried => {
+            app.state.error_banner = None;
+            app.state.screen = Screen::Downloads;
+        }
+        AddOutcome::Queued => app.warn(format!(
+            "{name}: queued — starts when a download slot frees"
         )),
     }
     persist(app);
@@ -196,6 +269,7 @@ pub(crate) async fn retry_selected(app: &mut App) {
                 bytes: item.bytes.clone(),
                 dir: item.dir.clone(),
                 size_bytes: item.total_bytes,
+                only_files: item.only_files.clone(),
             },
             item.added_at_epoch_ms,
         )
@@ -410,6 +484,7 @@ pub(crate) async fn enqueue_magnet(app: &mut App, magnet: &str) {
                 bytes: None,
                 dir: app.config.download_dir.clone(),
                 size_bytes: 0,
+                only_files: None,
             },
             now_ms(),
         )
@@ -455,6 +530,7 @@ pub(crate) async fn enqueue_torrent(app: &mut App, path: &std::path::Path) {
                 bytes: Some(bytes),
                 dir: app.config.download_dir.clone(),
                 size_bytes: 0,
+                only_files: None,
             },
             now_ms(),
         )
@@ -545,6 +621,7 @@ mod tests {
             picker: PlayerPicker::default(),
             picker_pending: None,
             episode_picker: crate::ui::EpisodePicker::default(),
+            batch_picker: crate::ui::BatchPicker::default(),
             query_cache: HashMap::new(),
             quitting: false,
         };

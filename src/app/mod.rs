@@ -131,6 +131,8 @@ struct App {
     picker_pending: Option<PendingWatch>,
     /// The episode picker overlay for multi-file torrents.
     pub episode_picker: crate::ui::EpisodePicker,
+    /// The batch file picker overlay for selective multi-file downloads.
+    pub batch_picker: crate::ui::BatchPicker,
     /// Client-side query cache with 15-minute TTL: instant 0ms results.
     query_cache: HashMap<String, QueryCacheEntry>,
     quitting: bool,
@@ -441,6 +443,7 @@ pub async fn run(
         picker: PlayerPicker::default(),
         picker_pending: None,
         episode_picker: crate::ui::EpisodePicker::default(),
+        batch_picker: crate::ui::BatchPicker::default(),
         query_cache: HashMap::new(),
         quitting: false,
     };
@@ -653,6 +656,9 @@ fn draw(
             app.state.mouse_pos,
         );
     }
+    if app.batch_picker.open {
+        crate::ui::batch_picker::draw(frame, area, theme, &app.batch_picker, app.state.mouse_pos);
+    }
     if app.settings_open {
         crate::ui::settings::draw(
             frame,
@@ -761,6 +767,7 @@ mod app_tests {
             picker: PlayerPicker::default(),
             picker_pending: None,
             episode_picker: crate::ui::EpisodePicker::default(),
+            batch_picker: crate::ui::BatchPicker::default(),
             query_cache: HashMap::new(),
             quitting: false,
         };

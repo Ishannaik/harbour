@@ -51,6 +51,33 @@ async fn handle_mouse_event(app: &mut App, mouse: crossterm::event::MouseEvent) 
         return;
     }
 
+    if app.batch_picker.open {
+        let (term_w, term_h) = crossterm::terminal::size().unwrap_or((80, 24));
+        let area = ratatui::layout::Rect::new(0, 0, term_w, term_h);
+        if mouse.kind == MouseEventKind::ScrollDown {
+            app.batch_picker.select_next();
+            return;
+        }
+        if mouse.kind == MouseEventKind::ScrollUp {
+            app.batch_picker.select_prev();
+            return;
+        }
+        if mouse.kind == MouseEventKind::Down(MouseButton::Left) {
+            if let Some(file_idx) = crate::ui::batch_picker::file_at_mouse(
+                &app.batch_picker,
+                area,
+                mouse.column,
+                mouse.row,
+            ) {
+                app.batch_picker.selected = file_idx;
+                app.batch_picker.toggle_index(file_idx);
+            } else {
+                app.batch_picker.open = false;
+            }
+        }
+        return;
+    }
+
     if mouse.kind == MouseEventKind::ScrollDown {
         if app.settings_open {
             apply_action(app, Action::SettingsMoveDown).await;
@@ -163,6 +190,7 @@ pub(crate) async fn handle_event(app: &mut App, event: Event) {
             picker_open: app.picker.open,
             picker_custom: app.picker.mode == PickerMode::Custom,
             episode_picker_open: app.episode_picker.open,
+            batch_picker_open: app.batch_picker.open,
             settings_open: app.settings_open,
             folder_open: app.state.folder_prompt.open,
             search_focus: app.state.search.focus,
@@ -392,6 +420,24 @@ async fn apply_action(app: &mut App, action: Action) {
         Action::EpisodeChoose(opt_idx) => super::watch::choose_episode(app, opt_idx).await,
         Action::EpisodeClose => {
             app.episode_picker.open = false;
+        }
+        Action::BatchUp => app.batch_picker.select_prev(),
+        Action::BatchDown => app.batch_picker.select_next(),
+        Action::BatchPageUp => app.batch_picker.page_up(),
+        Action::BatchPageDown => app.batch_picker.page_down(),
+        Action::BatchToggle(opt_idx) => {
+            if let Some(idx) = opt_idx {
+                app.batch_picker.toggle_index(idx);
+            } else {
+                app.batch_picker.toggle_selected();
+            }
+        }
+        Action::BatchSelectAll => app.batch_picker.select_all(),
+        Action::BatchUnselectAll => app.batch_picker.unselect_all(),
+        Action::BatchInvert => app.batch_picker.invert_selection(),
+        Action::BatchConfirm => super::actions::confirm_batch_download(app).await,
+        Action::BatchClose => {
+            app.batch_picker.open = false;
         }
         Action::ClearCompleted => super::actions::clear_completed(app).await,
         Action::OpenFolder => super::actions::open_selected_item(app),
