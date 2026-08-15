@@ -23,9 +23,13 @@ async fn handle_mouse_event(app: &mut App, mouse: crossterm::event::MouseEvent) 
     // Track mouse position on any mouse movement or interaction.
     app.state.mouse_pos = Some((mouse.column, mouse.row));
 
-    // The settings overlay is modal: while it is up, a click must not
-    // reach the screen underneath (the overlay is painted over it).
-    if app.settings_open || app.state.folder_prompt.open {
+    if app.settings_open {
+        if mouse.kind == MouseEventKind::Down(MouseButton::Left) {
+            app.settings_open = false;
+        }
+        return;
+    }
+    if app.state.folder_prompt.open {
         return;
     }
     if mouse.kind != MouseEventKind::Down(MouseButton::Left) {

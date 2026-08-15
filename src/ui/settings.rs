@@ -265,6 +265,13 @@ pub fn draw(
                         TITLE.to_string(),
                         Style::default().fg(colors.accent().to_ratatui()),
                     ))
+                    .title(
+                        Line::from(Span::styled(
+                            " [✕] ",
+                            Style::default().fg(colors.error().to_ratatui()),
+                        ))
+                        .alignment(ratatui::layout::Alignment::Right),
+                    )
                     .style(Style::default().bg(colors.bg().to_ratatui())),
             )
             .style(Style::default().bg(colors.bg().to_ratatui())),

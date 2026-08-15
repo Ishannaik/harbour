@@ -39,13 +39,23 @@ const VERSION_FADE_DUR: Duration = Duration::from_millis(350);
 /// literal color in the splash (a highlight, not a theme choice).
 const HOT: Color = Color::Rgb(255, 255, 255);
 
-/// The splash hero: clean ANSI slant font for HARBOUR.
+/// The splash hero: a clean, symmetrical marine anchor.
 const LOGO_ART: &[&str] = &[
-    r"    __  __            __                    ",
-    r"   / / / /___ _____  / /_  ____  __  _______",
-    r"  / /_/ / __ `/ __ \/ __ \/ __ \/ / / / ___/",
-    r" / __  / /_/ / /_/ / /_/ / /_/ / /_/ / /    ",
-    r"/_/ /_/\__,_/_.___/_.___/\____/\__,_/_/     ",
+    "         .---.         ",
+    "        /     \\        ",
+    "       |   O   |       ",
+    "        \\     /        ",
+    "         '---'         ",
+    "           |           ",
+    "      .----+----.      ",
+    "     /     |     \\     ",
+    "           |           ",
+    "           |           ",
+    "           |           ",
+    "     \\     |     /     ",
+    "      \\    |    /      ",
+    "       `---o---'       ",
+    "          \\_/          ",
 ];
 
 /// Number of particles twinkling around the logo.
