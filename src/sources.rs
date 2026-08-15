@@ -110,6 +110,32 @@ pub struct HttpSource {
     health: Arc<Mutex<HashMap<SourceId, (SourceStatus, u32)>>>,
 }
 
+/// Resolves the effective indexer URL.
+///
+/// If `url` is the default "http://127.0.0.1:8765" or empty, it checks for:
+/// 1. `HARBOUR_INDEXER_URL` environment variable override.
+/// 2. Active port lockfile in `~/.harbour/indexer.port`.
+/// 3. Fallback to `http://127.0.0.1:8765`.
+pub fn resolve_indexer_url(configured_url: &str) -> String {
+    if let Ok(env_url) = std::env::var("HARBOUR_INDEXER_URL") {
+        if !env_url.trim().is_empty() {
+            return env_url.trim().to_string();
+        }
+    }
+
+    if configured_url == "http://127.0.0.1:8765" || configured_url.is_empty() {
+        let state_root = crate::core::paths::state_dir();
+        let port_path = crate::core::paths::indexer_port_file(&state_root);
+        if let Ok(content) = std::fs::read_to_string(port_path) {
+            if let Ok(port) = content.trim().parse::<u16>() {
+                return format!("http://127.0.0.1:{port}");
+            }
+        }
+    }
+
+    configured_url.to_string()
+}
+
 impl HttpSource {
     /// Builds a client for `base_url` (e.g. `http://127.0.0.1:8765`).
     ///
@@ -117,6 +143,7 @@ impl HttpSource {
     /// hanging past the search budget; the caller's `total_deadline` still
     /// bounds the whole round trip.
     pub fn new(base_url: String) -> Self {
+        let resolved_url = resolve_indexer_url(&base_url);
         let client = reqwest::Client::builder()
             .connect_timeout(Duration::from_secs(5))
             .build()
@@ -125,7 +152,7 @@ impl HttpSource {
                 reqwest::Client::new()
             });
         Self {
-            base_url,
+            base_url: resolved_url,
             client,
             health: Arc::new(Mutex::new(HashMap::new())),
         }

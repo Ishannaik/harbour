@@ -78,6 +78,11 @@ pub fn boot_marker_file(root: &Path) -> PathBuf {
     root.join("boot.marker")
 }
 
+/// Active indexer port file for dynamic discovery.
+pub fn indexer_port_file(root: &Path) -> PathBuf {
+    root.join("indexer.port")
+}
+
 pub fn cache_dir(root: &Path) -> PathBuf {
     root.join("cache")
 }

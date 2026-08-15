@@ -10,6 +10,7 @@
 const { spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
+const http = require('http');
 const https = require('https');
 
 const VERSION = '0.1.0';
@@ -43,9 +44,21 @@ function getBinaryPath() {
   return path.join(binDir, target.bin);
 }
 
+function getActiveIndexerPort() {
+  const homeDir = process.env.USERPROFILE || process.env.HOME || '.';
+  const portFile = path.join(homeDir, '.harbour', 'indexer.port');
+  if (fs.existsSync(portFile)) {
+    const raw = fs.readFileSync(portFile, 'utf8').trim();
+    const port = parseInt(raw, 10);
+    if (!isNaN(port) && port > 0) return port;
+  }
+  return 8765;
+}
+
 async function ensureIndexer() {
+  const port = getActiveIndexerPort();
   return new Promise((resolve) => {
-    const req = https.get('http://127.0.0.1:8765/health', (res) => {
+    const req = http.get(`http://127.0.0.1:${port}/health`, (res) => {
       resolve(res.statusCode === 200);
     });
     req.on('error', () => {
