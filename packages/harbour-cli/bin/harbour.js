@@ -43,7 +43,30 @@ function getBinaryPath() {
   return path.join(binDir, target.bin);
 }
 
-function run() {
+async function ensureIndexer() {
+  return new Promise((resolve) => {
+    const req = https.get('http://127.0.0.1:8765/health', (res) => {
+      resolve(res.statusCode === 200);
+    });
+    req.on('error', () => {
+      // Indexer not reachable — try to auto-spawn if present locally
+      const localIndexer = path.join(__dirname, '..', '..', '..', 'harbour-indexer', 'target', 'release', 'harbour-indexer.exe');
+      if (fs.existsSync(localIndexer)) {
+        console.log(`\x1b[36m[harbour]\x1b[0m Starting local indexer in background...`);
+        const indexerProc = spawn(localIndexer, [], { detached: true, stdio: 'ignore' });
+        indexerProc.unref();
+      }
+      resolve(false);
+    });
+    req.setTimeout(500, () => {
+      req.destroy();
+      resolve(false);
+    });
+  });
+}
+
+async function run() {
+  await ensureIndexer();
   const binPath = getBinaryPath();
 
   if (!fs.existsSync(binPath)) {
