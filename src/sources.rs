@@ -117,19 +117,19 @@ pub struct HttpSource {
 /// 2. Active port lockfile in `~/.harbour/indexer.port`.
 /// 3. Fallback to `http://127.0.0.1:8765`.
 pub fn resolve_indexer_url(configured_url: &str) -> String {
-    if let Ok(env_url) = std::env::var("HARBOUR_INDEXER_URL") {
-        if !env_url.trim().is_empty() {
-            return env_url.trim().to_string();
-        }
+    if let Ok(env_url) = std::env::var("HARBOUR_INDEXER_URL")
+        && !env_url.trim().is_empty()
+    {
+        return env_url.trim().to_string();
     }
 
     if configured_url == "http://127.0.0.1:8765" || configured_url.is_empty() {
         let state_root = crate::core::paths::state_dir();
         let port_path = crate::core::paths::indexer_port_file(&state_root);
-        if let Ok(content) = std::fs::read_to_string(port_path) {
-            if let Ok(port) = content.trim().parse::<u16>() {
-                return format!("http://127.0.0.1:{port}");
-            }
+        if let Ok(content) = std::fs::read_to_string(port_path)
+            && let Ok(port) = content.trim().parse::<u16>()
+        {
+            return format!("http://127.0.0.1:{port}");
         }
     }
 

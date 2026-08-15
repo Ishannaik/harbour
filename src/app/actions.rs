@@ -224,10 +224,9 @@ pub(crate) fn apply_event(app: &mut App, event: EngineEvent) {
         }
         EngineEvent::SourceResults { source, results } => {
             // A disabled source's late answer is dropped, never merged: the
-            // toggle already re-ran the query, so its batch has no place here.
+            // toggle already filtered it, so its batch has no place here.
             if !app.disabled_sources.contains(&source) {
-                app.partial.insert(source, results);
-                app.remerge();
+                merge_source_results(app, source, results);
             }
         }
         EngineEvent::SourceFailed {
@@ -269,6 +268,23 @@ pub(crate) fn apply_event(app: &mut App, event: EngineEvent) {
             persist(app);
         }
     }
+}
+
+fn merge_source_results(
+    app: &mut App,
+    source: crate::core::types::SourceId,
+    results: Vec<crate::core::types::TorrentResult>,
+) {
+    if source == crate::core::types::SourceId::Indexer {
+        for r in results {
+            if !app.disabled_sources.contains(&r.source) {
+                app.partial.entry(r.source).or_default().push(r);
+            }
+        }
+    } else {
+        app.partial.insert(source, results);
+    }
+    app.remerge();
 }
 
 fn item_name(app: &App, id: &str) -> String {

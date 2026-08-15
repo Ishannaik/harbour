@@ -127,6 +127,7 @@ pub fn draw(
     state: &SearchState,
     disabled: &HashSet<SourceId>,
     theme: &Theme,
+    mouse_pos: Option<(u16, u16)>,
 ) {
     let colors = &theme.colors;
     let bg = colors.bg().to_ratatui();
@@ -154,8 +155,8 @@ pub fn draw(
 
     let cols =
         Layout::horizontal([Constraint::Length(SIDEBAR_WIDTH), Constraint::Min(0)]).split(inner);
-    draw_sidebar(frame, cols[0], state, disabled, theme);
-    draw_main(frame, cols[1], state, theme);
+    draw_sidebar(frame, cols[0], state, disabled, theme, mouse_pos);
+    draw_main(frame, cols[1], state, theme, mouse_pos);
 }
 
 /// Left column: "Sources" title, then one divider header per group with its
@@ -167,6 +168,7 @@ fn draw_sidebar(
     state: &SearchState,
     disabled: &HashSet<SourceId>,
     theme: &Theme,
+    mouse_pos: Option<(u16, u16)>,
 ) {
     let colors = &theme.colors;
     let width = area.width as usize;
@@ -189,6 +191,10 @@ fn draw_sidebar(
             Style::default().fg(head_color.to_ratatui()),
         )));
         for (id, label) in *sources {
+            let row_y = area.y + lines.len() as u16;
+            let hovered = mouse_pos.is_some_and(|(mx, my)| {
+                mx >= area.x && mx < area.right() && my == row_y
+            });
             lines.push(source_line(
                 *id,
                 disabled.contains(id),
@@ -196,6 +202,7 @@ fn draw_sidebar(
                 state,
                 theme,
                 width,
+                hovered,
             ));
         }
     }
@@ -213,21 +220,31 @@ fn source_line(
     state: &SearchState,
     theme: &Theme,
     width: usize,
+    hovered: bool,
 ) -> Line<'static> {
     let colors = &theme.colors;
+    let base_style = if hovered {
+        Style::default().bg(colors.selected_bg().to_ratatui())
+    } else {
+        Style::default()
+    };
+
     // Disabled wins over every health state: the row is deliberately flat.
     if disabled {
+        let (dot_str, fg) = if hovered {
+            ("  ▸ ", colors.text().to_ratatui())
+        } else {
+            ("  · ", colors.dim().to_ratatui())
+        };
         return Line::from(vec![
-            Span::styled("  · ", Style::default().fg(colors.dim().to_ratatui())),
+            Span::styled(dot_str, Style::default().fg(fg)),
             Span::styled(
                 truncate(label, width.saturating_sub(4)),
-                Style::default().fg(colors.dim().to_ratatui()),
+                Style::default().fg(fg),
             ),
-        ]);
+        ])
+        .style(base_style);
     }
-    // A source that has not answered *yet* must not read as dead: `Checking`
-    // renders the live glyph muted (Ishan's pending dot), while never-probed
-    // stays the neutral placeholder.
     // A source that has not answered *yet* must not read as dead: `Checking`
     // renders the live glyph muted (Ishan's pending dot), while never-probed
     // stays the neutral placeholder.
@@ -238,6 +255,11 @@ fn source_line(
         Some(SourceStatus::Checking) => (theme.symbols.dot_online.as_ref(), colors.muted()),
         Some(SourceStatus::Unknown) | None => ("·", colors.muted()),
     };
+    let text_fg = if hovered {
+        colors.accent().to_ratatui()
+    } else {
+        colors.text().to_ratatui()
+    };
     Line::from(vec![
         Span::styled(
             format!("  {dot} "),
@@ -245,13 +267,20 @@ fn source_line(
         ),
         Span::styled(
             truncate(label, width.saturating_sub(4)),
-            Style::default().fg(colors.text().to_ratatui()),
+            Style::default().fg(text_fg),
         ),
     ])
+    .style(base_style)
 }
 
 /// Right column: search bar, results header, result list, hint line.
-fn draw_main(frame: &mut Frame, area: Rect, state: &SearchState, theme: &Theme) {
+fn draw_main(
+    frame: &mut Frame,
+    area: Rect,
+    state: &SearchState,
+    theme: &Theme,
+    mouse_pos: Option<(u16, u16)>,
+) {
     let rows = Layout::vertical([
         Constraint::Length(SEARCH_BAR_H),
         Constraint::Length(1), // results header
@@ -260,9 +289,9 @@ fn draw_main(frame: &mut Frame, area: Rect, state: &SearchState, theme: &Theme) 
     ])
     .split(area);
     let elapsed = clock();
-    draw_search_bar(frame, rows[0], state, theme, elapsed);
+    draw_search_bar(frame, rows[0], state, theme, elapsed, mouse_pos);
     draw_header(frame, rows[1], state, theme);
-    draw_results(frame, rows[2], state, theme);
+    draw_results(frame, rows[2], state, theme, mouse_pos);
     let hint = if state.focus { HINT } else { RESULTS_HINT };
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
@@ -283,6 +312,7 @@ fn draw_search_bar(
     state: &SearchState,
     theme: &Theme,
     elapsed: Duration,
+    mouse_pos: Option<(u16, u16)>,
 ) {
     if area.width < 6 || area.height < SEARCH_BAR_H {
         return; // no room for both border rows and the content row
@@ -293,9 +323,12 @@ fn draw_search_bar(
     // muted + a label means "results focused — esc to type". Clicking the
     // bar returns focus to the input (mouse_to_action).
     let input_focused = state.focus;
+    let is_hovered = mouse_pos.is_some_and(|(mx, my)| {
+        mx >= area.x && mx < area.right() && my >= area.y && my < area.bottom()
+    });
     let accent = Style::default().fg(colors.accent().to_ratatui());
     let muted = Style::default().fg(colors.muted().to_ratatui());
-    let border_style = if input_focused { accent } else { muted };
+    let border_style = if input_focused || is_hovered { accent } else { muted };
     let inner = (area.width - 2) as usize;
     let fill = s.border_h.as_ref().repeat(inner);
     let (top, bottom) = (
@@ -325,19 +358,24 @@ fn draw_search_bar(
     if !input_focused {
         // The results pane owns the keyboard: the bar says so, and says how
         // to get back to typing. No cursor — nothing is being typed.
-        let label = "results focused — esc or backspace to type";
+        let label = if is_hovered {
+            "click or type to focus search input"
+        } else {
+            "results focused — esc or backspace to type"
+        };
+        let label_style = if is_hovered { accent } else { muted };
         spans.push(Span::styled(
             truncate(label, inner.saturating_sub(3)),
-            muted,
+            label_style,
         ));
         let pad = inner.saturating_sub(2 + label.chars().count());
         if pad > 0 {
             spans.push(Span::raw(" ".repeat(pad)));
         }
         if !spinner.is_empty() {
-            spans.push(Span::styled(spinner, muted));
+            spans.push(Span::styled(spinner, label_style));
         }
-        spans.push(Span::styled(s.border_v.as_ref().to_string(), muted));
+        spans.push(Span::styled(s.border_v.as_ref().to_string(), border_style));
         frame.render_widget(
             Paragraph::new(Line::from(spans)),
             Rect::new(area.x, area.y + 1, area.width, 1),
@@ -510,7 +548,13 @@ fn distinct_sources(results: &[TorrentResult]) -> usize {
 
 /// Result list: one row per result, scrolled so the selection stays visible.
 /// The empty state names the next action instead of sitting blank.
-fn draw_results(frame: &mut Frame, area: Rect, state: &SearchState, theme: &Theme) {
+fn draw_results(
+    frame: &mut Frame,
+    area: Rect,
+    state: &SearchState,
+    theme: &Theme,
+    mouse_pos: Option<(u16, u16)>,
+) {
     if state.results.is_empty() {
         let msg = if state.searching {
             "searching…"
@@ -524,16 +568,22 @@ fn draw_results(frame: &mut Frame, area: Rect, state: &SearchState, theme: &Them
     let vis = area.height as usize;
     let start = scroll_start(state.results.len(), state.selected, vis);
     let mut lines: Vec<Line> = Vec::new();
-    for (i, result) in state
+    for (rel_idx, (i, result)) in state
         .results
         .iter()
         .enumerate()
         .skip(start)
         .take(vis.max(1))
+        .enumerate()
     {
+        let row_y = area.y + rel_idx as u16;
+        let hovered = mouse_pos.is_some_and(|(mx, my)| {
+            mx >= area.x && mx < area.right() && my == row_y
+        });
         lines.push(result_line(
             result,
             i == state.selected,
+            hovered,
             state,
             theme,
             width,
@@ -542,13 +592,14 @@ fn draw_results(frame: &mut Frame, area: Rect, state: &SearchState, theme: &Them
     frame.render_widget(Paragraph::new(lines), area);
 }
 
-/// One result row: name (accent when selected), then right-aligned size,
+/// One result row: name (accent when selected or hovered), then right-aligned size,
 /// seeders, leechers, the quality chip (only when the title names one),
 /// and the source chip. Both chips stay dim until their source reports a
 /// count — the staggered pop-in as sources answer (design §2.2).
 fn result_line(
     result: &TorrentResult,
     selected: bool,
+    hovered: bool,
     state: &SearchState,
     theme: &Theme,
     width: usize,
@@ -581,7 +632,7 @@ fn result_line(
         + usize::from(quality.is_some());
     let name = truncate(&result.name, width.saturating_sub(suffix_w + 1));
     let pad = width.saturating_sub(name.chars().count() + suffix_w);
-    let name_fg = if selected {
+    let name_fg = if selected || hovered {
         colors.accent()
     } else {
         colors.text()
@@ -611,7 +662,7 @@ fn result_line(
         chip,
         Style::default().fg(chip_fg.to_ratatui()),
     ));
-    row_line(spans, selected, colors)
+    row_line(spans, selected, hovered, colors)
 }
 
 /// Health tier for a seeder/leecher count (FR-24): >=100 is a healthy swarm
@@ -719,15 +770,17 @@ fn scroll_start(len: usize, selected: usize, vis: usize) -> usize {
 
 /// Selected-row background as the line's base style; spans set only fg, so
 /// the highlight shows through every cell.
-fn row_line(spans: Vec<Span<'static>>, selected: bool, colors: &ThemeColors) -> Line<'static> {
-    let base = if selected {
+fn row_line(
+    spans: Vec<Span<'static>>,
+    selected: bool,
+    hovered: bool,
+    colors: &ThemeColors,
+) -> Line<'static> {
+    let base = if selected || hovered {
         Style::default().bg(colors.selected_bg().to_ratatui())
     } else {
         Style::default()
     };
-    // `Line::styled` builds a line from *text*; a line already made of spans
-    // takes its base style via `.style()`. Same result, and the per-span fg
-    // still wins over the line's bg.
     Line::from(spans).style(base)
 }
 

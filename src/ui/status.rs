@@ -219,6 +219,34 @@ pub fn draw(
                 ))
             })
             .collect();
+
+        let dismiss_w = 13u16;
+        let is_dismiss_hovered = state.mouse_pos.is_some_and(|(mx, my)| {
+            my == banner_area.y
+                && mx >= banner_area.right().saturating_sub(dismiss_w + 2)
+                && mx < banner_area.right()
+        });
+        let is_banner_hovered = state.mouse_pos.is_some_and(|(mx, my)| {
+            mx >= banner_area.x
+                && mx < banner_area.right()
+                && my >= banner_area.y
+                && my < banner_area.bottom()
+        });
+        let dismiss_fg = if is_dismiss_hovered {
+            colors.error().to_ratatui()
+        } else if is_banner_hovered {
+            colors.text().to_ratatui()
+        } else {
+            colors.accent().to_ratatui()
+        };
+        let dismiss_style = if is_dismiss_hovered {
+            Style::default()
+                .fg(dismiss_fg)
+                .add_modifier(ratatui::style::Modifier::BOLD)
+        } else {
+            Style::default().fg(dismiss_fg)
+        };
+
         let block = Block::new()
             .borders(Borders::ALL)
             .border_style(Style::default().fg(colors.error().to_ratatui()))
@@ -227,11 +255,8 @@ pub fn draw(
                 Style::default().fg(colors.error().to_ratatui()),
             ))
             .title(
-                Line::from(Span::styled(
-                    " [✕ dismiss] ",
-                    Style::default().fg(colors.accent().to_ratatui()),
-                ))
-                .alignment(ratatui::layout::Alignment::Right),
+                Line::from(Span::styled(" [✕ dismiss] ", dismiss_style))
+                    .alignment(ratatui::layout::Alignment::Right),
             )
             .style(Style::default().bg(colors.selected_bg().to_ratatui()));
         frame.render_widget(

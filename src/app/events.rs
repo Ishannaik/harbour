@@ -19,36 +19,51 @@ use super::watch::{
 };
 use super::{App, mouse_view_area};
 
+async fn handle_mouse_event(app: &mut App, mouse: crossterm::event::MouseEvent) {
+    // Track mouse position on any mouse movement or interaction.
+    app.state.mouse_pos = Some((mouse.column, mouse.row));
+
+    // The settings overlay is modal: while it is up, a click must not
+    // reach the screen underneath (the overlay is painted over it).
+    if app.settings_open || app.state.folder_prompt.open {
+        return;
+    }
+    if mouse.kind != MouseEventKind::Down(MouseButton::Left) {
+        return;
+    }
+    // Dismiss error banner if clicked directly or on its [✕ dismiss] button
+    if app.state.error_banner.is_some() {
+        let (_, term_height) = crossterm::terminal::size().unwrap_or((0, 0));
+        let banner_h = super::banner_height(app.state.error_banner.as_deref());
+        let banner_top = term_height.saturating_sub(banner_h + 1);
+        let banner_bottom = term_height.saturating_sub(1);
+        if mouse.row >= banner_top && mouse.row < banner_bottom {
+            app.state.error_banner = None;
+            return;
+        }
+    }
+
+    // Build the action first: `mouse_to_action` borrows `app.state`
+    // only to read the screen, and the awaited apply takes `app`
+    // mutably — the two cannot overlap.
+    let action = crate::input::mouse_to_action(
+        app.state.screen,
+        mouse_view_area(app),
+        mouse.column,
+        mouse.row,
+        app.help_open,
+        app.state.downloads.show_seeding,
+    );
+    apply_action(app, action).await;
+}
+
 /// Turns one terminal event into state changes.
 pub(crate) async fn handle_event(app: &mut App, event: Event) {
     // A left-button press is a click. Releases, drags, scrolls, and other
     // buttons carry no selection intent; ignoring them keeps a scroll wheel
     // from firing row selections while the user browses.
     if let Event::Mouse(mouse) = event {
-        // The settings overlay is modal: while it is up, a click must not
-        // reach the screen underneath (the overlay is painted over it).
-        if app.settings_open {
-            return;
-        }
-        // The folder prompt (FR-29/40) is modal the same way: its panel is
-        // painted over the screen, so a click behind it must not select rows.
-        if app.state.folder_prompt.open {
-            return;
-        }
-        if mouse.kind == MouseEventKind::Down(MouseButton::Left) {
-            // Build the action first: `mouse_to_action` borrows `app.state`
-            // only to read the screen, and the awaited apply takes `app`
-            // mutably — the two cannot overlap.
-            let action = crate::input::mouse_to_action(
-                app.state.screen,
-                mouse_view_area(app),
-                mouse.column,
-                mouse.row,
-                app.help_open,
-                app.state.downloads.show_seeding,
-            );
-            apply_action(app, action).await;
-        }
+        handle_mouse_event(app, mouse).await;
         return;
     }
     let Event::Key(key) = event else {
@@ -227,23 +242,35 @@ async fn apply_action(app: &mut App, action: Action) {
         }
         Action::PlayerChoose => choose_player(app).await,
         Action::ToggleSource(id) => {
-            // Flip the runtime bit; `insert` reports whether the id was new.
-            if !app.disabled_sources.insert(id) {
+            let was_disabled = app.disabled_sources.contains(&id);
+            if was_disabled {
                 app.disabled_sources.remove(&id);
+            } else {
+                app.disabled_sources.insert(id);
             }
             // Persist the same choice — the config is the fallback on boot.
             app.config.disabled_sources = app.disabled_sources.iter().copied().collect();
             if let Err(err) = app.store.save_config(&app.config) {
                 app.warn(format!("could not save source toggle: {err}"));
             }
-            // Drop the disabled source's rows from the visible list right
-            // away, then re-run the current query (or the browse) so enabled
-            // sources answer fresh and the just-disabled one is not queried.
-            app.partial
-                .retain(|source, _| !app.disabled_sources.contains(source));
-            app.remerge();
-            let query = app.state.search.query.clone();
-            app.start_search(query);
+
+            if !was_disabled {
+                // When disabling a source, DO NOT call app.start_search(query)!
+                // Instant in-memory filtering:
+                app.partial
+                    .retain(|source, _| !app.disabled_sources.contains(source));
+                app.remerge();
+            } else {
+                // When enabling a source: if we have a current query or are in browse mode,
+                // query just that source without blanking existing results on screen.
+                let query = app.state.search.query.clone();
+                let should_fetch = !query.trim().is_empty()
+                    || app.state.search.browsing
+                    || !app.state.search.results.is_empty();
+                if should_fetch {
+                    app.fetch_single_source(id);
+                }
+            }
         }
         Action::OpenSettings => {
             app.settings_open = !app.settings_open;

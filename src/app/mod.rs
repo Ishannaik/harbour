@@ -254,6 +254,23 @@ impl App {
     }
 }
 
+fn poll_and_send_event(tx: &mpsc::UnboundedSender<Event>) -> bool {
+    match event::poll(std::time::Duration::from_millis(20)) {
+        Ok(true) => match event::read() {
+            Ok(ev) => tx.send(ev).is_ok(),
+            Err(_) => {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+                true
+            }
+        },
+        Ok(false) => true,
+        Err(_) => {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            true
+        }
+    }
+}
+
 /// Reads terminal events on a dedicated thread.
 ///
 /// `crossterm::event::read` blocks, and blocking a tokio worker would stall the
@@ -262,24 +279,7 @@ impl App {
 fn spawn_input_thread() -> mpsc::UnboundedReceiver<Event> {
     let (tx, rx) = mpsc::unbounded_channel();
     std::thread::spawn(move || {
-        loop {
-            match event::poll(std::time::Duration::from_millis(20)) {
-                Ok(true) => match event::read() {
-                    Ok(ev) => {
-                        if tx.send(ev).is_err() {
-                            return;
-                        }
-                    }
-                    Err(_) => {
-                        std::thread::sleep(std::time::Duration::from_millis(10));
-                    }
-                },
-                Ok(false) => {}
-                Err(_) => {
-                    std::thread::sleep(std::time::Duration::from_millis(10));
-                }
-            }
-        }
+        while poll_and_send_event(&tx) {}
     });
     rx
 }
@@ -440,7 +440,10 @@ pub async fn run(
     }
 
     match initial {
-        InitialAction::None => {}
+        InitialAction::None => {
+            // Warm up curated browse immediately in background while splash animation plays!
+            app.start_search(String::new());
+        }
         InitialAction::Magnet(magnet) => enqueue_magnet(&mut app, &magnet).await,
         InitialAction::TorrentFile(path) => enqueue_torrent(&mut app, &path).await,
     }
