@@ -242,39 +242,12 @@ async fn apply_action(app: &mut App, action: Action) {
         }
         Action::PlayerChoose => choose_player(app).await,
         Action::ToggleSource(id) => {
-            let was_disabled = app.disabled_sources.contains(&id);
-            if was_disabled {
+            if app.disabled_sources.contains(&id) {
                 app.disabled_sources.remove(&id);
             } else {
                 app.disabled_sources.insert(id);
             }
-            // Persist the same choice — the config is the fallback on boot.
-            app.config.disabled_sources = app.disabled_sources.iter().copied().collect();
-            if let Err(err) = app.store.save_config(&app.config) {
-                app.warn(format!("could not save source toggle: {err}"));
-            }
-
-            if !was_disabled {
-                // When disabling a source:
-                // Instant in-memory filtering (0ms, no network):
-                app.state
-                    .search
-                    .results
-                    .retain(|r| !app.disabled_sources.contains(&r.source));
-                app.partial
-                    .retain(|source, _| !app.disabled_sources.contains(source));
-                app.remerge();
-            } else {
-                // When enabling a source: if we have a current query or are in browse mode,
-                // query just that source without blanking existing results on screen.
-                let query = app.state.search.query.clone();
-                let should_fetch = !query.trim().is_empty()
-                    || app.state.search.browsing
-                    || !app.state.search.results.is_empty();
-                if should_fetch {
-                    app.fetch_single_source(id);
-                }
-            }
+            app.apply_source_filter();
         }
         Action::OpenSettings => {
             app.settings_open = !app.settings_open;

@@ -304,18 +304,7 @@ fn settings_toggle_source(app: &mut App, id: SourceId) {
     // Deterministic config output: the persisted list is always sorted.
     app.config.disabled_sources.sort_by_key(|s| s.as_str());
     save_settings(app);
-    refresh_search_after_sources(app);
-}
-
-/// Re-runs the current search (or browse) so results reflect the new
-/// enabled-source set — a settings toggle and the sidebar toggle behave
-/// identically. No-op when nothing has been searched yet.
-fn refresh_search_after_sources(app: &mut App) {
-    if !app.state.search.searching && app.partial.is_empty() && app.state.search.query.is_empty() {
-        return;
-    }
-    let query = app.state.search.query.clone();
-    app.start_search(query);
+    app.apply_source_filter();
 }
 
 /// Persists `app.config` through the existing store, then re-derives the

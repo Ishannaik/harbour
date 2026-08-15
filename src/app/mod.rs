@@ -185,6 +185,18 @@ impl App {
         }
     }
 
+    /// Sidebar / settings source toggle: hide or show rows we already have.
+    /// Never starts a new search — that was making every other source
+    /// flip back to "querying".
+    pub(crate) fn apply_source_filter(&mut self) {
+        self.config.disabled_sources = self.disabled_sources.iter().copied().collect();
+        if let Err(err) = self.store.save_config(&self.config) {
+            self.warn(format!("could not save source toggle: {err}"));
+        }
+        self.search.set_disabled(self.disabled_sources.clone());
+        self.remerge();
+    }
+
     /// Stops an in-flight search: the partial results already merged stay on
     /// screen, so navigation is stable (arrow keys during streaming read as
     /// "let me look at what's here", not "move the cursor under a changing
@@ -230,28 +242,6 @@ impl App {
         // disabled source is never queried and never merges results (2.2).
         self.search.set_disabled(self.disabled_sources.clone());
         self.search_cancel = Some(ctx.cancel.clone());
-        self.search.start(query, ctx, self.events_tx.clone());
-    }
-
-    /// Fetches results for a single newly enabled source without blanking
-    /// existing results on screen.
-    fn fetch_single_source(&mut self, source_id: SourceId) {
-        let query = self.state.search.query.clone();
-        self.state
-            .search
-            .source_health
-            .insert(source_id, SourceStatus::Checking);
-
-        let exclude_all_except_id: HashSet<SourceId> = SourceId::ALL
-            .iter()
-            .copied()
-            .filter(|&s| s != source_id)
-            .collect();
-        let ctx = SearchCtx {
-            total_deadline: paths::source_timeout(),
-            disabled: exclude_all_except_id,
-            ..SearchCtx::default()
-        };
         self.search.start(query, ctx, self.events_tx.clone());
     }
 }
