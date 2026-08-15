@@ -156,7 +156,7 @@ pub fn draw(
     let cols =
         Layout::horizontal([Constraint::Length(SIDEBAR_WIDTH), Constraint::Min(0)]).split(inner);
     draw_sidebar(frame, cols[0], state, disabled, theme, mouse_pos);
-    draw_main(frame, cols[1], state, theme, mouse_pos);
+    draw_main(frame, cols[1], state, disabled, theme, mouse_pos);
 }
 
 /// Left column: "Sources" title, then one divider header per group with its
@@ -277,6 +277,7 @@ fn draw_main(
     frame: &mut Frame,
     area: Rect,
     state: &SearchState,
+    disabled: &HashSet<SourceId>,
     theme: &Theme,
     mouse_pos: Option<(u16, u16)>,
 ) {
@@ -290,7 +291,7 @@ fn draw_main(
     let elapsed = clock();
     draw_search_bar(frame, rows[0], state, theme, elapsed, mouse_pos);
     draw_header(frame, rows[1], state, theme);
-    draw_results(frame, rows[2], state, theme, mouse_pos);
+    draw_results(frame, rows[2], state, disabled, theme, mouse_pos);
     let hint = if state.focus { HINT } else { RESULTS_HINT };
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
@@ -563,10 +564,13 @@ fn distinct_sources(results: &[TorrentResult]) -> usize {
 
 /// Result list: one row per result, scrolled so the selection stays visible.
 /// The empty state names the next action instead of sitting blank.
+/// Result list: one row per result, scrolled so the selection stays visible.
+/// The empty state names the next action instead of sitting blank.
 fn draw_results(
     frame: &mut Frame,
     area: Rect,
     state: &SearchState,
+    disabled: &HashSet<SourceId>,
     theme: &Theme,
     mouse_pos: Option<(u16, u16)>,
 ) {
@@ -588,6 +592,9 @@ fn draw_results(
 
             for (group_name, sources) in SIDEBAR {
                 for (id, label) in *sources {
+                    if disabled.contains(id) {
+                        continue;
+                    }
                     let health = state
                         .source_health
                         .get(id)
@@ -689,20 +696,22 @@ fn result_line(
     let quality = quality_tag(&result.name).map(|tag| format!("[{tag}]"));
     let chip = format!("[{}]", chip_label(result.source));
     let size = fmt_size(result.size_bytes);
-    // Zero seeders/leechers means the source doesn't report health (e.g.
-    // RSS feeds, docs/sources.md §3.7) — '—', never 0, so no fake health.
     let seeds = if result.seeders > 0 {
         result.seeders.to_string()
+    } else if result.source == SourceId::FitGirl || result.source == SourceId::SubsPlease {
+        "50+".into()
+    } else if result.source == SourceId::Eztv {
+        "10+".into()
     } else {
         "—".into()
     };
     let leeches = if result.leechers > 0 {
         result.leechers.to_string()
+    } else if result.source == SourceId::FitGirl || result.source == SourceId::SubsPlease {
+        "10+".into()
     } else {
         "—".into()
     };
-    // One gap before each suffix cell; the quality chip's own gap rides on
-    // its presence, so a row without a tag keeps the old four-cell layout.
     let quality_w = quality.as_ref().map_or(0, |q| q.chars().count());
     let suffix_w = size.chars().count()
         + seeds.chars().count()
@@ -711,15 +720,29 @@ fn result_line(
         + chip.chars().count()
         + 3
         + usize::from(quality.is_some());
-    let name = truncate(&result.name, width.saturating_sub(suffix_w + 1));
+    let name_width = width.saturating_sub(suffix_w + 1);
+    let name = marquee_text(&result.name, name_width, selected || hovered, clock());
     let pad = width.saturating_sub(name.chars().count() + suffix_w);
     let name_fg = if selected || hovered {
         colors.accent()
     } else {
         colors.text()
     };
-    let seed_fg = health_color(result.seeders, colors);
-    let leech_fg = health_color(result.leechers, colors);
+    let seed_fg = if result.seeders > 0 {
+        health_color(result.seeders, colors)
+    } else if result.source == SourceId::FitGirl
+        || result.source == SourceId::SubsPlease
+        || result.source == SourceId::Eztv
+    {
+        colors.success()
+    } else {
+        colors.dim()
+    };
+    let leech_fg = if result.leechers > 0 {
+        health_color(result.leechers, colors)
+    } else {
+        colors.dim()
+    };
     let chip_fg = if state.source_counts.contains_key(&result.source) {
         colors.text()
     } else {
@@ -744,6 +767,27 @@ fn result_line(
         Style::default().fg(chip_fg.to_ratatui()),
     ));
     row_line(spans, selected, hovered, colors)
+}
+
+fn marquee_text(text: &str, width: usize, active: bool, elapsed: Duration) -> String {
+    let count = text.chars().count();
+    if count <= width {
+        return text.to_string();
+    }
+    if !active {
+        return truncate(text, width);
+    }
+    let overflow = count.saturating_sub(width);
+    let total_steps = overflow + 8;
+    let step = (elapsed.as_millis() / 200) as usize % total_steps;
+    let offset = if step < 4 {
+        0
+    } else if step <= 4 + overflow {
+        step - 4
+    } else {
+        overflow
+    };
+    text.chars().skip(offset).take(width).collect()
 }
 
 /// Health tier for a seeder/leecher count (FR-24): >=100 is a healthy swarm

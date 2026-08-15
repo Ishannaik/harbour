@@ -121,6 +121,16 @@ struct App {
     picker: PlayerPicker,
     /// A watch waiting on a player choice, if any.
     picker_pending: Option<PendingWatch>,
+    /// Client-side query cache with 15-minute TTL: instant 0ms results.
+    query_cache: HashMap<
+        String,
+        (
+            Instant,
+            Vec<TorrentResult>,
+            HashMap<SourceId, usize>,
+            HashMap<SourceId, SourceStatus>,
+        ),
+    >,
     quitting: bool,
 }
 
@@ -211,6 +221,21 @@ impl App {
         // there is a query to edit.
         self.state.search.browsing = query.trim().is_empty();
         self.state.error_banner = None;
+        // 0ms instant cache hit:
+        let cache_ttl = std::time::Duration::from_secs(900);
+        if let Some((ts, cached_results, counts, health)) = self.query_cache.get(&query) {
+            if ts.elapsed() < cache_ttl && !cached_results.is_empty() {
+                self.state.search.results = cached_results.clone();
+                self.state.search.source_counts = counts.clone();
+                self.state.search.source_health = health.clone();
+                self.state.search.searching = false;
+                self.state.search.latency_ms = Some(0);
+                if ts.elapsed() < std::time::Duration::from_secs(60) {
+                    return;
+                }
+            }
+        }
+
         self.partial.clear();
         self.state.search.results.clear();
         self.state.search.selected = 0;
@@ -405,6 +430,7 @@ pub async fn run(
         watch: None,
         picker: PlayerPicker::default(),
         picker_pending: None,
+        query_cache: HashMap::new(),
         quitting: false,
     };
 

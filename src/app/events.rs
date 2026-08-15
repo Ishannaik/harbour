@@ -173,11 +173,23 @@ async fn apply_action(app: &mut App, action: Action) {
             }
         }
         Action::Submit => {
-            let query = app.state.search.query.clone();
-            app.start_search(query);
-            // Enter hands the keyboard to the results pane: plain keys act
-            // on the selected row from here (d/w/s/?).
-            app.state.search.focus = false;
+            if app.state.search.focus {
+                let query = app.state.search.query.clone();
+                if query.trim().is_empty() && !app.state.search.results.is_empty() {
+                    match app.state.screen {
+                        Screen::Search => start_watch_ephemeral(app).await,
+                        _ => start_watch(app).await,
+                    }
+                } else {
+                    app.start_search(query);
+                    app.state.search.focus = false;
+                }
+            } else {
+                match app.state.screen {
+                    Screen::Search => start_watch_ephemeral(app).await,
+                    _ => start_watch(app).await,
+                }
+            }
         }
         Action::FocusSearchInput => {
             app.state.search.focus = true;

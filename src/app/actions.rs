@@ -301,6 +301,20 @@ fn merge_source_results(
         app.partial.insert(source, results);
     }
     app.remerge();
+    let query = if app.state.search.browsing {
+        String::new()
+    } else {
+        app.state.search.query.clone()
+    };
+    app.query_cache.insert(
+        query,
+        (
+            std::time::Instant::now(),
+            app.state.search.results.clone(),
+            app.state.search.source_counts.clone(),
+            app.state.search.source_health.clone(),
+        ),
+    );
     if let Some(started) = app.state.search.search_started {
         let ms = started.elapsed().as_millis() as u64;
         app.state.search.latency_ms = Some(ms);
@@ -457,6 +471,7 @@ mod tests {
             watch: None,
             picker: PlayerPicker::default(),
             picker_pending: None,
+            query_cache: HashMap::new(),
             quitting: false,
         };
         (app, root)
