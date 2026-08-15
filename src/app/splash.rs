@@ -17,6 +17,9 @@ use ratatui::widgets::{Block, Borders, Paragraph};
 use crate::anim::Spinner;
 use crate::theme::{Color, Theme};
 
+/// Logo convergence window: rows flicker in over this span.
+const DRAW_IN: Duration = Duration::from_millis(700);
+
 /// After this much time the splash status line flips to "ready".
 const READY_AFTER: Duration = Duration::from_millis(1600);
 
