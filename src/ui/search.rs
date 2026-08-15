@@ -506,13 +506,25 @@ fn lerp_color(a: Color, b: Color, t: f64) -> Color {
 /// derives the results top from `SEARCH_BAR_H + 1`.
 fn draw_header(frame: &mut Frame, area: Rect, state: &SearchState, theme: &Theme) {
     let colors = &theme.colors;
+    let latency_str = state
+        .latency_ms
+        .map_or(String::new(), |ms| format!(" in {:.1}s", ms as f64 / 1000.0));
     let count = if state.query.is_empty() {
-        "browse the curated library".to_string()
+        if state.results.is_empty() {
+            "browse the curated library".to_string()
+        } else {
+            format!(
+                "browse the curated library ({} items{})",
+                state.results.len(),
+                latency_str
+            )
+        }
     } else {
         format!(
-            "{} results from {} sources",
+            "{} results from {} sources{}",
             state.results.len(),
-            distinct_sources(&state.results)
+            distinct_sources(&state.results),
+            latency_str
         )
     };
     // Same cells and single-space gaps as the row suffix, so the labels sit
@@ -559,11 +571,48 @@ fn draw_results(
     mouse_pos: Option<(u16, u16)>,
 ) {
     if state.results.is_empty() {
-        let msg = if state.searching {
-            "searching…"
-        } else {
-            "no results yet — press Enter to search"
-        };
+        if state.searching {
+            let spinner = spinner_frame(theme, clock());
+            let mut lines = Vec::new();
+            lines.push(Line::from(vec![
+                Span::styled(
+                    format!("  {spinner} "),
+                    Style::default().fg(theme.colors.accent().to_ratatui()),
+                ),
+                Span::styled(
+                    "Querying sources in parallel…",
+                    Style::default().fg(theme.colors.accent().to_ratatui()),
+                ),
+            ]));
+            lines.push(Line::from(""));
+            let placeholder_names = [
+                "YTS 4K Movies",
+                "EZTV Prime Series",
+                "Nyaa Anime HD",
+                "FitGirl Verified Repacks",
+                "1337x Media & Audio",
+            ];
+            let elapsed = clock();
+            for (idx, name) in placeholder_names.iter().enumerate() {
+                let shimmer = shimmer_intensity(idx * 8, 40, elapsed);
+                let shimmer_fg = lerp_color(
+                    theme.colors.dim(),
+                    theme.colors.accent(),
+                    shimmer,
+                )
+                .to_ratatui();
+                lines.push(Line::from(vec![
+                    Span::styled(format!("    · {name:<24}"), Style::default().fg(shimmer_fg)),
+                    Span::styled(
+                        " ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░",
+                        Style::default().fg(theme.colors.dim().to_ratatui()),
+                    ),
+                ]));
+            }
+            frame.render_widget(Paragraph::new(lines), area);
+            return;
+        }
+        let msg = "no results yet — press Enter to search";
         frame.render_widget(Paragraph::new(empty_line(msg, theme)), area);
         return;
     }

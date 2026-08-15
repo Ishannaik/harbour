@@ -285,6 +285,32 @@ fn merge_source_results(
         app.partial.insert(source, results);
     }
     app.remerge();
+    if let Some(started) = app.state.search.search_started {
+        let ms = started.elapsed().as_millis() as u64;
+        app.state.search.latency_ms = Some(ms);
+        log_to_file(&format!(
+            "search query='{}' finished in {}ms with {} results",
+            app.state.search.query,
+            ms,
+            app.state.search.results.len()
+        ));
+    }
+}
+
+pub(crate) fn log_to_file(line: &str) {
+    let log_path = crate::core::paths::state_dir().join("harbour.log");
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(log_path)
+    {
+        use std::io::Write;
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let _ = writeln!(file, "[{ts}] {line}");
+    }
 }
 
 fn item_name(app: &App, id: &str) -> String {

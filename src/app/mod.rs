@@ -203,6 +203,8 @@ impl App {
         self.state.search.results.clear();
         self.state.search.selected = 0;
         self.state.search.searching = true;
+        self.state.search.search_started = Some(std::time::Instant::now());
+        self.state.search.latency_ms = None;
         self.state.search.source_counts.clear();
         for id in SourceId::ALL {
             self.state

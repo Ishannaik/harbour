@@ -62,6 +62,8 @@ pub struct SearchState {
     /// browse-mode search — the indexer treats it as curated, and the UI can
     /// say so instead of pretending nothing was searched.
     pub browsing: bool,
+    pub search_started: Option<std::time::Instant>,
+    pub latency_ms: Option<u64>,
 }
 
 impl Default for SearchState {
@@ -75,6 +77,8 @@ impl Default for SearchState {
             source_health: HashMap::new(),
             source_counts: HashMap::new(),
             browsing: false,
+            search_started: None,
+            latency_ms: None,
         }
     }
 }
