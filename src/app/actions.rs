@@ -42,8 +42,9 @@ pub(crate) fn move_selection(app: &mut App, delta: isize) {
         *selected = 0;
         return;
     }
-    // Wrap at both ends: a list you cannot leave by holding a key feels stuck.
-    let next = (*selected as isize + delta).rem_euclid(len as isize);
+    // Clamp at list boundaries: scrolling stops at top and bottom rather than looping.
+    let cur = *selected as isize;
+    let next = (cur + delta).clamp(0, (len as isize).saturating_sub(1));
     *selected = next as usize;
 }
 
