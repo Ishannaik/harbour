@@ -580,34 +580,64 @@ fn draw_results(
                     Style::default().fg(theme.colors.accent().to_ratatui()),
                 ),
                 Span::styled(
-                    "Querying sources in parallel…",
+                    "Searching across sources in parallel…",
                     Style::default().fg(theme.colors.accent().to_ratatui()),
                 ),
             ]));
             lines.push(Line::from(""));
-            let placeholder_names = [
-                "YTS 4K Movies",
-                "EZTV Prime Series",
-                "Nyaa Anime HD",
-                "FitGirl Verified Repacks",
-                "1337x Media & Audio",
-            ];
-            let elapsed = clock();
-            for (idx, name) in placeholder_names.iter().enumerate() {
-                let shimmer = shimmer_intensity(idx * 8, 40, elapsed);
-                let shimmer_fg = lerp_color(
-                    theme.colors.dim(),
-                    theme.colors.accent(),
-                    shimmer,
-                )
-                .to_ratatui();
-                lines.push(Line::from(vec![
-                    Span::styled(format!("    · {name:<24}"), Style::default().fg(shimmer_fg)),
-                    Span::styled(
-                        " ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░",
-                        Style::default().fg(theme.colors.dim().to_ratatui()),
-                    ),
-                ]));
+
+            for (group_name, sources) in SIDEBAR {
+                for (id, label) in *sources {
+                    let health = state
+                        .source_health
+                        .get(id)
+                        .copied()
+                        .unwrap_or(SourceStatus::Unknown);
+                    let count = state.source_counts.get(id).copied().unwrap_or(0);
+                    let (dot, status_str, style) = match health {
+                        SourceStatus::Online => {
+                            let text = if count > 0 {
+                                format!("{count} results found")
+                            } else {
+                                "ready".to_string()
+                            };
+                            ("●", text, Style::default().fg(theme.colors.success().to_ratatui()))
+                        }
+                        SourceStatus::Checking => (
+                            spinner,
+                            "connecting…".to_string(),
+                            Style::default().fg(theme.colors.accent().to_ratatui()),
+                        ),
+                        SourceStatus::Offline => (
+                            "○",
+                            "offline".to_string(),
+                            Style::default().fg(theme.colors.dim().to_ratatui()),
+                        ),
+                        SourceStatus::Empty => (
+                            "○",
+                            "0 results".to_string(),
+                            Style::default().fg(theme.colors.muted().to_ratatui()),
+                        ),
+                        SourceStatus::Unknown => (
+                            "·",
+                            "querying…".to_string(),
+                            Style::default().fg(theme.colors.dim().to_ratatui()),
+                        ),
+                    };
+                    lines.push(Line::from(vec![
+                        Span::raw("    "),
+                        Span::styled(dot, style),
+                        Span::raw(" "),
+                        Span::styled(
+                            format!("{label:<14}"),
+                            Style::default().fg(theme.colors.text().to_ratatui()),
+                        ),
+                        Span::styled(
+                            format!("{status_str:<18} · {}", group_name.label()),
+                            Style::default().fg(theme.colors.muted().to_ratatui()),
+                        ),
+                    ]));
+                }
             }
             frame.render_widget(Paragraph::new(lines), area);
             return;

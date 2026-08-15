@@ -232,6 +232,7 @@ pub(crate) fn apply_event(app: &mut App, event: EngineEvent) {
         EngineEvent::SourceFailed {
             source, message, ..
         } => {
+            log_to_file(&format!("[SOURCE FAILED] source={:?} error='{}'", source, message));
             app.state
                 .search
                 .source_health
@@ -251,7 +252,22 @@ pub(crate) fn apply_event(app: &mut App, event: EngineEvent) {
                 app.warn(format!("every source is unreachable — {message}"));
             }
         }
-        EngineEvent::SearchComplete => app.state.search.searching = false,
+        EngineEvent::SearchComplete => {
+            app.state.search.searching = false;
+            let elapsed_ms = app
+                .state
+                .search
+                .search_started
+                .map(|s| s.elapsed().as_millis() as u64)
+                .unwrap_or(0);
+            app.state.search.latency_ms = Some(elapsed_ms);
+            log_to_file(&format!(
+                "[SEARCH COMPLETE] query='{}' total_results={} elapsed={}ms",
+                app.state.search.query,
+                app.state.search.results.len(),
+                elapsed_ms
+            ));
+        }
         EngineEvent::Metadata { .. } | EngineEvent::Progress { .. } => {}
         EngineEvent::Done { .. } => persist(app),
         EngineEvent::Failed { id, message } => {
