@@ -47,6 +47,24 @@ pub(crate) fn move_selection(app: &mut App, delta: isize) {
     *selected = next as usize;
 }
 
+pub(crate) fn move_selection_to(app: &mut App, target: usize) {
+    if app.state.screen == Screen::Search && app.state.search.focus {
+        app.state.search.focus = false;
+    }
+    let (len, selected) = match app.state.screen {
+        Screen::Downloads => (app.visible_items().len(), &mut app.state.downloads.selected),
+        _ => (
+            app.state.search.results.len(),
+            &mut app.state.search.selected,
+        ),
+    };
+    if len == 0 {
+        *selected = 0;
+        return;
+    }
+    *selected = target.min(len.saturating_sub(1));
+}
+
 pub(crate) async fn download_selected(app: &mut App) {
     let Some(result) = app.selected_result().cloned() else {
         app.warn("nothing selected to download");

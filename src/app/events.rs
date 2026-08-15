@@ -9,7 +9,8 @@ use crate::ui::Screen;
 use crate::ui::player::PickerMode;
 
 use super::actions::{
-    download_selected, move_selection, remove_selected, retry_selected, toggle_pause,
+    download_selected, move_selection, move_selection_to, remove_selected, retry_selected,
+    toggle_pause,
 };
 use super::settings::{
     cancel_folder_prompt, commit_folder_prompt, open_folder_prompt, settings_activate,
@@ -23,12 +24,12 @@ async fn handle_mouse_event(app: &mut App, mouse: crossterm::event::MouseEvent) 
     // Track mouse position on any mouse movement or interaction.
     app.state.mouse_pos = Some((mouse.column, mouse.row));
 
-    // Handle mouse wheel scrolling:
+    // Handle mouse wheel scrolling (scrolls by a page of ~8 rows for fast browsing):
     if mouse.kind == MouseEventKind::ScrollDown {
         if app.settings_open {
             apply_action(app, Action::SettingsMoveDown).await;
         } else {
-            apply_action(app, Action::MoveDown).await;
+            apply_action(app, Action::PageDown).await;
         }
         return;
     }
@@ -36,7 +37,7 @@ async fn handle_mouse_event(app: &mut App, mouse: crossterm::event::MouseEvent) 
         if app.settings_open {
             apply_action(app, Action::SettingsMoveUp).await;
         } else {
-            apply_action(app, Action::MoveUp).await;
+            apply_action(app, Action::PageUp).await;
         }
         return;
     }
@@ -189,6 +190,10 @@ async fn apply_action(app: &mut App, action: Action) {
         }
         Action::MoveUp => move_selection(app, -1),
         Action::MoveDown => move_selection(app, 1),
+        Action::PageUp => move_selection(app, -8),
+        Action::PageDown => move_selection(app, 8),
+        Action::MoveHome => move_selection_to(app, 0),
+        Action::MoveEnd => move_selection_to(app, usize::MAX),
         Action::Backspace => {
             app.state.search.query.pop();
         }
