@@ -33,7 +33,7 @@ instant watch-now streaming playback, and full qBittorrent-grade session control
 
 Harbour follows the **Stremio / Jackett addon paradigm**: the client is a 100% legal, protocol-neutral
 BitTorrent client containing **zero scrapers or index databases**. It interacts with any search provider
-implementing the open HTTP `Source` interface (such as the self-hosted [`harbour-indexer`](https://github.com/Ishannaik/harbour-indexer)).
+implementing the open HTTP `Source` interface (see the [Custom Indexer Guide](docs/indexer-guide.md)).
 
 ---
 
