@@ -25,6 +25,32 @@ async fn handle_mouse_event(app: &mut App, mouse: crossterm::event::MouseEvent) 
     app.state.mouse_pos = Some((mouse.column, mouse.row));
 
     // Handle mouse wheel scrolling (scrolls by a page of ~8 rows for fast browsing):
+    if app.episode_picker.open {
+        let (term_w, term_h) = crossterm::terminal::size().unwrap_or((80, 24));
+        let area = ratatui::layout::Rect::new(0, 0, term_w, term_h);
+        if mouse.kind == MouseEventKind::ScrollDown {
+            app.episode_picker.select_next();
+            return;
+        }
+        if mouse.kind == MouseEventKind::ScrollUp {
+            app.episode_picker.select_prev();
+            return;
+        }
+        if mouse.kind == MouseEventKind::Down(MouseButton::Left) {
+            if let Some(ep_idx) = crate::ui::episode_picker::episode_at_mouse(
+                &app.episode_picker,
+                area,
+                mouse.column,
+                mouse.row,
+            ) {
+                apply_action(app, Action::EpisodeChoose(Some(ep_idx))).await;
+            } else {
+                app.episode_picker.open = false;
+            }
+        }
+        return;
+    }
+
     if mouse.kind == MouseEventKind::ScrollDown {
         if app.settings_open {
             apply_action(app, Action::SettingsMoveDown).await;
@@ -136,6 +162,7 @@ pub(crate) async fn handle_event(app: &mut App, event: Event) {
             help_open: app.help_open,
             picker_open: app.picker.open,
             picker_custom: app.picker.mode == PickerMode::Custom,
+            episode_picker_open: app.episode_picker.open,
             settings_open: app.settings_open,
             folder_open: app.state.folder_prompt.open,
             search_focus: app.state.search.focus,
@@ -357,6 +384,14 @@ async fn apply_action(app: &mut App, action: Action) {
             if app.settings.editing {
                 app.settings.edit_buffer.pop();
             }
+        }
+        Action::EpisodeUp => app.episode_picker.select_prev(),
+        Action::EpisodeDown => app.episode_picker.select_next(),
+        Action::EpisodePageUp => app.episode_picker.page_up(),
+        Action::EpisodePageDown => app.episode_picker.page_down(),
+        Action::EpisodeChoose(opt_idx) => super::watch::choose_episode(app, opt_idx).await,
+        Action::EpisodeClose => {
+            app.episode_picker.open = false;
         }
     }
 }

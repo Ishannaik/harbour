@@ -581,6 +581,14 @@ pub struct EngineSnapshot {
     pub name: Option<String>,
 }
 
+/// One playable file inside a multi-file torrent.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TorrentFileView {
+    pub id: usize,
+    pub name: String,
+    pub size_bytes: u64,
+}
+
 /// Future returned by the [`Engine`] mutators.
 pub type EngineFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
@@ -607,6 +615,20 @@ pub trait Engine: Send + Sync {
     /// is none — the file-based watch path is the fallback. Additive: the
     /// trait is frozen, so a default keeps every implementor compiling.
     fn stream_url<'a>(&'a self, _id: &'a str) -> EngineFuture<'a, Option<String>> {
+        Box::pin(async move { None })
+    }
+
+    /// Playable video files in `id`, sorted naturally (e.g. Episode 01 first).
+    fn list_video_files<'a>(&'a self, _id: &'a str) -> EngineFuture<'a, Vec<TorrentFileView>> {
+        Box::pin(async move { Vec::new() })
+    }
+
+    /// Stream URL for a specific file index in `id`.
+    fn stream_file_url<'a>(
+        &'a self,
+        _id: &'a str,
+        _file_id: usize,
+    ) -> EngineFuture<'a, Option<String>> {
         Box::pin(async move { None })
     }
 

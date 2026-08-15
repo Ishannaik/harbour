@@ -126,6 +126,20 @@ pub(crate) async fn start_watch(app: &mut App) {
 /// streaming first, then the file-serving fallback. Shared by `start_watch`
 /// and the player picker's pending launch.
 async fn launch_watch(app: &mut App, id: String, name: String, dir: PathBuf, player: String) {
+    let files = app.queue.engine().list_video_files(&id).await;
+    if files.len() > 1 {
+        app.episode_picker = crate::ui::EpisodePicker {
+            open: true,
+            torrent_id: id,
+            torrent_name: name,
+            player,
+            ephemeral: false,
+            episodes: files,
+            selected: 0,
+        };
+        return;
+    }
+
     // Path 1: stream from the swarm while it downloads. librqbit blocks on
     // missing pieces and prioritizes the requested ones — seek works.
     if let Some(url) = app.queue.engine().stream_url(&id).await {
@@ -231,6 +245,20 @@ pub(crate) async fn start_watch_ephemeral(app: &mut App) {
 /// Launches the remote stream session for a watch-now (2.3): the torrent is
 /// already added to the engine, so only the live stream URL is needed.
 async fn launch_ephemeral_session(app: &mut App, id: String, name: String, player: &str) {
+    let files = app.queue.engine().list_video_files(&id).await;
+    if files.len() > 1 {
+        app.episode_picker = crate::ui::EpisodePicker {
+            open: true,
+            torrent_id: id,
+            torrent_name: name,
+            player: player.to_string(),
+            ephemeral: true,
+            episodes: files,
+            selected: 0,
+        };
+        return;
+    }
+
     let Some(url) = app.queue.engine().stream_url(&id).await else {
         app.warn(format!("watch: the swarm cannot stream '{name}' yet"));
         return;
@@ -241,6 +269,32 @@ async fn launch_ephemeral_session(app: &mut App, id: String, name: String, playe
     }
     match crate::watch::WatchSession::launch_remote(player, &url) {
         Ok(session) => enter_watch(app, id, name, session, true),
+        Err(err) => app.warn(format!("watch: cannot start player: {err}")),
+    }
+}
+
+/// Launches playback for a specific chosen episode from the episode picker modal.
+pub(crate) async fn choose_episode(app: &mut App, opt_idx: Option<usize>) {
+    let idx = opt_idx.unwrap_or(app.episode_picker.selected);
+    let Some(ep) = app.episode_picker.episodes.get(idx).cloned() else {
+        return;
+    };
+    let id = app.episode_picker.torrent_id.clone();
+    let name = format!("{} - {}", app.episode_picker.torrent_name, ep.name);
+    let player = app.episode_picker.player.clone();
+    let ephemeral = app.episode_picker.ephemeral;
+    app.episode_picker.open = false;
+
+    let Some(url) = app.queue.engine().stream_file_url(&id, ep.id).await else {
+        app.warn(format!("watch: cannot stream episode '{}'", ep.name));
+        return;
+    };
+    if let Err(reason) = probe_stream(&url).await {
+        app.warn(format!("watch: '{name}' is not streaming — {reason}"));
+        return;
+    }
+    match crate::watch::WatchSession::launch_remote(&player, &url) {
+        Ok(session) => enter_watch(app, id, name, session, ephemeral),
         Err(err) => app.warn(format!("watch: cannot start player: {err}")),
     }
 }

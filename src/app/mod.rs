@@ -129,6 +129,8 @@ struct App {
     picker: PlayerPicker,
     /// A watch waiting on a player choice, if any.
     picker_pending: Option<PendingWatch>,
+    /// The episode picker overlay for multi-file torrents.
+    pub episode_picker: crate::ui::EpisodePicker,
     /// Client-side query cache with 15-minute TTL: instant 0ms results.
     query_cache: HashMap<String, QueryCacheEntry>,
     quitting: bool,
@@ -438,6 +440,7 @@ pub async fn run(
         watch: None,
         picker: PlayerPicker::default(),
         picker_pending: None,
+        episode_picker: crate::ui::EpisodePicker::default(),
         query_cache: HashMap::new(),
         quitting: false,
     };
@@ -640,6 +643,15 @@ fn draw(
             app.config.player.as_deref(),
         );
     }
+    if app.episode_picker.open {
+        crate::ui::episode_picker::draw(
+            frame,
+            area,
+            theme,
+            &app.episode_picker,
+            app.state.mouse_pos,
+        );
+    }
     if app.settings_open {
         crate::ui::settings::draw(
             frame,
@@ -747,6 +759,7 @@ mod app_tests {
             watch: None,
             picker: PlayerPicker::default(),
             picker_pending: None,
+            episode_picker: crate::ui::EpisodePicker::default(),
             query_cache: HashMap::new(),
             quitting: false,
         };

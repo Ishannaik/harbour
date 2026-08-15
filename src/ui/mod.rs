@@ -223,12 +223,15 @@ pub struct NowPlaying {
 }
 
 pub mod downloads;
+pub mod episode_picker;
 pub mod help;
 pub mod now_playing;
 pub mod player;
 pub mod search;
 pub mod settings;
 pub mod status;
+
+pub use episode_picker::EpisodePicker;
 
 #[cfg(test)]
 mod tests;

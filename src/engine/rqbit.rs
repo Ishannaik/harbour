@@ -40,7 +40,7 @@ type ManagedTorrentHandle = Arc<ManagedTorrent>;
 use crate::core::error::EngineError;
 use crate::core::types::{
     AddBytesRequest, AddRequest, Engine, EngineFuture, EngineItemState, EngineSnapshot,
-    EngineStats, InfoHash,
+    EngineStats, InfoHash, TorrentFileView,
 };
 
 /// Bytes in a MiB, for the speed→ETA conversion.
@@ -125,6 +125,43 @@ impl RqbitEngine {
                 Err(_) => tokio::time::sleep(METADATA_RETRY).await,
             }
         };
+        Some(format!(
+            "{}/torrents/{id}/stream/{file_id}",
+            server.base_url
+        ))
+    }
+
+    async fn list_video_files_for(&self, id: &str) -> Vec<TorrentFileView> {
+        let Some(handle) = self.handles().get(id).cloned() else {
+            return Vec::new();
+        };
+        let deadline = tokio::time::Instant::now() + METADATA_GRACE;
+        loop {
+            let found = handle.with_metadata(|meta| {
+                let mut videos: Vec<TorrentFileView> = meta
+                    .file_infos
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, f)| is_video(&f.relative_filename))
+                    .map(|(i, f)| TorrentFileView {
+                        id: i,
+                        name: f.relative_filename.to_string_lossy().into_owned(),
+                        size_bytes: f.len,
+                    })
+                    .collect();
+                videos.sort_by(|a, b| a.name.cmp(&b.name));
+                videos
+            });
+            match found {
+                Ok(files) => return files,
+                Err(_) if tokio::time::Instant::now() >= deadline => return Vec::new(),
+                Err(_) => tokio::time::sleep(METADATA_RETRY).await,
+            }
+        }
+    }
+
+    async fn stream_file_url_for(&self, id: &str, file_id: usize) -> Option<String> {
+        let server = self.stream_server().await?;
         Some(format!(
             "{}/torrents/{id}/stream/{file_id}",
             server.base_url
@@ -500,6 +537,21 @@ impl Engine for RqbitEngine {
 
     fn stream_url<'a>(&'a self, id: &'a str) -> EngineFuture<'a, Option<String>> {
         Box::pin(async move { self.stream_url_for(id).await })
+    }
+
+    fn list_video_files<'a>(
+        &'a self,
+        id: &'a str,
+    ) -> EngineFuture<'a, Vec<crate::core::types::TorrentFileView>> {
+        Box::pin(async move { self.list_video_files_for(id).await })
+    }
+
+    fn stream_file_url<'a>(
+        &'a self,
+        id: &'a str,
+        file_id: usize,
+    ) -> EngineFuture<'a, Option<String>> {
+        Box::pin(async move { self.stream_file_url_for(id, file_id).await })
     }
 
     fn set_speed_limits(&self, download_mib: Option<u64>, upload_mib: Option<u64>) {

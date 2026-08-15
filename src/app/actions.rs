@@ -515,6 +515,7 @@ mod tests {
             watch: None,
             picker: PlayerPicker::default(),
             picker_pending: None,
+            episode_picker: crate::ui::EpisodePicker::default(),
             query_cache: HashMap::new(),
             quitting: false,
         };

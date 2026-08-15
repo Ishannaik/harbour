@@ -106,6 +106,13 @@ pub enum Action {
     SettingsType(char),
     /// Delete the last character from the settings text-edit buffer.
     SettingsBackspace,
+    // --- Episode picker: browse & select an episode from a multi-file torrent ---
+    EpisodeUp,
+    EpisodeDown,
+    EpisodePageUp,
+    EpisodePageDown,
+    EpisodeChoose(Option<usize>),
+    EpisodeClose,
 }
 
 /// Ctrl-C always quits, everywhere — a terminal convention users rely on more
@@ -137,6 +144,8 @@ pub struct FocusFlags {
     pub picker_open: bool,
     /// The picker is in custom-path entry mode (typing edits the path).
     pub picker_custom: bool,
+    /// The episode picker modal owns every key while up.
+    pub episode_picker_open: bool,
     /// The settings overlay owns every key while up.
     pub settings_open: bool,
     /// The folder prompt (shift+d / o) owns every key while up.
@@ -180,6 +189,7 @@ pub fn map_with_focus(key: KeyEvent, screen: Screen, flags: FocusFlags) -> Actio
         help_open,
         picker_open,
         picker_custom,
+        episode_picker_open,
         settings_open,
         folder_open,
         search_focus,
@@ -194,6 +204,19 @@ pub fn map_with_focus(key: KeyEvent, screen: Screen, flags: FocusFlags) -> Actio
         return match key.code {
             KeyCode::Char('q') => Action::Quit,
             _ => Action::ToggleHelp,
+        };
+    }
+
+    if episode_picker_open {
+        return match key.code {
+            KeyCode::Char('q') => Action::Quit,
+            KeyCode::Esc => Action::EpisodeClose,
+            KeyCode::Up | KeyCode::Char('k') => Action::EpisodeUp,
+            KeyCode::Down | KeyCode::Char('j') => Action::EpisodeDown,
+            KeyCode::PageUp => Action::EpisodePageUp,
+            KeyCode::PageDown => Action::EpisodePageDown,
+            KeyCode::Enter => Action::EpisodeChoose(None),
+            _ => Action::None,
         };
     }
 
@@ -366,10 +389,12 @@ pub fn mouse_to_action(
 
     // Status bar row clicks on the tab buttons (exactly 1 line below view_area):
     let is_status_row = row == view_area.y + view_area.height;
-    if is_status_row && col >= view_area.x && col < view_area.right() {
-        if let Some(action) = status_bar_click_action(col, view_area.width, screen) {
-            return action;
-        }
+    if is_status_row
+        && col >= view_area.x
+        && col < view_area.right()
+        && let Some(action) = status_bar_click_action(col, view_area.width, screen)
+    {
+        return action;
     }
 
     match screen {
