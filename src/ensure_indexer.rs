@@ -28,6 +28,9 @@ pub async fn ensure_local_indexer() {
         return;
     }
 
+    // Clean up any stale orphaned indexers from previous crashes
+    cleanup_orphaned_indexers();
+
     let Some(bin) = find_indexer_bin() else {
         eprintln!(
             "harbour: search needs harbour-indexer next to this exe, \
@@ -122,6 +125,19 @@ fn which_on_path(name: &str) -> Option<PathBuf> {
     }
     None
 }
+
+#[cfg(windows)]
+fn cleanup_orphaned_indexers() {
+    let _ = Command::new("taskkill")
+        .args(["/F", "/IM", "harbour-indexer.exe"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+}
+
+#[cfg(not(windows))]
+fn cleanup_orphaned_indexers() {}
 
 fn spawn_detached(bin: &Path) -> std::io::Result<()> {
     let mut cmd = Command::new(bin);

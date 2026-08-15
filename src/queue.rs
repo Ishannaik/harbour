@@ -446,16 +446,17 @@ impl Queue {
             }
 
             let item = &mut self.items[idx];
-            if snap.finished && !item.finished {
+            let newly_finished = snap.finished && !item.finished;
+            if newly_finished {
                 item.finished = true;
                 events.push(EngineEvent::Done {
                     id: snap.id.clone(),
                 });
                 freed_slot = true;
-                if !self.seed_by_default {
-                    item.status = QueueStatus::Paused;
-                    ratio_paused.push(snap.id.clone());
-                }
+            }
+            if newly_finished && !self.seed_by_default {
+                item.status = QueueStatus::Paused;
+                ratio_paused.push(snap.id.clone());
             }
 
             let status_changed = projected != previous;
