@@ -17,50 +17,40 @@ without leaving the terminal — animated splash, keyboard-driven search,
 downloads queue with a Seeding tab, watch-now playback, and a qBittorrent-level
 settings screen.
 
-## Architecture (Stremio-shaped)
+## Architecture
 
-harbour is split into two pieces, exactly the way Stremio splits its core from
-its add-ons:
+harbour is built on the **Stremio / Jackett model** to maintain full protocol neutrality:
 
-- **`harbour` — the client (this repo).** The terminal UI, the download engine
-  (librqbit), the queue, persistence, watch-now, and settings. It ships **zero
-  scrapers** and implements only the neutral `Source` interface. It's a
-  BitTorrent client, period — legal everywhere.
-- **`harbour-indexer` — the search service (separate, self-hosted).** Owns the
-  torrent-index scrapers, the resilient fetch layer, and the search cache. It
-  exposes a tiny JSON API. The client talks to it over HTTP; **you** run and
-  point the client at whatever indexer you host (`indexer_url` in the config).
-  The indexer is deliberately **not** hosted on GitHub — it's the piece you
-  self-host, the same model as Stremio addons, Jackett, and Prowlarr.
+- **`harbour` (this client):** A pure terminal BitTorrent client (`librqbit` engine, Ratatui TUI, queue manager, persistence, watch-now playback). It contains **zero scrapers** and connects to any search service implementing the open `Source` HTTP interface.
+- **Indexer service:** A standalone, user-hosted service (such as `harbour-indexer`) that handles index lookups and caching over HTTP.
 
-The client never scrapes anything itself. You bring your own indexer — the
-same model as Stremio addons, Jackett, and Prowlarr.
+## Quickstart
 
-## Build
-
+### 1. Build the client
 ```bash
-# client
-cargo build --release
-
-# indexer (separate, self-hosted — not on GitHub)
 cargo build --release
 ```
 
-## Run
-
+### 2. Run
 ```bash
-# 1. start your indexer (it binds 127.0.0.1:8765 by default)
-cargo run --release   # in the harbour-indexer repo
+# Launch the search & downloads TUI
+cargo run --release
 
-# 2. run the client; search now hits your indexer
-cargo run
+# Or launch directly into a download
+cargo run --release -- "magnet:?xt=urn:btih:..."
 ```
 
-Set `indexer_url` in `~/.harbour/config.toml` (Windows: `%USERPROFILE%\.harbour\config.toml`)
-if your indexer lives elsewhere.
+By default, search requests route to `http://127.0.0.1:8765`. Configure a custom indexer endpoint in `~/.harbour/config.toml` (Windows: `%USERPROFILE%\.harbour\config.toml`):
+```toml
+indexer_url = "http://127.0.0.1:8765"
+```
 
 ## Stack
 
-- Rust, edition 2024
-- TUI (ratatui), input (crossterm)
-- Downloads (librqbit)
+- **Language:** Rust (2024 edition)
+- **TUI & Terminal:** [Ratatui](https://github.com/ratatui/ratatui), [Crossterm](https://github.com/crossterm-rs/crossterm)
+- **BitTorrent Engine:** [librqbit](https://github.com/ikatson/rqbit)
+
+## Disclaimer
+
+harbour is a peer-to-peer file transfer utility and terminal frontend. It does not host, index, or distribute copyrighted materials. Users are solely responsible for ensuring that their network activity and downloads comply with applicable local laws and regulations.
