@@ -169,6 +169,8 @@ fn source_label(id: SourceId) -> &'static str {
         SourceId::Nyaa => "Nyaa (Anime)",
         SourceId::SubsPlease => "SubsPlease (Anime)",
         SourceId::Bittorrented => "BitTorrented (Movies)",
+        SourceId::AnimeTosho => "AnimeTosho (Anime)",
+        SourceId::ShowRss => "showRSS (TV)",
     }
 }
 
@@ -469,7 +471,7 @@ mod tests {
         let got: Vec<SourceId> = (17..row_count()).filter_map(source_at).collect();
         assert_eq!(got, SourceId::ALL);
         assert_eq!(got[0], SourceId::FitGirl);
-        assert_eq!(got[9], SourceId::SubsPlease);
+        assert_eq!(got[8], SourceId::SubsPlease);
     }
 
     #[test]
@@ -481,13 +483,13 @@ mod tests {
                 "FitGirl Repacks (Games)",
                 "YTS (Movies)",
                 "The Pirate Bay (Movies)",
-                "1337x (Movies)",
                 "BitTorrented (Movies)",
                 "EZTV (TV Shows)",
                 "The Pirate Bay (TV)",
-                "1337x (TV)",
+                "showRSS (TV)",
                 "Nyaa (Anime)",
-                "SubsPlease (Anime)"
+                "SubsPlease (Anime)",
+                "AnimeTosho (Anime)"
             ]
         );
     }

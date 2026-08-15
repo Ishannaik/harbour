@@ -68,7 +68,6 @@ const SIDEBAR: &[(SourceGroup, &[(SourceId, &str)])] = &[
         &[
             (SourceId::Yts, "YTS"),
             (SourceId::TpbMovies, "TPB"),
-            (SourceId::X1337Movies, "1337x"),
             (SourceId::Bittorrented, "BitTorrented"),
         ],
     ),
@@ -77,7 +76,7 @@ const SIDEBAR: &[(SourceGroup, &[(SourceId, &str)])] = &[
         &[
             (SourceId::Eztv, "EZTV"),
             (SourceId::TpbTv, "TPB"),
-            (SourceId::X1337Tv, "1337x"),
+            (SourceId::ShowRss, "showRSS"),
         ],
     ),
     (
@@ -85,6 +84,7 @@ const SIDEBAR: &[(SourceGroup, &[(SourceId, &str)])] = &[
         &[
             (SourceId::Nyaa, "Nyaa"),
             (SourceId::SubsPlease, "SubsPlease"),
+            (SourceId::AnimeTosho, "AnimeTosho"),
         ],
     ),
 ];
@@ -1052,6 +1052,8 @@ fn chip_label(id: SourceId) -> &'static str {
         SourceId::Eztv => "eztv",
         SourceId::Nyaa => "nyaa",
         SourceId::SubsPlease => "subs",
+        SourceId::AnimeTosho => "tosho",
+        SourceId::ShowRss => "showrss",
     }
 }
 

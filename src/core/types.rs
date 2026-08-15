@@ -69,6 +69,10 @@ pub enum SourceId {
     SubsPlease,
     #[serde(rename = "bittorrented")]
     Bittorrented,
+    #[serde(rename = "animetosho")]
+    AnimeTosho,
+    #[serde(rename = "showrss")]
+    ShowRss,
 }
 
 impl SourceId {
@@ -78,13 +82,13 @@ impl SourceId {
         SourceId::FitGirl,
         SourceId::Yts,
         SourceId::TpbMovies,
-        SourceId::X1337Movies,
         SourceId::Bittorrented,
         SourceId::Eztv,
         SourceId::TpbTv,
-        SourceId::X1337Tv,
+        SourceId::ShowRss,
         SourceId::Nyaa,
         SourceId::SubsPlease,
+        SourceId::AnimeTosho,
     ];
 
     /// The stable wire/table id. Also the cache directory name, which is why it
@@ -102,6 +106,8 @@ impl SourceId {
             SourceId::Nyaa => "nyaa",
             SourceId::SubsPlease => "subsplease",
             SourceId::Bittorrented => "bittorrented",
+            SourceId::AnimeTosho => "animetosho",
+            SourceId::ShowRss => "showrss",
         }
     }
 
@@ -256,6 +262,48 @@ pub trait Source: Send + Sync + 'static {
     /// Must be abort-safe: the engine drops the future on cancellation or when
     /// the deadline expires.
     fn search<'a>(&'a self, query: &'a str, ctx: &'a SearchCtx) -> SearchFuture<'a>;
+
+    /// Run a search and push [`EngineEvent`]s as sites land.
+    ///
+    /// Default: one `search()` then a single answered/failed pair. The indexer
+    /// proxy overrides this to consume `/search/stream` so the UI fills in
+    /// per site instead of waiting for every scraper.
+    fn search_into_events<'a>(
+        &'a self,
+        query: &'a str,
+        ctx: &'a SearchCtx,
+        events: tokio::sync::mpsc::UnboundedSender<EngineEvent>,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
+        let id = self.def().id;
+        Box::pin(async move {
+            let _ = events.send(EngineEvent::SourceStatus {
+                source: id,
+                status: SourceStatus::Checking,
+            });
+            match self.search(query, ctx).await {
+                Ok(results) => {
+                    if ctx.cancel.is_cancelled() {
+                        return;
+                    }
+                    let _ = events.send(EngineEvent::SourceAnswered {
+                        source: id,
+                        count: results.len(),
+                    });
+                    let _ = events.send(EngineEvent::SourceResults { source: id, results });
+                }
+                Err(err) => {
+                    if ctx.cancel.is_cancelled() {
+                        return;
+                    }
+                    let _ = events.send(EngineEvent::SourceFailed {
+                        source: id,
+                        class: err.class(),
+                        message: err.to_string(),
+                    });
+                }
+            }
+        })
+    }
 
     /// Per-site health this source last reported, if any.
     ///

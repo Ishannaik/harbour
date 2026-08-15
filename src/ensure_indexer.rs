@@ -57,6 +57,33 @@ pub async fn ensure_local_indexer() {
     );
 }
 
+/// Ask the local indexer to exit. Used on `q` / Ctrl+C so it is not left
+/// running after the TUI is gone.
+pub async fn stop_local_indexer() {
+    if std::env::var_os(ENV_SKIP).is_some() {
+        return;
+    }
+    let url = crate::sources::resolve_indexer_url(DEFAULT_URL);
+    let local = url.contains("127.0.0.1") || url.contains("localhost") || url.contains("[::1]");
+    if !local {
+        return;
+    }
+    if let Ok(client) = reqwest::Client::builder()
+        .connect_timeout(Duration::from_millis(300))
+        .timeout(Duration::from_millis(500))
+        .build()
+    {
+        let shutdown = format!("{}/shutdown", url.trim_end_matches('/'));
+        let _ = client.post(&shutdown).send().await;
+        let _ = client.get(&shutdown).send().await;
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        if !health_ok(&url).await {
+            return;
+        }
+    }
+    cleanup_orphaned_indexers();
+}
+
 fn indexer_name() -> &'static str {
     BIN_NAME
 }

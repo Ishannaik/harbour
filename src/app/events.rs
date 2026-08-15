@@ -9,8 +9,8 @@ use crate::ui::Screen;
 use crate::ui::player::PickerMode;
 
 use super::actions::{
-    download_selected, move_selection, move_selection_to, remove_selected, retry_selected,
-    toggle_pause,
+    download_selected, enqueue_magnet, enqueue_torrent, move_selection, move_selection_to,
+    remove_selected, retry_selected, toggle_pause,
 };
 use super::settings::{
     cancel_folder_prompt, commit_folder_prompt, open_folder_prompt, settings_activate,
@@ -171,6 +171,10 @@ pub(crate) async fn handle_event(app: &mut App, event: Event) {
         handle_mouse_event(app, mouse).await;
         return;
     }
+    if let Event::Paste(text) = event {
+        open_or_type_paste(app, &text).await;
+        return;
+    }
     let Event::Key(key) = event else {
         // Resize events need no handling: ratatui re-lays out from the frame
         // size on every draw.
@@ -293,6 +297,9 @@ async fn apply_action(app: &mut App, action: Action) {
                         Screen::Search => start_watch_ephemeral(app).await,
                         _ => start_watch(app).await,
                     }
+                } else if try_open_dropped(app, &query).await {
+                    app.state.search.query.clear();
+                    app.state.search.focus = false;
                 } else {
                     app.start_search(query);
                     app.state.search.focus = false;
@@ -442,4 +449,48 @@ async fn apply_action(app: &mut App, action: Action) {
         Action::ClearCompleted => super::actions::clear_completed(app).await,
         Action::OpenFolder => super::actions::open_selected_item(app),
     }
+}
+
+/// Strip quotes / `file://` that Windows Terminal puts on a dropped path.
+fn normalize_dropped(raw: &str) -> String {
+    let s = raw.trim().trim_matches('"').trim_matches('\'');
+    let s = s.strip_prefix("file://").unwrap_or(s);
+    // Windows: file:///C:/foo → C:/foo
+    if let Some(rest) = s.strip_prefix('/') {
+        if rest.len() >= 2 && rest.as_bytes()[1] == b':' {
+            return rest.to_string();
+        }
+    }
+    s.to_string()
+}
+
+/// True if `raw` was a magnet, infohash, or existing `.torrent` and we started it.
+async fn try_open_dropped(app: &mut App, raw: &str) -> bool {
+    let s = normalize_dropped(raw);
+    if s.is_empty() {
+        return false;
+    }
+    if s.to_ascii_lowercase().starts_with("magnet:?") {
+        enqueue_magnet(app, &s).await;
+        return true;
+    }
+    if let Some(hash) = crate::core::magnet::normalize_info_hash(&s) {
+        let magnet = crate::core::magnet::build_magnet(&hash, &hash);
+        enqueue_magnet(app, &magnet).await;
+        return true;
+    }
+    let path = std::path::Path::new(&s);
+    if s.to_ascii_lowercase().ends_with(".torrent") && path.is_file() {
+        enqueue_torrent(app, path).await;
+        return true;
+    }
+    false
+}
+
+async fn open_or_type_paste(app: &mut App, text: &str) {
+    if try_open_dropped(app, text).await {
+        return;
+    }
+    app.state.search.focus = true;
+    app.state.search.query.push_str(text.trim());
 }

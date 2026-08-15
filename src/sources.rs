@@ -28,7 +28,8 @@ use serde::Deserialize;
 
 use crate::core::error::SourceError;
 use crate::core::types::{
-    MagnetFuture, SearchCtx, SearchFuture, Source, SourceDef, SourceId, SourceStatus, TorrentResult,
+    EngineEvent, MagnetFuture, SearchCtx, SearchFuture, Source, SourceDef, SourceId, SourceStatus,
+    TorrentResult,
 };
 
 #[cfg(test)]
@@ -136,41 +137,6 @@ pub fn resolve_indexer_url(configured_url: &str) -> String {
     configured_url.to_string()
 }
 
-/// Spawns the indexer executable in the background if it is not currently running.
-pub fn try_spawn_indexer() {
-    let state_root = crate::core::paths::state_dir();
-    let bin_path = state_root.join("bin").join("harbour-indexer.exe");
-    let target = if bin_path.exists() {
-        Some(bin_path)
-    } else if let Ok(current_exe) = std::env::current_exe() {
-        let sibling = current_exe.with_file_name("harbour-indexer.exe");
-        if sibling.exists() {
-            Some(sibling)
-        } else {
-            None
-        }
-    } else {
-        None
-    };
-
-    if let Some(exe) = target {
-        use std::process::Command;
-        #[cfg(windows)]
-        {
-            use std::os::windows::process::CommandExt;
-            const CREATE_NO_WINDOW: u32 = 0x08000000;
-            let _ = Command::new(exe).creation_flags(CREATE_NO_WINDOW).spawn();
-        }
-        #[cfg(not(windows))]
-        {
-            let _ = Command::new(exe)
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .spawn();
-        }
-    }
-}
-
 impl HttpSource {
     /// Builds a client for `base_url` (e.g. `http://127.0.0.1:8765`).
     ///
@@ -178,7 +144,6 @@ impl HttpSource {
     /// hanging past the search budget; the caller's `total_deadline` still
     /// bounds the whole round trip.
     pub fn new(base_url: String) -> Self {
-        try_spawn_indexer();
         let resolved_url = resolve_indexer_url(&base_url);
         let client = reqwest::Client::builder()
             .connect_timeout(Duration::from_secs(5))
@@ -267,6 +232,241 @@ impl HttpSource {
         let guard = self.health.lock().unwrap_or_else(|e| e.into_inner());
         guard.clone()
     }
+
+    fn record_one(&self, id: SourceId, status: SourceStatus, count: u32) {
+        let mut guard = self.health.lock().unwrap_or_else(|e| e.into_inner());
+        guard.insert(id, (status, count));
+    }
+
+    fn clear_health(&self) {
+        let mut guard = self.health.lock().unwrap_or_else(|e| e.into_inner());
+        guard.clear();
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct StreamChunk {
+    source: String,
+    status: String,
+    count: u32,
+    #[serde(default)]
+    results: Vec<TorrentResult>,
+}
+
+fn status_from_wire(raw: &str) -> Option<SourceStatus> {
+    match raw {
+        "online" => Some(SourceStatus::Online),
+        "empty" => Some(SourceStatus::Empty),
+        "offline" => Some(SourceStatus::Offline),
+        _ => None,
+    }
+}
+
+impl HttpSource {
+    fn search_url(&self, path: &str, query: &str, ctx: &SearchCtx) -> String {
+        let mut url = format!("{path}?q={}", urlencode(query.trim()));
+        let mut excluded: Vec<&str> = ctx
+            .disabled
+            .iter()
+            .filter(|id| **id != SourceId::Indexer)
+            .map(|id| id.as_str())
+            .collect();
+        excluded.sort_unstable();
+        if !excluded.is_empty() {
+            url.push_str("&exclude=");
+            url.push_str(&excluded.join(","));
+        }
+        format!("{}{url}", self.base_url)
+    }
+
+    fn emit(
+        ctx: &SearchCtx,
+        events: &tokio::sync::mpsc::UnboundedSender<EngineEvent>,
+        event: EngineEvent,
+    ) -> bool {
+        if ctx.cancel.is_cancelled() {
+            return false;
+        }
+        let _ = events.send(event);
+        true
+    }
+
+    async fn consume_stream(
+        &self,
+        query: &str,
+        ctx: &SearchCtx,
+        events: &tokio::sync::mpsc::UnboundedSender<EngineEvent>,
+    ) -> Result<usize, SourceError> {
+        use futures_util::StreamExt;
+
+        if ctx.cancel.is_cancelled() {
+            return Err(SourceError::Cancelled);
+        }
+        let url = self.search_url("/search/stream", query, ctx);
+        let deadline = ctx.total_deadline + Duration::from_secs(5);
+        // Fresh pool: dropping a previous stream mid-body poisons keep-alive.
+        let stream_client = reqwest::Client::builder()
+            .connect_timeout(Duration::from_secs(5))
+            .pool_max_idle_per_host(0)
+            .build()
+            .unwrap_or_else(|_| self.client.clone());
+        let response = tokio::time::timeout(deadline, stream_client.get(&url).send())
+            .await
+            .map_err(|_| SourceError::Timeout)?
+            .map_err(|e| SourceError::Network(format!("indexer unreachable: {e}")))?;
+        if !response.status().is_success() {
+            return Err(SourceError::Network(format!(
+                "indexer returned HTTP {}",
+                response.status()
+            )));
+        }
+        let ctype = response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        if !ctype.contains("ndjson") && !ctype.contains("octet-stream") {
+            // Old indexer: not a stream.
+            return Err(SourceError::Network("indexer has no /search/stream".into()));
+        }
+
+        let mut stream = response.bytes_stream();
+        let mut buf: Vec<u8> = Vec::new();
+        let mut landed = 0usize;
+        let deadline_at = tokio::time::Instant::now() + deadline;
+        loop {
+            if ctx.cancel.is_cancelled() {
+                return Ok(landed);
+            }
+            let now = tokio::time::Instant::now();
+            if now >= deadline_at {
+                return Ok(landed);
+            }
+            let remain = deadline_at.saturating_duration_since(now);
+            let chunk = tokio::time::timeout(remain, stream.next()).await;
+            let Some(next) = (match chunk {
+                Ok(v) => v,
+                Err(_) => return Ok(landed),
+            }) else {
+                break;
+            };
+            let bytes = match next {
+                Ok(b) => b,
+                Err(_) => return Ok(landed),
+            };
+            buf.extend_from_slice(&bytes);
+            while let Some(pos) = buf.iter().position(|&b| b == b'\n') {
+                if ctx.cancel.is_cancelled() {
+                    return Ok(landed);
+                }
+                let line = buf.drain(..=pos).collect::<Vec<_>>();
+                let line = String::from_utf8_lossy(&line);
+                let line = line.trim();
+                if line.is_empty() {
+                    continue;
+                }
+                let Ok(chunk) = serde_json::from_str::<StreamChunk>(line) else {
+                    continue;
+                };
+                let Some(id) = SourceId::parse(&chunk.source) else {
+                    continue;
+                };
+                let status = status_from_wire(&chunk.status).unwrap_or(if chunk.results.is_empty() {
+                    SourceStatus::Empty
+                } else {
+                    SourceStatus::Online
+                });
+                self.record_one(id, status, chunk.count);
+                landed += 1;
+                if !Self::emit(
+                    ctx,
+                    events,
+                    EngineEvent::SourceAnswered {
+                        source: id,
+                        count: chunk.results.len(),
+                    },
+                ) {
+                    return Ok(landed);
+                }
+                if !Self::emit(
+                    ctx,
+                    events,
+                    EngineEvent::SourceResults {
+                        source: id,
+                        results: chunk.results,
+                    },
+                ) {
+                    return Ok(landed);
+                }
+            }
+        }
+        Ok(landed)
+    }
+
+    fn emit_batch_or_fail(
+        &self,
+        _query: &str,
+        ctx: &SearchCtx,
+        events: &tokio::sync::mpsc::UnboundedSender<EngineEvent>,
+        results: Result<Vec<TorrentResult>, SourceError>,
+    ) {
+        match results {
+            Ok(results) => {
+                let _ = Self::emit(
+                    ctx,
+                    events,
+                    EngineEvent::SourceAnswered {
+                        source: SourceId::Indexer,
+                        count: results.len(),
+                    },
+                );
+                let _ = Self::emit(
+                    ctx,
+                    events,
+                    EngineEvent::SourceResults {
+                        source: SourceId::Indexer,
+                        results,
+                    },
+                );
+            }
+            Err(err) => {
+                let _ = Self::emit(
+                    ctx,
+                    events,
+                    EngineEvent::SourceFailed {
+                        source: SourceId::Indexer,
+                        class: err.class(),
+                        message: err.to_string(),
+                    },
+                );
+            }
+        }
+    }
+
+    fn settle_unanswered(
+        &self,
+        ctx: &SearchCtx,
+        events: &tokio::sync::mpsc::UnboundedSender<EngineEvent>,
+    ) {
+        let reported = self.reported_status();
+        for id in SourceId::ALL {
+            if ctx.disabled.contains(&id) {
+                continue;
+            }
+            if reported.contains_key(&id) {
+                continue;
+            }
+            self.record_one(id, SourceStatus::Empty, 0);
+            let _ = Self::emit(
+                ctx,
+                events,
+                EngineEvent::SourceAnswered {
+                    source: id,
+                    count: 0,
+                },
+            );
+        }
+    }
 }
 
 impl Source for HttpSource {
@@ -302,6 +502,45 @@ impl Source for HttpSource {
             // indexer concatenates every scraper's rows, and one schema drift
             // would otherwise hide the other nine sites' results.
             parse_results(&body)
+        })
+    }
+
+    fn search_into_events<'a>(
+        &'a self,
+        query: &'a str,
+        ctx: &'a SearchCtx,
+        events: tokio::sync::mpsc::UnboundedSender<EngineEvent>,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>> {
+        Box::pin(async move {
+            if ctx.disabled.contains(&SourceId::Indexer) {
+                return;
+            }
+            self.clear_health();
+            for id in SourceId::ALL {
+                if !ctx.disabled.contains(&id) {
+                    let _ = Self::emit(
+                        ctx,
+                        &events,
+                        EngineEvent::SourceStatus {
+                            source: id,
+                            status: SourceStatus::Checking,
+                        },
+                    );
+                }
+            }
+            let streamed = self.consume_stream(query, ctx, &events).await;
+            if ctx.cancel.is_cancelled() {
+                return;
+            }
+            match streamed {
+                Ok(0) | Err(_) => {
+                    self.emit_batch_or_fail(query, ctx, &events, self.search(query, ctx).await);
+                }
+                Ok(_) => {}
+            }
+            if !ctx.cancel.is_cancelled() {
+                self.settle_unanswered(ctx, &events);
+            }
         })
     }
 
@@ -758,5 +997,136 @@ mod tests {
             "404 means no magnet: {result:?}"
         );
         handle.join().expect("indexer thread");
+    }
+
+    /// A new search starts with a clean per-site store: a stale Empty/Offline
+    /// report from a previous query must never leak into the next search's
+    /// sidebar, even for a site that never re-answers.
+    #[tokio::test]
+    async fn a_new_search_clears_stale_site_health() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind stub indexer");
+        let base = format!(
+            "http://127.0.0.1:{}",
+            listener.local_addr().expect("stub address").port()
+        );
+        // A one-line NDJSON stream: only yts answers, then the connection closes.
+        let server = std::thread::spawn(move || {
+            let (mut stream, _peer) = listener.accept().expect("accept");
+            let _req = read_request(&mut stream);
+            let _ = write!(
+                stream,
+                "HTTP/1.1 200 OK\r\n\
+                 Content-Type: application/x-ndjson\r\n\
+                 Connection: close\r\n\r\n"
+            );
+            let _ = stream.flush();
+            let _ = stream.write_all(
+                b"{\"source\":\"yts\",\"status\":\"online\",\"count\":1,\"results\":[]}\n",
+            );
+            let _ = stream.flush();
+        });
+
+        let source = HttpSource::new(base);
+        // A previous query reported nyaa Empty and fitgirl Offline.
+        source.record_one(SourceId::Nyaa, SourceStatus::Empty, 0);
+        source.record_one(SourceId::FitGirl, SourceStatus::Offline, 0);
+
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let query = "dune".to_string();
+        let ctx = SearchCtx::default();
+        source.clone().search_into_events(&query, &ctx, tx).await;
+
+        let report = source.reported_status();
+        assert_eq!(
+            report.get(&SourceId::Yts),
+            Some(&(SourceStatus::Online, 0)),
+            "this search's answer is recorded: {report:?}"
+        );
+        assert!(
+            !report.contains_key(&SourceId::Nyaa) && !report.contains_key(&SourceId::FitGirl),
+            "stale reports from a previous query must not survive into the next: {report:?}"
+        );
+        server.join().expect("stub thread");
+    }
+
+    /// A cancelled stream search must not paint the search that replaced it:
+    /// a site line that arrives *after* cancellation is dropped at the line
+    /// boundary instead of being folded into the UI (FR-20).
+    #[tokio::test]
+    async fn a_cancelled_stream_stops_at_the_next_line() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind stub indexer");
+        let base = format!(
+            "http://127.0.0.1:{}",
+            listener.local_addr().expect("stub address").port()
+        );
+        // An NDJSON stream held open: yts answers, then — 500ms later, after
+        // the test has cancelled — nyaa is sent but must never reach the UI.
+        let server = std::thread::spawn(move || {
+            let (mut stream, _peer) = listener.accept().expect("accept");
+            let _req = read_request(&mut stream);
+            let _ = write!(
+                stream,
+                "HTTP/1.1 200 OK\r\n\
+                 Content-Type: application/x-ndjson\r\n\
+                 Connection: close\r\n\r\n"
+            );
+            let _ = stream.flush();
+            let _ = stream.write_all(
+                b"{\"source\":\"yts\",\"status\":\"online\",\"count\":1,\"results\":[]}\n",
+            );
+            let _ = stream.flush();
+            // Give the test time to observe yts and cancel before the next line.
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            let _ = stream.write_all(
+                b"{\"source\":\"nyaa\",\"status\":\"offline\",\"count\":0,\"results\":[]}\n",
+            );
+            let _ = stream.flush();
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        });
+
+        let source = HttpSource::new(base);
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut search_ctx = SearchCtx::default();
+        let cancel = search_ctx.cancel.clone();
+
+        let source_task = source.clone();
+        let query = "dune".to_string();
+        let handle = tokio::spawn(async move {
+            source_task.search_into_events(&query, &search_ctx, tx).await;
+        });
+
+        // Wait for yts to land, then cancel — nyaa is 500ms behind.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        let mut saw_yts = false;
+        while tokio::time::Instant::now() < deadline {
+            match tokio::time::timeout(Duration::from_millis(50), rx.recv()).await {
+                Ok(Some(EngineEvent::SourceResults { source, .. }))
+                    if source == SourceId::Yts =>
+                {
+                    saw_yts = true;
+                    break;
+                }
+                Ok(Some(_)) => {}
+                _ => {}
+            }
+        }
+        assert!(saw_yts, "the first chunk's results must arrive");
+        cancel.cancel();
+        handle.await.expect("search task");
+
+        // Well past the 500ms gap, so a leaked nyaa line would have arrived.
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let mut stale = Vec::new();
+        while let Ok(e) = rx.try_recv() {
+            stale.push(e);
+        }
+        assert!(
+            !stale
+                .iter()
+                .any(|e| matches!(e, EngineEvent::SourceResults { source, .. }
+                if *source == SourceId::Nyaa)),
+            "a cancelled search must drop lines that arrive after cancel: {stale:?}"
+        );
+        server.join().expect("stub thread");
     }
 }

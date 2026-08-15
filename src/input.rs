@@ -1253,9 +1253,8 @@ mod tests {
     fn a_click_on_a_sidebar_source_toggles_it() {
         let view = search_view();
         // Sidebar rows (offset 0 = "Sources" title, matching the painter):
-        // title, Games divider, FitGirl, Movies divider, YTS, TPB, 1337x,
-        // BitTorrented, TV divider, EZTV, TPB-TV, 1337x-TV, Anime divider,
-        // Nyaa, SubsPlease.
+        // title, Games, FitGirl, Movies, YTS, TPB, BitTorrented,
+        // TV, EZTV, TPB-TV, showRSS, Anime, Nyaa, SubsPlease, AnimeTosho.
         let cases = [
             (1, None),
             (2, None),
@@ -1263,15 +1262,15 @@ mod tests {
             (4, None),
             (5, Some(SourceId::Yts)),
             (6, Some(SourceId::TpbMovies)),
-            (7, Some(SourceId::X1337Movies)),
-            (8, Some(SourceId::Bittorrented)),
-            (9, None),
-            (10, Some(SourceId::Eztv)),
-            (11, Some(SourceId::TpbTv)),
-            (12, Some(SourceId::X1337Tv)),
-            (13, None),
-            (14, Some(SourceId::Nyaa)),
-            (15, Some(SourceId::SubsPlease)),
+            (7, Some(SourceId::Bittorrented)),
+            (8, None),
+            (9, Some(SourceId::Eztv)),
+            (10, Some(SourceId::TpbTv)),
+            (11, Some(SourceId::ShowRss)),
+            (12, None),
+            (13, Some(SourceId::Nyaa)),
+            (14, Some(SourceId::SubsPlease)),
+            (15, Some(SourceId::AnimeTosho)),
             (16, None),
             (29, None),
         ];

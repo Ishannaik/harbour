@@ -206,7 +206,6 @@ fn category_sources(category: SourceGroup) -> &'static [SourceId] {
         SourceGroup::Movies => &[
             SourceId::Yts,
             SourceId::TpbMovies,
-            SourceId::X1337Movies,
             SourceId::Bittorrented,
         ],
         SourceGroup::Tv => &[SourceId::Eztv, SourceId::TpbTv],

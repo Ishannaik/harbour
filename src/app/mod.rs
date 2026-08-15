@@ -154,7 +154,7 @@ impl App {
         self.state.search.source_health = health.clone();
         self.state.search.searching = false;
         self.state.search.latency_ms = Some(0);
-        ts.elapsed() < std::time::Duration::from_secs(60)
+        true
     }
 
     /// Something the user should know that must not stop the app.

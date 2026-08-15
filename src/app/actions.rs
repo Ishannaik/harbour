@@ -325,14 +325,15 @@ pub(crate) fn apply_event(app: &mut App, event: EngineEvent) {
                     SourceStatus::Online
                 },
             );
-            // The indexer answers with a per-site report (FR-15/18): fold its
-            // statuses into the ten sidebar dots. Only sites the indexer
-            // actually ran appear — anything it did not report keeps whatever
-            // dot it had, and a report never overwrites with Unknown.
-            for (site, (status, count)) in app.search.reported_source_health() {
-                if status != SourceStatus::Unknown {
-                    app.state.search.source_health.insert(site, status);
-                    app.state.search.source_counts.insert(site, count as usize);
+            // Batch `/search` answers as the Indexer proxy: fold the report
+            // for this query only. Per-site stream lines must not replay
+            // leftover Empty/Offline from the previous search.
+            if source == crate::core::types::SourceId::Indexer {
+                for (site, (status, count)) in app.search.reported_source_health() {
+                    if status != SourceStatus::Unknown {
+                        app.state.search.source_health.insert(site, status);
+                        app.state.search.source_counts.insert(site, count as usize);
+                    }
                 }
             }
             app.state.search.searching = still_searching(app);
