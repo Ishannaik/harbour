@@ -263,13 +263,19 @@ fn draw_active(
             lines.push(bar_line(item, width, sel, hovered, theme));
         }
         if active.len() > vis {
-            let mut scrollbar_state = ScrollbarState::new(active.len()).position(state.selected);
+            let max_scroll = active.len().saturating_sub(vis);
+            let mut scrollbar_state = ScrollbarState::new(max_scroll)
+                .position(start)
+                .viewport_content_length(vis);
             let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
                 .thumb_symbol("█")
                 .track_symbol(Some("│"))
-                .begin_symbol(None)
-                .end_symbol(None)
-                .style(Style::default().fg(theme.colors.accent().to_ratatui()));
+                .begin_symbol(Some("▲"))
+                .end_symbol(Some("▼"))
+                .thumb_style(Style::default().fg(theme.colors.accent().to_ratatui()))
+                .track_style(Style::default().fg(theme.colors.dim().to_ratatui()))
+                .begin_style(Style::default().fg(theme.colors.dim().to_ratatui()))
+                .end_style(Style::default().fg(theme.colors.dim().to_ratatui()));
             frame.render_stateful_widget(scrollbar, chunks[0], &mut scrollbar_state);
         }
     }
@@ -321,13 +327,19 @@ fn draw_seeding(
             lines.push(seed_row(item, i == state.selected, hovered, width, theme));
         }
         if seeding.len() > vis {
-            let mut scrollbar_state = ScrollbarState::new(seeding.len()).position(state.selected);
+            let max_scroll = seeding.len().saturating_sub(vis);
+            let mut scrollbar_state = ScrollbarState::new(max_scroll)
+                .position(start)
+                .viewport_content_length(vis);
             let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
                 .thumb_symbol("█")
                 .track_symbol(Some("│"))
-                .begin_symbol(None)
-                .end_symbol(None)
-                .style(Style::default().fg(theme.colors.accent().to_ratatui()));
+                .begin_symbol(Some("▲"))
+                .end_symbol(Some("▼"))
+                .thumb_style(Style::default().fg(theme.colors.accent().to_ratatui()))
+                .track_style(Style::default().fg(theme.colors.dim().to_ratatui()))
+                .begin_style(Style::default().fg(theme.colors.dim().to_ratatui()))
+                .end_style(Style::default().fg(theme.colors.dim().to_ratatui()));
             frame.render_stateful_widget(scrollbar, area, &mut scrollbar_state);
         }
     }

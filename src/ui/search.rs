@@ -677,8 +677,13 @@ fn draw_results(
         frame.render_widget(Paragraph::new(empty_line(msg, theme)), area);
         return;
     }
-    let width = area.width as usize;
     let vis = area.height as usize;
+    let has_scrollbar = state.results.len() > vis;
+    let width = if has_scrollbar {
+        (area.width as usize).saturating_sub(1)
+    } else {
+        area.width as usize
+    };
     let start = scroll_start(state.results.len(), state.selected, vis);
     let mut lines: Vec<Line> = Vec::new();
     for (rel_idx, (i, result)) in state
@@ -702,14 +707,20 @@ fn draw_results(
         ));
     }
     frame.render_widget(Paragraph::new(lines), area);
-    if state.results.len() > vis {
-        let mut scrollbar_state = ScrollbarState::new(state.results.len()).position(state.selected);
+    if has_scrollbar {
+        let max_scroll = state.results.len().saturating_sub(vis);
+        let mut scrollbar_state = ScrollbarState::new(max_scroll)
+            .position(start)
+            .viewport_content_length(vis);
         let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
             .thumb_symbol("█")
             .track_symbol(Some("│"))
-            .begin_symbol(None)
-            .end_symbol(None)
-            .style(Style::default().fg(theme.colors.accent().to_ratatui()));
+            .begin_symbol(Some("▲"))
+            .end_symbol(Some("▼"))
+            .thumb_style(Style::default().fg(theme.colors.accent().to_ratatui()))
+            .track_style(Style::default().fg(theme.colors.dim().to_ratatui()))
+            .begin_style(Style::default().fg(theme.colors.dim().to_ratatui()))
+            .end_style(Style::default().fg(theme.colors.dim().to_ratatui()));
         frame.render_stateful_widget(scrollbar, area, &mut scrollbar_state);
     }
 }
