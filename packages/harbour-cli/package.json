@@ -27,6 +27,6 @@
   "homepage": "https://github.com/Ishannaik/harbour",
   "repository": {
     "type": "git",
-    "url": "https://github.com/Ishannaik/harbour.git"
+    "url": "git+https://github.com/Ishannaik/harbour.git"
   }
 }
