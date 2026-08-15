@@ -1,0 +1,32 @@
+{
+  "name": "harbour-cli",
+  "version": "0.1.0",
+  "description": "Curated torrents straight from your terminal. High-performance Rust BitTorrent TUI client.",
+  "bin": {
+    "harbour": "bin/harbour.js",
+    "harbour-cli": "bin/harbour.js"
+  },
+  "files": [
+    "bin",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=16.0.0"
+  },
+  "keywords": [
+    "torrent",
+    "bittorrent",
+    "tui",
+    "terminal",
+    "cli",
+    "ratatui",
+    "rust"
+  ],
+  "author": "Ishan",
+  "license": "MIT",
+  "homepage": "https://github.com/Ishannaik/harbour",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Ishannaik/harbour.git"
+  }
+}
