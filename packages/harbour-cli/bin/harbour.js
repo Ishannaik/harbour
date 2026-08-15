@@ -65,14 +65,49 @@ async function ensureIndexer() {
   });
 }
 
+function downloadFile(url, dest) {
+  return new Promise((resolve, reject) => {
+    https.get(url, { headers: { 'User-Agent': 'harbour-cli' } }, (res) => {
+      if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+        return downloadFile(res.headers.location, dest).then(resolve).catch(reject);
+      }
+      if (res.statusCode !== 200) {
+        return reject(new Error(`Failed to download: HTTP ${res.statusCode}`));
+      }
+      const file = fs.createWriteStream(dest);
+      res.pipe(file);
+      file.on('finish', () => {
+        file.close(() => resolve());
+      });
+    }).on('error', reject);
+  });
+}
+
 async function run() {
   await ensureIndexer();
   const binPath = getBinaryPath();
 
   if (!fs.existsSync(binPath)) {
-    console.log(`\x1b[36m[harbour]\x1b[0m Native binary not found at ${binPath}`);
-    console.log(`\x1b[36m[harbour]\x1b[0m Please build with 'cargo build --release' or download from GitHub Releases.`);
-    process.exit(1);
+    const homeDir = process.env.USERPROFILE || process.env.HOME || '.';
+    const binDir = path.join(homeDir, '.harbour', 'bin');
+    fs.mkdirSync(binDir, { recursive: true });
+
+    const key = `${process.platform}-${process.arch}`;
+    const target = PLATFORMS[key];
+    const downloadUrl = `https://github.com/${REPO}/releases/download/v${VERSION}/${target.bin}`;
+
+    console.log(`\x1b[36m[harbour]\x1b[0m First run detected. Downloading native binary...`);
+    try {
+      await downloadFile(downloadUrl, binPath);
+      if (process.platform !== 'win32') {
+        fs.chmodSync(binPath, 0o755);
+      }
+      console.log(`\x1b[32m[harbour]\x1b[0m Ready!`);
+    } catch (err) {
+      console.log(`\x1b[33m[harbour]\x1b[0m Could not auto-download (${err.message}).`);
+      console.log(`\x1b[36m[harbour]\x1b[0m Run 'cargo build --release' or download from https://github.com/${REPO}/releases`);
+      process.exit(1);
+    }
   }
 
   const child = spawn(binPath, process.argv.slice(2), {
