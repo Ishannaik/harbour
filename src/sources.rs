@@ -456,13 +456,17 @@ impl HttpSource {
             if reported.contains_key(&id) {
                 continue;
             }
-            self.record_one(id, SourceStatus::Empty, 0);
+            // Never answered this query (timeout, drop, missing report). That is
+            // not "the site said 0 rows" — painting Empty made TPB/BitTorrented
+            // look yellow on trending when apibay never came back.
+            self.record_one(id, SourceStatus::Offline, 0);
             let _ = Self::emit(
                 ctx,
                 events,
-                EngineEvent::SourceAnswered {
+                EngineEvent::SourceFailed {
                     source: id,
-                    count: 0,
+                    class: "timeout",
+                    message: "source did not answer".into(),
                 },
             );
         }
@@ -1039,12 +1043,18 @@ mod tests {
         let report = source.reported_status();
         assert_eq!(
             report.get(&SourceId::Yts),
-            Some(&(SourceStatus::Online, 0)),
+            Some(&(SourceStatus::Online, 1)),
             "this search's answer is recorded: {report:?}"
         );
-        assert!(
-            !report.contains_key(&SourceId::Nyaa) && !report.contains_key(&SourceId::FitGirl),
-            "stale reports from a previous query must not survive into the next: {report:?}"
+        assert_eq!(
+            report.get(&SourceId::Nyaa),
+            Some(&(SourceStatus::Offline, 0)),
+            "a site that never answered this query is Offline, not a leftover Empty: {report:?}"
+        );
+        assert_eq!(
+            report.get(&SourceId::FitGirl),
+            Some(&(SourceStatus::Offline, 0)),
+            "stale Offline is replaced by this search's unanswered Offline: {report:?}"
         );
         server.join().expect("stub thread");
     }
