@@ -114,6 +114,28 @@ fn the_results_pane_announces_how_to_get_back_to_typing() {
 }
 
 #[test]
+fn a_selected_result_footer_hints_watch_and_download() {
+    let mut state = search_state("dune");
+    state.focus = false;
+    let theme = Theme::titanium();
+    let out = render(|f| {
+        search::draw(f, f.area(), &state, &HashSet::new(), &theme, None);
+    });
+    assert!(
+        out.contains("enter watch"),
+        "selected-row footer must name Enter-to-watch, got:\n{out}"
+    );
+    assert!(
+        out.contains("d download"),
+        "selected-row footer must name d-to-download, got:\n{out}"
+    );
+    assert!(
+        out.contains("dbl-click"),
+        "selected-row footer must name the mouse download gesture, got:\n{out}"
+    );
+}
+
+#[test]
 fn a_disabled_source_renders_dim_in_the_sidebar() {
     // GamesHub is the only Games source: sidebar inner row 2 (title row 0,
     // Games divider row 1), which the 1-cell panel border pushes to frame

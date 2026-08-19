@@ -1,6 +1,8 @@
 //! Input dispatch: turns terminal events into actions (`handle_event`) and
 //! actions into state changes (`apply_action`).
 
+use std::time::{Duration, Instant};
+
 use crossterm::event::{Event, MouseButton, MouseEventKind};
 
 use crate::input::Action;
@@ -151,15 +153,55 @@ async fn handle_mouse_event(app: &mut App, mouse: crossterm::event::MouseEvent) 
     // Build the action first: `mouse_to_action` borrows `app.state`
     // only to read the screen, and the awaited apply takes `app`
     // mutably — the two cannot overlap.
-    let action = crate::input::mouse_to_action(
+    let view = mouse_view_area(app);
+    let single = crate::input::mouse_to_action(
         app.state.screen,
-        mouse_view_area(app),
+        view,
         mouse.column,
         mouse.row,
         app.help_open,
         app.state.downloads.show_seeding,
     );
+    let double = search_result_double_click(app, &single);
+    if double {
+        // Select the clicked row before Download so a double-click on row
+        // N enqueues N, not whatever the keyboard cursor was on.
+        apply_action(app, single).await;
+    }
+    let action = crate::input::mouse_to_action_click(
+        app.state.screen,
+        view,
+        mouse.column,
+        mouse.row,
+        app.help_open,
+        app.state.downloads.show_seeding,
+        double,
+    );
     apply_action(app, action).await;
+}
+
+/// Crossterm never reports a double-click kind; two left-downs on the same
+/// in-range search result within this window count as download (#71).
+const SEARCH_DOUBLE_CLICK: Duration = Duration::from_millis(500);
+
+fn search_result_double_click(app: &mut App, action: &Action) -> bool {
+    let Action::ClickRow(idx) = *action else {
+        app.last_search_click = None;
+        return false;
+    };
+    if app.state.screen != Screen::Search || idx >= app.state.search.results.len() {
+        app.last_search_click = None;
+        return false;
+    }
+    let is_double = app
+        .last_search_click
+        .is_some_and(|(at, prev)| prev == idx && at.elapsed() < SEARCH_DOUBLE_CLICK);
+    app.last_search_click = if is_double {
+        None
+    } else {
+        Some((Instant::now(), idx))
+    };
+    is_double
 }
 
 /// Turns one terminal event into state changes.
@@ -241,7 +283,13 @@ async fn apply_action(app: &mut App, action: Action) {
             if index < len {
                 match app.state.screen {
                     Screen::Downloads => app.state.downloads.selected = index,
-                    _ => app.state.search.selected = index,
+                    _ => {
+                        app.state.search.selected = index;
+                        // A click on a result owns the keyboard, so `d`
+                        // downloads and the footer shows the watch/download
+                        // hint instead of the typing hint (#71).
+                        app.state.search.focus = false;
+                    }
                 }
             }
         }

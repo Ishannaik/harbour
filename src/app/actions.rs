@@ -635,9 +635,40 @@ mod tests {
             episode_picker: crate::ui::EpisodePicker::default(),
             batch_picker: crate::ui::BatchPicker::default(),
             query_cache: HashMap::new(),
+            last_search_click: None,
             quitting: false,
         };
         (app, root)
+    }
+
+    #[tokio::test]
+    async fn download_selected_switches_to_the_downloads_screen() {
+        // FR-29 / #71: `d` (and a result double-click, which maps to the
+        // same action) must leave search so the user sees the new queue row.
+        let engine = Arc::new(FakeEngine::new());
+        let (mut app, _root) = test_app(engine, "download-selected-screen");
+        let info_hash = "0123456789abcdef0123456789abcdef01234567".to_string();
+        app.state.screen = Screen::Search;
+        app.state.search.results = vec![TorrentResult {
+            info_hash: info_hash.clone(),
+            name: "Dune".into(),
+            size_bytes: 1_000,
+            seeders: 10,
+            leechers: 1,
+            num_files: None,
+            source: SourceId::CineVault,
+            magnet: Some(crate::core::magnet::build_magnet(&info_hash, "Dune")),
+            added: None,
+        }];
+        app.state.search.selected = 0;
+
+        download_selected(&mut app).await;
+
+        assert_eq!(app.state.screen, Screen::Downloads);
+        assert!(
+            app.queue.get(&info_hash).is_some(),
+            "the selected result is enqueued"
+        );
     }
 
     #[tokio::test]
