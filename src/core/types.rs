@@ -678,6 +678,14 @@ pub trait Engine: Send + Sync {
         Box::pin(async move { Vec::new() })
     }
 
+    /// Sidecar `.srt` / `.ass` files sitting in the same folder as a video in
+    /// `id`. Harbour does not inspect MKV tracks — those stay in the player.
+    /// Additive default: engines that cannot list files return empty, and the
+    /// disk scan next to the video is the fallback.
+    fn list_subtitle_files<'a>(&'a self, _id: &'a str) -> EngineFuture<'a, Vec<TorrentFileView>> {
+        Box::pin(async move { Vec::new() })
+    }
+
     /// Stream URL for a specific file index in `id`.
     fn stream_file_url<'a>(
         &'a self,

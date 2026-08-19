@@ -32,6 +32,10 @@ const MEDIA_EXTS: &[&str] = &[
 /// zip is issue #76.
 const ARCHIVE_EXTS: &[&str] = &["zip", "rar", "7z"];
 
+/// Sidecar subtitle extensions. Embedded MKV tracks stay in the player —
+/// harbour does not parse containers (issue #80).
+const SUB_EXTS: &[&str] = &["srt", "ass"];
+
 /// Read chunk for streaming the file to the player (64 KiB).
 const CHUNK: usize = 64 * 1024;
 
@@ -87,19 +91,144 @@ pub fn unplayable_watch_banner(dir: &Path) -> String {
     "no playable video in this torrent".into()
 }
 
+/// True for an external `.srt` / `.ass`. Not MKV/MP4 embedded tracks.
+pub fn is_subtitle(path: &Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| SUB_EXTS.contains(&e.to_ascii_lowercase().as_str()))
+}
+
+fn same_folder(a: &Path, b: &Path) -> bool {
+    a.parent() == b.parent()
+}
+
+/// 0 = exact stem (`show.mkv` + `show.srt`), 1 = tagged stem (`show.en.srt`).
+fn stem_rank(video: &Path, sub: &Path) -> Option<u8> {
+    let v = video.file_stem()?.to_str()?.to_ascii_lowercase();
+    let s = sub.file_stem()?.to_str()?.to_ascii_lowercase();
+    if s == v {
+        return Some(0);
+    }
+    if s.starts_with(&format!("{v}.")) || s.starts_with(&format!("{v}_")) {
+        return Some(1);
+    }
+    None
+}
+
+/// Pick a `.srt`/`.ass` sitting next to `video`. Prefers a matching stem so a
+/// multi-episode folder does not glue episode 2's sub onto episode 1. A lone
+/// unmatched sidecar in the same folder still counts (`movie.mkv` + English.srt).
+pub fn sidecar_for<'a, I>(video: &Path, candidates: I) -> Option<PathBuf>
+where
+    I: IntoIterator<Item = &'a Path>,
+{
+    let same: Vec<&Path> = candidates
+        .into_iter()
+        .filter(|p| is_subtitle(p) && same_folder(video, p))
+        .collect();
+    same.iter()
+        .filter_map(|p| stem_rank(video, p).map(|r| (r, *p)))
+        .min_by_key(|(r, p)| (*r, p.as_os_str()))
+        .map(|(_, p)| p.to_path_buf())
+        .or_else(|| (same.len() == 1).then(|| same[0].to_path_buf()))
+}
+
+/// Disk scan: sidecar next to a video file that is already on disk.
+pub fn sidecar_beside(video: &Path) -> Option<PathBuf> {
+    let dir = video.parent()?;
+    let paths: Vec<PathBuf> = std::fs::read_dir(dir)
+        .ok()?
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.is_file())
+        .collect();
+    sidecar_for(video, paths.iter().map(PathBuf::as_path))
+}
+
+/// Absolute path of the sidecar to pass as `--sub-file`. `video_rel` is the
+/// torrent path of the file being watched; `torrent_subs` are relative names
+/// from the engine. Falls back to scanning the download dir.
+pub fn resolve_sidecar(
+    dir: &Path,
+    video_rel: Option<&str>,
+    torrent_subs: &[String],
+) -> Option<PathBuf> {
+    if let Some(rel) = video_rel {
+        let names: Vec<&Path> = torrent_subs.iter().map(Path::new).collect();
+        if let Some(found) = sidecar_for(Path::new(rel), names) {
+            let path = dir.join(found);
+            // Metadata names are not a download. Passing a missing path to
+            // mpv/VLC starts playback with no subs (and a file excluded by
+            // selection never appears later in the session).
+            if path.is_file() {
+                return Some(path);
+            }
+        }
+        if let Some(found) = sidecar_beside(&dir.join(rel)) {
+            return Some(found);
+        }
+    }
+    primary_media(dir).and_then(|video| sidecar_beside(&video))
+}
+
+/// `--sub-file` args for mpv (`--sub-file=path`) and VLC (`--sub-file` + path).
+/// Other players (Windows Media Player) get none — harbour is not a player.
+pub fn sub_file_args(player: &str, sub: &Path) -> Vec<String> {
+    match player_stem(player).as_str() {
+        "mpv" => vec![format!("--sub-file={}", sub.display())],
+        "vlc" => vec!["--sub-file".into(), sub.display().to_string()],
+        _ => Vec::new(),
+    }
+}
+
+/// Lowercased executable stem, treating `\` as a separator so Windows paths
+/// still identify mpv/VLC when this binary is built on Linux (CI).
+fn player_stem(player: &str) -> String {
+    let unified = player.replace('\\', "/");
+    Path::new(&unified)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or(player)
+        .to_ascii_lowercase()
+}
+
+fn subtitle_for_player(player: &str, sub: Option<&Path>) -> Option<PathBuf> {
+    let sub = sub?;
+    if sub_file_args(player, sub).is_empty() {
+        None
+    } else {
+        Some(sub.to_path_buf())
+    }
+}
+
+fn spawn_player(player: &str, media: &str, sub: Option<&Path>) -> std::io::Result<Child> {
+    let mut cmd = Command::new(player);
+    if let Some(path) = sub {
+        for arg in sub_file_args(player, path) {
+            cmd.arg(arg);
+        }
+    }
+    cmd.arg(media).stdin(Stdio::null()).spawn()
+}
+
 /// A running watch session: the loopback stream server + the player child.
 /// Drop calls [`WatchSession::stop`] so a session can never leak a server
 /// or a player process.
 pub struct WatchSession {
     /// The URL handed to the player (loopback + random port).
     pub url: String,
+    /// Sidecar passed as `--sub-file`, if the torrent had one next to the video.
+    pub subtitle: Option<PathBuf>,
     child: Child,
     stop: Arc<AtomicBool>,
 }
 
 impl WatchSession {
     /// Serves `file` on `127.0.0.1:0` and launches `player` with the URL.
-    pub fn start(file: &Path, player: &str) -> std::io::Result<WatchSession> {
+    pub fn start(
+        file: &Path,
+        player: &str,
+        sub_file: Option<&Path>,
+    ) -> std::io::Result<WatchSession> {
         let listener = TcpListener::bind("127.0.0.1:0")?;
         let port = listener.local_addr()?.port();
         let stop = Arc::new(AtomicBool::new(false));
@@ -111,11 +240,13 @@ impl WatchSession {
             let _ = accept_loop(listener, file, stop_clone);
         });
         let url = format!("http://127.0.0.1:{port}/stream");
-        let child = Command::new(player)
-            .arg(&url)
-            .stdin(Stdio::null())
-            .spawn()?;
-        Ok(WatchSession { url, child, stop })
+        let child = spawn_player(player, &url, sub_file)?;
+        Ok(WatchSession {
+            url,
+            subtitle: subtitle_for_player(player, sub_file),
+            child,
+            stop,
+        })
     }
 
     /// True once the player process has exited (the loop then returns to the
@@ -128,11 +259,16 @@ impl WatchSession {
     /// Stremio-style watch while downloading). No local server — the player
     /// talks straight to librqbit's loopback HTTP API, which blocks on
     /// missing pieces and prioritizes the requested ones.
-    pub fn launch_remote(player: &str, url: &str) -> std::io::Result<WatchSession> {
+    pub fn launch_remote(
+        player: &str,
+        url: &str,
+        sub_file: Option<&Path>,
+    ) -> std::io::Result<WatchSession> {
         let stop = Arc::new(AtomicBool::new(false));
-        let child = Command::new(player).arg(url).stdin(Stdio::null()).spawn()?;
+        let child = spawn_player(player, url, sub_file)?;
         Ok(WatchSession {
             url: url.to_string(),
+            subtitle: subtitle_for_player(player, sub_file),
             child,
             stop,
         })
@@ -570,6 +706,98 @@ mod tests {
         assert!(msg.contains(".iso"), "must name .iso, got: {msg}");
         assert!(msg.contains(".nfo"), "must name .nfo, got: {msg}");
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn sidecar_picks_matching_stem_next_to_the_video() {
+        let video = Path::new("Show/Episode 01.mkv");
+        let files = [
+            Path::new("Show/Episode 01.srt"),
+            Path::new("Show/Episode 02.srt"),
+            Path::new("Show/subs/Episode 01.ass"),
+        ];
+        let found = sidecar_for(video, files).expect("sidecar");
+        assert_eq!(found, Path::new("Show/Episode 01.srt"));
+    }
+
+    #[test]
+    fn sidecar_prefers_exact_stem_over_tagged_language() {
+        let video = Path::new("movie.mkv");
+        let files = [Path::new("movie.en.srt"), Path::new("movie.srt")];
+        let found = sidecar_for(video, files).expect("sidecar");
+        assert_eq!(found, Path::new("movie.srt"));
+    }
+
+    #[test]
+    fn sidecar_accepts_a_lone_unmatched_name_in_the_same_folder() {
+        let video = Path::new("movie.mkv");
+        let files = [Path::new("English.ass")];
+        let found = sidecar_for(video, files).expect("sidecar");
+        assert_eq!(found, Path::new("English.ass"));
+    }
+
+    #[test]
+    fn sidecar_ignores_subs_in_a_nested_folder() {
+        let video = Path::new("Show/ep.mkv");
+        let files = [Path::new("Show/subs/ep.srt")];
+        assert!(sidecar_for(video, files).is_none());
+    }
+
+    #[test]
+    fn sidecar_beside_finds_srt_on_disk() {
+        let dir = scratch_dir("sidecar-disk");
+        let video = dir.join("anime.mkv");
+        std::fs::write(&video, vec![0u8; 20]).unwrap();
+        std::fs::write(dir.join("anime.srt"), b"1\n").unwrap();
+        let found = sidecar_beside(&video).expect("disk sidecar");
+        assert_eq!(found.file_name().unwrap(), "anime.srt");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn mpv_gets_equals_form_vlc_gets_two_args_others_get_none() {
+        let sub = Path::new(r"C:\dl\file.srt");
+        assert_eq!(
+            sub_file_args("mpv", sub),
+            vec![format!("--sub-file={}", sub.display())]
+        );
+        assert_eq!(
+            sub_file_args(r"C:\Program Files\mpv\mpv.exe", sub),
+            vec![format!("--sub-file={}", sub.display())]
+        );
+        assert_eq!(
+            sub_file_args("vlc", sub),
+            vec!["--sub-file".into(), sub.display().to_string()]
+        );
+        let wmplayer = r"C:\Program Files\Windows Media Player\wmplayer.exe";
+        assert!(sub_file_args(wmplayer, sub).is_empty());
+    }
+
+    #[test]
+    fn resolve_sidecar_joins_the_download_dir() {
+        let dir = scratch_dir("sidecar-join");
+        let video_dir = dir.join("Show");
+        std::fs::create_dir_all(&video_dir).unwrap();
+        std::fs::write(video_dir.join("ep.srt"), b"1\n").unwrap();
+        let found = resolve_sidecar(&dir, Some("Show/ep.mkv"), &["Show/ep.srt".into()]);
+        assert_eq!(found, Some(dir.join("Show/ep.srt")));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn resolve_sidecar_ignores_a_metadata_name_with_no_file() {
+        let dir = scratch_dir("sidecar-missing");
+        std::fs::create_dir_all(&dir).unwrap();
+        let found = resolve_sidecar(&dir, Some("Show/ep.mkv"), &["Show/ep.srt".into()]);
+        assert!(found.is_none(), "a name is not a downloaded sidecar");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn two_unmatched_sidecars_are_not_guessed() {
+        let video = Path::new("movie.mkv");
+        let files = [Path::new("English.srt"), Path::new("Signs.ass")];
+        assert!(sidecar_for(video, files).is_none());
     }
 
     /// End-to-end server test: serve a temp file, issue a Range request over
