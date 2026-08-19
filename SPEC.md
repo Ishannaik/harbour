@@ -64,6 +64,13 @@ requiring private announces; GPU/ASCII-image rendering.
   usage error to stderr and exits non-zero without starting the TUI.
 - **FR-03** `--help` prints usage (flags, positional arg, keybind summary) and exits 0.
 - **FR-04** `--version` prints `harbour <semver>` and exits 0.
+- **FR-04a** `--bugreport` writes `~/.harbour/bugreport.txt` (relocated by
+  `HARBOUR_STATE_DIR`) with version, OS, `TERM`/`WT_SESSION`, config path, last
+  200 lines of `harbour.log` and `crash.log` if present, boot-marker state, and
+  `indexer.port`. Home-directory prefixes become `~`; infohashes are kept. The
+  command prints the file path and exits 0 without starting the TUI. On Windows
+  the path is also copied with `clip`. In the TUI, `shift+L` writes the same
+  file, copies its path, and banners `copied bugreport path`.
 - **FR-05** An infohash argument must be 40 lowercase hex characters (or accepted as
   uppercase and normalized to lowercase); the magnet builder emits
   `magnet:?xt=urn:btih:<lowercase infohash>&dn=<name>`.
