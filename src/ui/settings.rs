@@ -12,7 +12,7 @@
 //! download dir (text), seed-by-default (toggle), trackers (text), then one
 //! toggle per source in the search sidebar's matrix order (`SourceId::ALL`
 //! mirrors that matrix exactly — the sidebar's private const is duplicated
-//! here as labels only).
+//! here as labels only). Clear-cache is the last app row (issue #82).
 
 use std::collections::HashSet;
 
@@ -35,7 +35,7 @@ const HINT: &str = "↑/↓ move · enter edit/toggle · esc back · q quit";
 /// marker, mirroring the search bar's.
 const CURSOR: &str = "▌";
 /// Total settings rows before the per-source toggles.
-const APP_ROWS: usize = 17;
+const APP_ROWS: usize = 18;
 /// Fixed label column width — the value column gets the rest of the panel.
 const LABEL_W: usize = 34;
 /// Panel width: label column + a value column long enough for a download
@@ -56,6 +56,8 @@ pub enum RowKind {
     Toggle,
     /// One source enabled/disabled toggle.
     Source,
+    /// An immediate action that needs a loud confirm (clear cache).
+    Action,
 }
 
 /// The text-editable rows, so the view and the dispatch agree on which
@@ -104,6 +106,7 @@ pub fn row_kind(index: usize) -> Option<RowKind> {
         2 | 4 | 5 | 6 | 7 | 8 | 10 | 11 | 14 | 16 => Some(RowKind::Text),
         1 => Some(RowKind::Theme),
         3 | 9 | 12 | 13 | 15 => Some(RowKind::Toggle),
+        17 => Some(RowKind::Action),
         _ => {
             let source = index.checked_sub(APP_ROWS)?;
             SourceId::ALL.get(source).map(|_| RowKind::Source)
@@ -155,6 +158,7 @@ pub fn row_label(index: usize) -> Option<&'static str> {
         14 => Some("SOCKS5 Proxy URL"),
         15 => Some("Stop Seeding at Ratio"),
         16 => Some("Target Seed Ratio"),
+        17 => Some("Clear cache"),
         _ => source_at(index).map(source_label),
     }
 }
@@ -379,6 +383,7 @@ fn row_value(
             12 => bool_glyph(config.enable_upnp),
             13 => bool_glyph(config.enable_dht),
             15 => bool_glyph(config.stop_seed_at_ratio),
+            17 => "enter — confirm first".to_string(),
             _ => match source_at(index) {
                 Some(id) => source_glyph(!disabled.contains(&id)),
                 None => String::new(),
@@ -434,7 +439,7 @@ mod tests {
 
     #[test]
     fn row_layout_matches_the_settings_contract() {
-        assert_eq!(row_count(), 17 + SourceId::ALL.len());
+        assert_eq!(row_count(), 18 + SourceId::ALL.len());
         assert_eq!(row_kind(0), Some(RowKind::Player));
         assert_eq!(text_field(0), Some(TextField::Player));
         assert_eq!(row_kind(1), Some(RowKind::Theme));
@@ -457,12 +462,14 @@ mod tests {
         assert_eq!(text_field(14), Some(TextField::SocksProxy));
         assert_eq!(row_kind(15), Some(RowKind::Toggle));
         assert_eq!(text_field(16), Some(TextField::SeedRatio));
+        assert_eq!(row_kind(17), Some(RowKind::Action));
+        assert_eq!(row_label(17), Some("Clear cache"));
         // Sources follow the app rows.
-        assert_eq!(row_kind(17), Some(RowKind::Source));
+        assert_eq!(row_kind(18), Some(RowKind::Source));
         assert_eq!(row_kind(row_count() - 1), Some(RowKind::Source));
         assert_eq!(row_kind(row_count()), None);
         assert_eq!(text_field(1), None);
-        assert_eq!(source_at(16), None);
+        assert_eq!(source_at(17), None);
         assert_eq!(source_at(row_count()), None);
     }
 
@@ -472,7 +479,7 @@ mod tests {
         // movies, 1337x movies, BitTorrented, EZTV, TPB tv, 1337x tv, Nyaa,
         // SubsPlease — which is exactly SourceId::ALL, the registry's
         // canonical sidebar order.
-        let got: Vec<SourceId> = (17..row_count()).filter_map(source_at).collect();
+        let got: Vec<SourceId> = (18..row_count()).filter_map(source_at).collect();
         assert_eq!(got, SourceId::ALL);
         assert_eq!(got[0], SourceId::FitGirl);
         assert_eq!(got[8], SourceId::SubsPlease);
@@ -480,7 +487,7 @@ mod tests {
 
     #[test]
     fn source_labels_match_the_search_sidebar() {
-        let labels: Vec<&str> = (17..row_count()).filter_map(row_label).collect();
+        let labels: Vec<&str> = (18..row_count()).filter_map(row_label).collect();
         assert_eq!(
             labels,
             [
@@ -534,6 +541,7 @@ mod tests {
             "Download Folder",
             "Seed by Default",
             "Custom Trackers",
+            "Clear cache",
             "FitGirl",
             "titanium",
             "auto",

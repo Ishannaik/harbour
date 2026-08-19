@@ -261,6 +261,12 @@ requiring private announces; GPU/ASCII-image rendering.
   volume); a crash mid-write leaves either the old or the new file, never a partial one.
 - **FR-56** Duplicate detection: enqueuing an info_hash already in the ledger focuses the
   existing item instead of creating a duplicate.
+- **FR-80** Clear cache (settings row or `shift+C`) opens a loud confirm that defaults
+  to No. Confirming wipes `cache/search/` and unused `cache/torrents/<hash>.torrent`
+  files whose hash is not in the ledger, then shows a banner with bytes freed. It never
+  deletes download-directory files or ledger rows. Forgetting an in-progress item (`x`)
+  removes the ledger row and stops the engine torrent so it does not keep writing;
+  download-dir leftovers are a separate delete-files action.
 
 ### 4.7 Watch mode — phase 6 (FR-57 … FR-61, FR-104, FR-105)
 
