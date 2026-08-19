@@ -8,10 +8,11 @@
 //! [`text_field`], so the view and the key handler agree on what each row is
 //! without duplicating the layout.
 //!
-//! Rows, in order: player (text), theme (cycles), download dir (text),
-//! seed-by-default (toggle), trackers (text), then one toggle per source in
-//! the search sidebar's matrix order (`SourceId::ALL` mirrors that matrix
-//! exactly — the sidebar's private const is duplicated here as labels only).
+//! Rows, in order: player (opens the shift+P overlay), theme (cycles),
+//! download dir (text), seed-by-default (toggle), trackers (text), then one
+//! toggle per source in the search sidebar's matrix order (`SourceId::ALL`
+//! mirrors that matrix exactly — the sidebar's private const is duplicated
+//! here as labels only).
 
 use std::collections::HashSet;
 
@@ -45,7 +46,9 @@ pub const PANEL_WIDTH: u16 = 78;
 /// behavior lives in one place instead of being re-derived from its label.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RowKind {
-    /// A free-text value edited inline (player, download dir, trackers).
+    /// Opens the existing player-picker overlay (shift+P).
+    Player,
+    /// A free-text value edited inline (download dir, trackers, limits).
     Text,
     /// Cycles the active theme through the installed ones.
     Theme,
@@ -97,7 +100,8 @@ pub fn row_count() -> usize {
 /// The kind of row at `index`, or `None` past the end.
 pub fn row_kind(index: usize) -> Option<RowKind> {
     match index {
-        0 | 2 | 4 | 5 | 6 | 7 | 8 | 10 | 11 | 14 | 16 => Some(RowKind::Text),
+        0 => Some(RowKind::Player),
+        2 | 4 | 5 | 6 | 7 | 8 | 10 | 11 | 14 | 16 => Some(RowKind::Text),
         1 => Some(RowKind::Theme),
         3 | 9 | 12 | 13 | 15 => Some(RowKind::Toggle),
         _ => {
@@ -431,7 +435,7 @@ mod tests {
     #[test]
     fn row_layout_matches_the_settings_contract() {
         assert_eq!(row_count(), 17 + SourceId::ALL.len());
-        assert_eq!(row_kind(0), Some(RowKind::Text));
+        assert_eq!(row_kind(0), Some(RowKind::Player));
         assert_eq!(text_field(0), Some(TextField::Player));
         assert_eq!(row_kind(1), Some(RowKind::Theme));
         assert_eq!(row_kind(2), Some(RowKind::Text));
