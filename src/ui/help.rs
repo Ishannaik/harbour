@@ -48,6 +48,7 @@ pub const BINDINGS: &[(&str, &str)] = &[
         "shift+P",
         "anywhere: player picker — choose mpv/VLC/Windows Media Player",
     ),
+    ("shift+L", "copy the bugreport path for sharing"),
     ("shift+S", "downloads: open settings"),
     ("?", "help — when not typing a query"),
     ("q", "quit — anywhere except while typing a query"),
@@ -190,7 +191,7 @@ mod tests {
         // UR-10: `?` must show exactly what the app implements. These are the
         // ones a user cannot discover any other way.
         for key in [
-            "enter", "d", "shift+D", "o", "← →", "p", "shift+P", "q", "?", "tab",
+            "enter", "d", "shift+D", "o", "← →", "p", "shift+P", "shift+L", "q", "?", "tab",
         ] {
             assert!(
                 BINDINGS.iter().any(|(k, _)| *k == key),

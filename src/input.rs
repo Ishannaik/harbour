@@ -128,6 +128,8 @@ pub enum Action {
     ClearCompleted,
     /// Open the selected downloaded item or containing directory in the file manager.
     OpenFolder,
+    /// Write `bugreport.txt` and copy its path (`shift+L`, FR-04a).
+    CopyBugReport,
 }
 
 /// Ctrl-C always quits, everywhere — a terminal convention users rely on more
@@ -341,6 +343,7 @@ pub fn map_with_focus(key: KeyEvent, screen: Screen, flags: FocusFlags) -> Actio
             KeyCode::Char('s') => Action::OpenSettings,
             KeyCode::Char('?') => Action::ToggleHelp,
             KeyCode::Char('q') => Action::Quit,
+            KeyCode::Char('L') => Action::CopyBugReport,
             KeyCode::Char('1') => Action::Sort(crate::ui::SortColumn::Seeds),
             KeyCode::Char('2') => Action::Sort(crate::ui::SortColumn::Size),
             KeyCode::Char('3') => Action::Sort(crate::ui::SortColumn::Leechers),
@@ -378,6 +381,7 @@ pub fn map_with_focus(key: KeyEvent, screen: Screen, flags: FocusFlags) -> Actio
             KeyCode::Char('r') => Action::Retry,
             KeyCode::Delete | KeyCode::Char('x') => Action::Remove,
             KeyCode::Char('w') => Action::Watch,
+            KeyCode::Char('L') => Action::CopyBugReport,
             _ => Action::None,
         },
 
@@ -576,7 +580,7 @@ mod tests {
         // Input pane: EVERY printable key types — including `?`, capitals,
         // and letters that act elsewhere. No modifier is ever needed to type
         // "Dune" or "warcraft".
-        for c in "dunepqrsx?DWSP".chars() {
+        for c in "dunepqrsx?DWSPL".chars() {
             assert_eq!(
                 map(
                     key(KeyCode::Char(c)),
@@ -616,6 +620,7 @@ mod tests {
             Action::FocusSearchInput,
             "backspace is the reflexive way out of the results pane"
         );
+        assert_eq!(r(KeyCode::Char('L')), Action::CopyBugReport);
         // Any other printable returns to the input and types there.
         assert_eq!(r(KeyCode::Char('x')), Action::Type('x'));
         assert_eq!(
@@ -1132,6 +1137,7 @@ mod tests {
             (KeyCode::Char('s'), Action::ToggleSeeding),
             (KeyCode::Char('q'), Action::Quit),
             (KeyCode::Char('?'), Action::ToggleHelp),
+            (KeyCode::Char('L'), Action::CopyBugReport),
             (KeyCode::Tab, Action::SwitchScreen),
             (KeyCode::Up, Action::MoveUp),
             (KeyCode::Down, Action::MoveDown),
@@ -1181,7 +1187,7 @@ mod tests {
         #[rustfmt::skip]
         let keys = [
             "enter", "↑ ↓", "← →", "d", "shift+D", "o", "tab",
-            "s", "p", "shift+P", "r", "x", "esc", "?", "q",
+            "s", "p", "shift+P", "shift+L", "r", "x", "esc", "?", "q",
         ];
         for key in keys {
             assert!(
