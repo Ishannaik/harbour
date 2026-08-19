@@ -416,9 +416,9 @@ fn command_exe(command: &str) -> Option<String> {
     exe.filter(|p| !p.is_empty() && p != "%1")
 }
 
-/// Finds the best installed player: mpv (the spec's renderer) first, then
-/// VLC, then Windows Media Player. Returns a command path, not a display
-/// name — the auto-pick is the first entry of [`find_players`].
+/// The first installed player — the picker highlights this when
+/// `config.player` is unset so first-run Enter confirms the detected default
+/// (#73). Same as the first entry of [`find_players`].
 pub fn find_player() -> Option<String> {
     find_players()
         .into_iter()

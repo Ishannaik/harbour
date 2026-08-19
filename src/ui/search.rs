@@ -45,7 +45,7 @@ const CURSOR: &str = "▌";
 const HINT: &str = "↵ search · tab downloads · s settings · ? help · esc results";
 /// The results pane owns the keyboard: plain keys act on the selected row.
 /// Kept short so it fits the main column beside the sidebar (issue #71).
-const RESULTS_HINT: &str = "enter watch · d download · dbl-click download";
+const RESULTS_HINT: &str = "enter watch · d download · shift+P player · dbl-click";
 /// Placeholder while the query is empty and idle.
 const PLACEHOLDER: &str = "search torrents…";
 /// Bar label while searching on an empty query — the curated-browse mode
@@ -1141,6 +1141,8 @@ mod tests {
     use ratatui::backend::TestBackend;
 
     use super::*;
+    use std::collections::HashSet;
+
     use crate::core::types::{SourceId, TorrentResult};
 
     /// A deterministic CineVault result — the name is the only varying field.
@@ -1156,6 +1158,28 @@ mod tests {
             magnet: Some("magnet:?xt=urn:btih:test".into()),
             added: Some(1_786_000_000),
         }
+    }
+
+    #[test]
+    fn results_hint_names_the_player_picker() {
+        let state = SearchState {
+            focus: false,
+            ..SearchState::default()
+        };
+        let theme = Theme::titanium();
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).expect("test backend");
+        terminal
+            .draw(|f| draw(f, f.area(), &state, &HashSet::new(), &theme, None))
+            .expect("draw");
+        let buf = terminal.backend().buffer();
+        let text: String = (0..24)
+            .flat_map(|y| (0..80).map(move |x| buf[(x, y)].symbol().to_string()))
+            .collect();
+        assert!(
+            text.contains("shift+P") && text.contains("player"),
+            "results footer must name the picker, got: {text}"
+        );
     }
 
     #[test]
