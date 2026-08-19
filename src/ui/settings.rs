@@ -30,7 +30,7 @@ use crate::theme::{Theme, ThemeColors};
 /// Panel title — same framing as the downloads view and the splash.
 const TITLE: &str = " harbour — settings ";
 /// Bottom hint — the actions that matter on this screen.
-const HINT: &str = "↑/↓ move · enter edit/toggle · esc back";
+const HINT: &str = "↑/↓ move · enter edit/toggle · esc back · q quit";
 /// Block cursor glyph at the end of an inline edit — the input's focus
 /// marker, mirroring the search bar's.
 const CURSOR: &str = "▌";
@@ -537,7 +537,7 @@ mod tests {
             "FitGirl",
             "titanium",
             "auto",
-            "↑/↓ move · enter edit/toggle · esc back",
+            "↑/↓ move · enter edit/toggle · esc back · q quit",
         ] {
             assert!(symbols.contains(expected), "missing {expected:?}");
         }

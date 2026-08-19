@@ -67,6 +67,8 @@ pub struct FakeEngine {
     next_add_error: Mutex<Option<EngineError>>,
     /// The last speed limits applied, (download MiB/s, upload MiB/s).
     speed_limits: Mutex<(Option<u64>, Option<u64>)>,
+    /// Set when [`Engine::shutdown`] runs — the quit path asserts this.
+    shutdown_called: Mutex<bool>,
 }
 
 impl FakeEngine {
@@ -283,12 +285,29 @@ impl Engine for FakeEngine {
         let mut slot = self.speed_limits.lock().unwrap_or_else(|p| p.into_inner());
         *slot = (download_mib, upload_mib);
     }
+
+    fn shutdown<'a>(&'a self) -> EngineFuture<'a, ()> {
+        Box::pin(async move {
+            *self
+                .shutdown_called
+                .lock()
+                .unwrap_or_else(|p| p.into_inner()) = true;
+        })
+    }
 }
 
 impl FakeEngine {
     /// The limits last applied via [`Engine::set_speed_limits`].
     pub fn applied_limits(&self) -> (Option<u64>, Option<u64>) {
         *self.speed_limits.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    /// True after [`Engine::shutdown`] has run on this fake.
+    pub fn shutdown_called(&self) -> bool {
+        *self
+            .shutdown_called
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
     }
 }
 
