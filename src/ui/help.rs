@@ -46,7 +46,7 @@ pub const BINDINGS: &[(&str, &str)] = &[
     ("x", "downloads: remove the selected item (keeps files)"),
     (
         "shift+P",
-        "anywhere: choose the watch player (mpv/VLC/Windows Media Player)",
+        "anywhere: player picker — choose mpv/VLC/Windows Media Player",
     ),
     ("shift+S", "downloads: open settings"),
     ("?", "help — when not typing a query"),
@@ -189,7 +189,9 @@ mod tests {
     fn the_bindings_users_reach_for_first_are_present() {
         // UR-10: `?` must show exactly what the app implements. These are the
         // ones a user cannot discover any other way.
-        for key in ["enter", "d", "shift+D", "o", "← →", "p", "q", "?", "tab"] {
+        for key in [
+            "enter", "d", "shift+D", "o", "← →", "p", "shift+P", "q", "?", "tab",
+        ] {
             assert!(
                 BINDINGS.iter().any(|(k, _)| *k == key),
                 "`{key}` is implemented but undocumented"

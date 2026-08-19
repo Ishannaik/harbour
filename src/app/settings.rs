@@ -10,14 +10,17 @@ use crate::ui::settings::{RowKind, TextField};
 
 use super::App;
 use super::actions::download_selected;
+use super::watch::open_player_picker;
 
-/// The settings overlay's Enter: per row kind, either enter/commit an
-/// inline text edit, cycle the theme, or flip a toggle immediately.
+/// The settings overlay's Enter: per row kind, either open the player
+/// picker, enter/commit an inline text edit, cycle the theme, or flip a
+/// toggle immediately.
 pub(crate) fn settings_activate(app: &mut App) {
     let Some(kind) = crate::ui::settings::row_kind(app.settings.selected) else {
         return;
     };
     match kind {
+        RowKind::Player => open_player_picker(app),
         RowKind::Text => settings_edit_text(app),
         RowKind::Theme => settings_cycle_theme(app),
         RowKind::Toggle => settings_toggle_row(app),
@@ -368,4 +371,78 @@ pub(crate) async fn commit_folder_prompt(app: &mut App) {
     }
     app.state.folder_prompt.open = false;
     app.state.folder_prompt.edit_buffer.clear();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::{HashMap, HashSet};
+    use std::sync::{Arc, Mutex};
+
+    use crate::engine::fake::FakeEngine;
+    use crate::persist::{Config, Store};
+    use crate::queue::Queue;
+    use crate::search::SearchEngine;
+    use crate::theme::Theme;
+    use crate::ui::AppState;
+    use crate::ui::player::PlayerPicker;
+    use crate::ui::settings::SettingsState;
+
+    fn test_app(label: &str) -> App {
+        let root = std::env::temp_dir().join(format!(
+            "harbour-settings-picker-test-{label}-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("scratch dir");
+        let config = Config {
+            download_dir: root.join("dl"),
+            ..Config::default()
+        };
+        App {
+            state: AppState::default(),
+            queue: Queue::new(Arc::new(FakeEngine::new()), 0),
+            search: SearchEngine::new(vec![]),
+            store: Store::new(&root),
+            disabled_sources: HashSet::new(),
+            config,
+            partial: HashMap::new(),
+            search_cancel: None,
+            events_tx: tokio::sync::mpsc::unbounded_channel().0,
+            history: Vec::new(),
+            help_open: false,
+            settings_open: true,
+            settings: SettingsState::default(),
+            theme: Arc::new(Mutex::new(Theme::titanium())),
+            watch: None,
+            picker: PlayerPicker::default(),
+            picker_pending: None,
+            episode_picker: crate::ui::EpisodePicker::default(),
+            batch_picker: crate::ui::BatchPicker::default(),
+            query_cache: HashMap::new(),
+            quitting: false,
+        }
+    }
+
+    #[test]
+    fn enter_on_the_player_row_opens_the_picker_overlay() {
+        let mut app = test_app("player-row");
+        app.settings.selected = 0;
+        assert_eq!(
+            crate::ui::settings::row_label(0),
+            Some("Default Video Player")
+        );
+
+        settings_activate(&mut app);
+
+        assert!(
+            app.picker.open,
+            "settings player row must open the same shift+P overlay"
+        );
+        assert!(
+            !app.settings.editing,
+            "player is a picker, not an inline text field"
+        );
+        assert!(app.picker_pending.is_none(), "no watch is waiting");
+    }
 }

@@ -48,7 +48,8 @@ pub struct Config {
     /// Extra announce URLs added to every torrent.
     pub trackers: Vec<String>,
     /// External player for watch mode (`w`): an explicit path or command
-    /// name (mpv/VLC). None = auto-detect on PATH (mpv first, then VLC).
+    /// name (mpv/VLC). None = unset; the first `w` opens the player picker
+    /// and the choice is persisted so it never nags.
     pub player: Option<String>,
     /// Sources the user disabled via the sidebar; they are never queried or
     /// merged. Empty = everything enabled (additive: configs written by

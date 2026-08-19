@@ -11,14 +11,28 @@ use crate::ui::player::PickerMode;
 
 use super::{App, PendingWatch};
 
-/// The player to use for watch mode: the configured one when set, else the
-/// first installed player. None means "no player at all" — the caller opens
-/// the picker instead of guessing.
-fn resolve_player(app: &App) -> Option<String> {
-    match &app.config.player {
-        Some(p) if !p.trim().is_empty() => Some(p.clone()),
-        _ => crate::watch::find_player(),
-    }
+/// The persisted watch player, if the user has chosen one. Empty/whitespace
+/// counts as unset — first `w` opens the picker even when `find_player`
+/// would auto-detect an installed binary (#73).
+fn configured_player(player: Option<&str>) -> Option<&str> {
+    player.map(str::trim).filter(|p| !p.is_empty())
+}
+
+/// Opens the picker with a watch waiting on the choice.
+fn defer_watch_until_player_chosen(
+    app: &mut App,
+    id: String,
+    name: String,
+    dir: PathBuf,
+    ephemeral: bool,
+) {
+    app.picker_pending = Some(PendingWatch {
+        id,
+        name,
+        dir,
+        ephemeral,
+    });
+    open_player_picker(app);
 }
 
 /// Opens the player-picker overlay, listing every installed player and
@@ -26,11 +40,13 @@ fn resolve_player(app: &App) -> Option<String> {
 pub(crate) fn open_player_picker(app: &mut App) {
     app.picker.options = crate::watch::find_players();
     app.picker.mode = PickerMode::List;
+    let detected = crate::watch::find_player();
+    let current = configured_player(app.config.player.as_deref()).or(detected.as_deref());
     app.picker.selected = app
         .picker
         .options
         .iter()
-        .position(|(_, command)| app.config.player.as_deref() == Some(command.as_str()))
+        .position(|(_, command)| current == Some(command.as_str()))
         .unwrap_or(0);
     app.picker.custom.clear();
     app.picker.message = None;
@@ -93,9 +109,10 @@ pub(crate) async fn choose_player(app: &mut App) {
 ///    live session (or a fake/queued item) fall back to the local Range
 ///    server.
 ///
-/// With no player at all, the picker opens with this watch pending — the
-/// picker IS the guidance, not an error banner. Every launch failure is a
-/// loud error banner — never a silent no-op.
+/// With no persisted player, the picker opens with this watch pending — even
+/// when a default is installed — so the first `w` is a choice, not a surprise
+/// launch. The picker IS the guidance, not an error banner. Every launch
+/// failure is a loud error banner — never a silent no-op.
 pub(crate) async fn start_watch(app: &mut App) {
     // The selection indexes the visible tab, so resolve through it; clone
     // the fields (a ref into `items` would fight the mutations below).
@@ -109,20 +126,14 @@ pub(crate) async fn start_watch(app: &mut App) {
     let id = item.id.clone();
     let name = item.name.clone();
     let dir = item.dir.clone();
-    let Some(player) = resolve_player(app) else {
-        // No player yet: still refuse archives before opening the picker, so
-        // a zip pack never becomes "pick mpv, then fail" (issue #76).
-        if nothing_watchable(app, &id, &dir).await {
-            app.warn(crate::watch::unplayable_watch_banner(&dir));
-            return;
-        }
-        app.picker_pending = Some(PendingWatch {
-            id,
-            name,
-            dir,
-            ephemeral: false,
-        });
-        open_player_picker(app);
+    // Refuse archives before the picker so a zip never becomes "pick mpv,
+    // then fail" (issue #76). Unset config.player always prompts (#73).
+    if nothing_watchable(app, &id, &dir).await {
+        app.warn(crate::watch::unplayable_watch_banner(&dir));
+        return;
+    }
+    let Some(player) = configured_player(app.config.player.as_deref()).map(str::to_string) else {
+        defer_watch_until_player_chosen(app, id, name, dir, false);
         return;
     };
     launch_watch(app, id, name, dir, player).await;
@@ -270,18 +281,12 @@ pub(crate) async fn start_watch_ephemeral(app: &mut App) {
         app.warn(format!("watch: cannot start streaming: {err}"));
         return;
     }
-    let Some(player) = resolve_player(app) else {
-        if nothing_watchable(app, &id, &dir).await {
-            app.warn(crate::watch::unplayable_watch_banner(&dir));
-            return;
-        }
-        app.picker_pending = Some(PendingWatch {
-            id,
-            name: result.name.clone(),
-            dir,
-            ephemeral: true,
-        });
-        open_player_picker(app);
+    if nothing_watchable(app, &id, &dir).await {
+        app.warn(crate::watch::unplayable_watch_banner(&dir));
+        return;
+    }
+    let Some(player) = configured_player(app.config.player.as_deref()).map(str::to_string) else {
+        defer_watch_until_player_chosen(app, id, result.name.clone(), dir, true);
         return;
     };
     launch_ephemeral_session(app, id, result.name.clone(), dir, &player).await;
@@ -472,7 +477,6 @@ mod tests {
         std::fs::create_dir_all(&root).expect("scratch dir");
         let config = Config {
             download_dir: root.join("dl"),
-            player: Some("harbour-bug-76-not-a-player".into()),
             ..Config::default()
         };
         let app = App {
@@ -499,6 +503,29 @@ mod tests {
             quitting: false,
         };
         (app, root)
+    }
+
+    async fn enqueue_one(app: &mut App, root: &Path) {
+        app.queue
+            .add(
+                AddInput {
+                    id: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
+                    name: "Movie".into(),
+                    source: None,
+                    magnet: Some(
+                        "magnet:?xt=urn:btih:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
+                    ),
+                    bytes: None,
+                    dir: root.join("dl"),
+                    size_bytes: 1,
+                    only_files: None,
+                },
+                0,
+            )
+            .await;
+        app.refresh_downloads();
+        app.state.downloads.selected = 0;
+        app.state.screen = Screen::Downloads;
     }
 
     #[tokio::test]
@@ -529,10 +556,7 @@ mod tests {
 
         start_watch(&mut app).await;
 
-        assert!(
-            app.watch.is_none(),
-            "w on a zip pack must never spawn a player"
-        );
+        assert!(app.watch.is_none(), "w on a zip pack must never spawn a player");
         assert!(
             app.state.now_playing.is_none(),
             "w on a zip pack must not enter now-playing"
@@ -547,5 +571,63 @@ mod tests {
             "the player must not have been invoked, got: {banner}"
         );
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn unset_player_prompts_even_when_one_is_installed() {
+        assert!(configured_player(None).is_none());
+        assert!(configured_player(Some("")).is_none());
+        assert!(configured_player(Some("  ")).is_none());
+        assert_eq!(configured_player(Some("mpv")), Some("mpv"));
+        assert_eq!(configured_player(Some("vlc")), Some("vlc"));
+    }
+
+    #[tokio::test]
+    async fn first_watch_with_unset_player_opens_the_picker() {
+        let (mut app, root) = test_app(Arc::new(FakeEngine::new()), "first-w");
+        enqueue_one(&mut app, &root).await;
+        assert!(app.config.player.is_none());
+
+        start_watch(&mut app).await;
+
+        assert!(
+            app.picker.open,
+            "first w with unset config.player must open the existing picker"
+        );
+        assert!(app.picker_pending.is_some(), "watch waits on the choice");
+        assert!(app.watch.is_none(), "must not launch until Enter confirms");
+    }
+
+    #[tokio::test]
+    async fn second_watch_after_a_choice_does_not_open_the_picker() {
+        let (mut app, root) = test_app(Arc::new(FakeEngine::new()), "second-w");
+        enqueue_one(&mut app, &root).await;
+        start_watch(&mut app).await;
+        assert!(app.picker.open);
+
+        if app.picker.options.is_empty() {
+            app.picker.options = vec![("mpv".into(), "mpv".into())];
+        }
+        choose_player(&mut app).await;
+        assert!(app.config.player.is_some());
+        assert!(!app.picker.open);
+
+        start_watch(&mut app).await;
+        assert!(
+            !app.picker.open,
+            "second w with a persisted player must not reopen the picker"
+        );
+    }
+
+    #[tokio::test]
+    async fn configured_player_skips_the_picker() {
+        let (mut app, root) = test_app(Arc::new(FakeEngine::new()), "configured");
+        enqueue_one(&mut app, &root).await;
+        app.config.player = Some("mpv".into());
+
+        start_watch(&mut app).await;
+
+        assert!(!app.picker.open);
+        assert!(app.picker_pending.is_none());
     }
 }

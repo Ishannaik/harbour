@@ -80,6 +80,12 @@ async fn handle_mouse_event(app: &mut App, mouse: crossterm::event::MouseEvent) 
         return;
     }
 
+    if app.picker.open {
+        // The picker is on top of settings when opened from the player row;
+        // clicks belong to it (keys already do), not the overlay underneath.
+        return;
+    }
+
     if mouse.kind == MouseEventKind::ScrollDown {
         if app.settings_open {
             apply_action(app, Action::SettingsMoveDown).await;
@@ -315,7 +321,11 @@ async fn apply_action(app: &mut App, action: Action) {
                 app.state.error_banner = None;
                 return;
             }
-            if app.settings_open {
+            if app.picker.open {
+                // Closing the picker also drops a watch waiting on it.
+                app.picker.open = false;
+                app.picker_pending = None;
+            } else if app.settings_open {
                 // First Esc exits an inline edit, the second closes the
                 // overlay — the hint's "esc back" is two steps, never a
                 // lost edit.
@@ -325,10 +335,6 @@ async fn apply_action(app: &mut App, action: Action) {
                 } else {
                     app.settings_open = false;
                 }
-            } else if app.picker.open {
-                // Closing the picker also drops a watch waiting on it.
-                app.picker.open = false;
-                app.picker_pending = None;
             } else if app.help_open {
                 app.help_open = false;
             } else if !app.state.search.query.is_empty() {
