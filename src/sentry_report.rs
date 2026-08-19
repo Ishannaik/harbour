@@ -1,7 +1,8 @@
-//! Friend crash reports (FR-09a) to Sentry project `harbour`.
+//! Crash reports (FR-09a) to Sentry when a DSN is provided via env.
 //!
-//! The DSN is public by design. Friends do not set env vars.
-//! `HARBOUR_SENTRY=0` opts out. Tests never call [`init`].
+//! No DSN is shipped in the binary. [`init`] is a no-op unless
+//! `HARBOUR_SENTRY_DSN` is set. `HARBOUR_SENTRY=0` still opts out.
+//! Tests never call [`init`].
 //!
 //! Events are panics and process-level failures only. Search queries, magnets,
 //! and download paths are stripped in [`scrub_event`].
@@ -15,12 +16,6 @@ use sentry::{ClientInitGuard, ClientOptions, Level};
 
 use crate::core::paths::{ENV_SENTRY, ENV_SENTRY_DSN, ENV_SENTRY_ENV};
 
-/// Public DSN for org `ishan-rt`, project `harbour`. Not a secret.
-const DEFAULT_DSN: &str = concat!(
-    "https://7ee8959645b1088d397de02881a9f945@",
-    "o4508130310946816.ingest.de.sentry.io/4511935607210064",
-);
-
 const APP_TAG: &str = "harbour";
 
 /// True when the user asked us not to phone home.
@@ -33,12 +28,9 @@ pub fn opted_out(raw: Option<&str>) -> bool {
     )
 }
 
-/// DSN string: override env, else the baked friend DSN.
-pub fn resolve_dsn(override_dsn: Option<&str>) -> &str {
-    match override_dsn {
-        Some(s) if !s.trim().is_empty() => s.trim(),
-        _ => DEFAULT_DSN,
-    }
+/// DSN from env only. Empty / missing means Sentry stays off.
+pub fn resolve_dsn(override_dsn: Option<&str>) -> Option<&str> {
+    override_dsn.map(str::trim).filter(|s| !s.is_empty())
 }
 
 fn environment(raw: Option<&str>) -> Cow<'static, str> {
@@ -75,7 +67,7 @@ pub fn scrub_event(mut event: Event<'static>) -> Option<Event<'static>> {
     Some(event)
 }
 
-/// Start the client. `None` when opted out or the DSN cannot be parsed.
+/// Start the client. `None` when opted out, no DSN, or the DSN cannot be parsed.
 ///
 /// Keep the guard alive until process exit so the last panic flushes.
 pub fn init() -> Option<ClientInitGuard> {
@@ -83,7 +75,7 @@ pub fn init() -> Option<ClientInitGuard> {
         return None;
     }
     let override_dsn = env::var(ENV_SENTRY_DSN).ok();
-    let dsn = resolve_dsn(override_dsn.as_deref());
+    let dsn = resolve_dsn(override_dsn.as_deref())?;
     let parsed = dsn.parse().ok()?;
     let mut opts = ClientOptions::new();
     opts.dsn = Some(parsed);
@@ -127,10 +119,14 @@ mod tests {
     }
 
     #[test]
-    fn empty_override_falls_back_to_baked_dsn() {
-        assert_eq!(resolve_dsn(None), DEFAULT_DSN);
-        assert_eq!(resolve_dsn(Some("")), DEFAULT_DSN);
-        assert!(resolve_dsn(Some("https://x@o1.ingest.sentry.io/2")).contains("o1"));
+    fn missing_or_empty_dsn_means_sentry_is_off() {
+        assert_eq!(resolve_dsn(None), None);
+        assert_eq!(resolve_dsn(Some("")), None);
+        assert_eq!(resolve_dsn(Some("   ")), None);
+        assert_eq!(
+            resolve_dsn(Some("https://x@o1.ingest.sentry.io/2")),
+            Some("https://x@o1.ingest.sentry.io/2")
+        );
     }
 
     #[test]
