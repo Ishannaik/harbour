@@ -6,8 +6,8 @@ use std::time::Instant;
 
 use crate::core::paths;
 use crate::core::types::{EngineEvent, QueueStatus, SearchCtx, SourceStatus, TorrentResult};
-use crate::queue::{AddInput, AddOutcome};
-use crate::ui::Screen;
+use crate::queue::{AddInput, AddOutcome, DeleteBlock};
+use crate::ui::{ConfirmAction, ConfirmPrompt, Screen};
 
 use super::{App, now_ms};
 
@@ -278,13 +278,49 @@ pub(crate) async fn retry_selected(app: &mut App) {
     app.refresh_downloads();
 }
 
-pub(crate) async fn remove_selected(app: &mut App) {
+pub(crate) fn open_remove_confirm(app: &mut App, delete_files: bool) {
     let Some(id) = app.selected_item_id() else {
         return;
     };
-    // Files are never deleted from here: removal forgets the item, and deleting
-    // someone's data needs a deliberate, separate confirmation.
-    if let Err(err) = app.queue.remove(&id, false).await {
+    let Some(item) = app.queue.get(&id) else {
+        return;
+    };
+    app.confirm = if delete_files {
+        ConfirmPrompt::delete_files(&item.name, &item.dir, id)
+    } else {
+        ConfirmPrompt::forget(&item.name, id)
+    };
+}
+
+pub(crate) async fn apply_confirm(app: &mut App, accept: bool) {
+    let pending = app.confirm.on_confirm.take();
+    app.confirm = ConfirmPrompt::default();
+    if !accept {
+        return;
+    }
+    let Some(action) = pending else {
+        return;
+    };
+    let (id, delete_files) = match action {
+        ConfirmAction::Forget { id } => (id, false),
+        ConfirmAction::ForgetAndDelete { id } => (id, true),
+    };
+    remove_item(app, &id, delete_files).await;
+}
+
+async fn remove_item(app: &mut App, id: &str, delete_files: bool) {
+    let mut delete_files = delete_files;
+    if delete_files {
+        if app.state.now_playing.as_ref().is_some_and(|np| np.id == id) {
+            app.warn("kept the files — that download is playing");
+            delete_files = false;
+        } else if app.queue.delete_files_blocked_by(id) == Some(DeleteBlock::SharedDirectory) {
+            app.warn("kept the files — another download uses that folder");
+            delete_files = false;
+        }
+        // Missing: Queue::remove skips deletion silently (FR-79).
+    }
+    if let Err(err) = app.queue.remove(id, delete_files).await {
         app.warn(err.to_string());
     }
     persist(app);
@@ -626,6 +662,7 @@ mod tests {
             events_tx: tokio::sync::mpsc::unbounded_channel().0,
             history: Vec::new(),
             help_open: false,
+            confirm: crate::ui::ConfirmPrompt::default(),
             settings_open: false,
             settings: SettingsState::default(),
             theme: Arc::new(Mutex::new(Theme::titanium())),
@@ -785,6 +822,132 @@ mod tests {
             app.state.search.source_health.get(&SourceId::Indexer),
             Some(&SourceStatus::Online),
             "the proxy source's own dot still comes from the event"
+        );
+    }
+
+    async fn enqueue_named(app: &mut App, id: &str, name: &str, dir: PathBuf) {
+        app.queue
+            .add(
+                AddInput {
+                    id: id.to_string(),
+                    name: name.into(),
+                    source: None,
+                    magnet: Some(format!("magnet:?xt=urn:btih:{id}")),
+                    bytes: None,
+                    dir,
+                    size_bytes: 1,
+                    only_files: None,
+                },
+                0,
+            )
+            .await;
+        app.refresh_downloads();
+        app.state.downloads.selected = 0;
+        app.state.screen = Screen::Downloads;
+    }
+
+    #[tokio::test]
+    async fn x_opens_forget_confirm_and_keeps_files_until_yes() {
+        let engine = Arc::new(FakeEngine::new());
+        let (mut app, root) = test_app(engine.clone(), "forget-confirm");
+        let id = "a".repeat(40);
+        enqueue_named(&mut app, &id, "Dune", root.join("dl-a")).await;
+
+        open_remove_confirm(&mut app, false);
+        assert!(app.confirm.open);
+        assert!(!app.confirm.yes_selected, "FR-76: default No");
+        assert!(app.queue.get(&id).is_some());
+
+        apply_confirm(&mut app, false).await;
+        assert!(app.queue.get(&id).is_some(), "Esc/No leaves the item");
+        assert!(!app.confirm.open);
+
+        open_remove_confirm(&mut app, false);
+        apply_confirm(&mut app, true).await;
+        assert!(app.queue.get(&id).is_none(), "Yes forgets the item");
+        assert_eq!(engine.last_remove_deleted_files(), Some(false));
+    }
+
+    #[tokio::test]
+    async fn shift_x_deletes_files_when_the_dir_is_unshared() {
+        let engine = Arc::new(FakeEngine::new());
+        let (mut app, root) = test_app(engine.clone(), "delete-files");
+        let id = "b".repeat(40);
+        enqueue_named(&mut app, &id, "Dune", root.join("dl-b")).await;
+
+        open_remove_confirm(&mut app, true);
+        assert!(app.confirm.destructive);
+        assert!(app.confirm.body.contains("dl-b"));
+        apply_confirm(&mut app, true).await;
+        assert!(app.queue.get(&id).is_none());
+        assert_eq!(engine.last_remove_deleted_files(), Some(true));
+    }
+
+    #[tokio::test]
+    async fn shift_x_with_a_shared_dir_forgets_but_keeps_files() {
+        let engine = Arc::new(FakeEngine::new());
+        let (mut app, root) = test_app(engine.clone(), "shared-dir");
+        let a = "c".repeat(40);
+        let b = "d".repeat(40);
+        let shared = root.join("shared");
+        enqueue_named(&mut app, &a, "One", shared.clone()).await;
+        enqueue_named(&mut app, &b, "Two", shared).await;
+
+        open_remove_confirm(&mut app, true);
+        apply_confirm(&mut app, true).await;
+        assert!(app.queue.get(&a).is_none(), "the item is forgotten");
+        assert!(app.queue.get(&b).is_some());
+        assert_eq!(engine.last_remove_deleted_files(), Some(false));
+        assert!(
+            app.state
+                .error_banner
+                .as_deref()
+                .is_some_and(|m| m.contains("another download")),
+            "FR-77: overlapping dirs surface a banner"
+        );
+    }
+
+    #[tokio::test]
+    async fn shift_x_keeps_the_torrent_cache_file() {
+        let engine = Arc::new(FakeEngine::new());
+        let (mut app, root) = test_app(engine, "keep-cache");
+        let id = "e".repeat(40);
+        enqueue_named(&mut app, &id, "Dune", root.join("dl-e")).await;
+        let cache = crate::core::paths::torrent_cache_file(&root, &id).expect("40-hex");
+        std::fs::create_dir_all(cache.parent().expect("cache dir")).expect("cache dir");
+        std::fs::write(&cache, b"d4:infod4:name3:fooe").expect("cache bytes");
+
+        open_remove_confirm(&mut app, true);
+        apply_confirm(&mut app, true).await;
+        assert!(
+            cache.exists(),
+            "FR-78: delete must not remove cache/torrents/<id>.torrent"
+        );
+    }
+
+    #[tokio::test]
+    async fn shift_x_skips_files_while_the_item_is_playing() {
+        let engine = Arc::new(FakeEngine::new());
+        let (mut app, root) = test_app(engine.clone(), "watch-block");
+        let id = "f".repeat(40);
+        enqueue_named(&mut app, &id, "Dune", root.join("dl-f")).await;
+        app.state.now_playing = Some(crate::ui::NowPlaying {
+            id: id.clone(),
+            name: "Dune".into(),
+            stream_url: "http://127.0.0.1:9/stream".into(),
+            ephemeral: false,
+        });
+
+        open_remove_confirm(&mut app, true);
+        apply_confirm(&mut app, true).await;
+        assert!(app.queue.get(&id).is_none());
+        assert_eq!(engine.last_remove_deleted_files(), Some(false));
+        assert!(
+            app.state
+                .error_banner
+                .as_deref()
+                .is_some_and(|m| m.contains("playing")),
+            "FR-77: a live watch session keeps the files"
         );
     }
 }

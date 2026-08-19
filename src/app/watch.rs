@@ -501,6 +501,7 @@ mod tests {
             events_tx: tokio::sync::mpsc::unbounded_channel().0,
             history: Vec::new(),
             help_open: false,
+            confirm: crate::ui::ConfirmPrompt::default(),
             settings_open: false,
             settings: SettingsState::default(),
             theme: Arc::new(Mutex::new(Theme::titanium())),
@@ -517,6 +518,11 @@ mod tests {
     }
 
     async fn enqueue_one(app: &mut App, root: &Path) {
+        let dir = root.join("dl");
+        std::fs::create_dir_all(&dir).expect("download dir");
+        // A watchable file so #76's archive/empty-dir guard does not fire
+        // before the picker (#73) can open.
+        std::fs::write(dir.join("movie.mkv"), b"fake").expect("watchable file");
         app.queue
             .add(
                 AddInput {
@@ -527,7 +533,7 @@ mod tests {
                         "magnet:?xt=urn:btih:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
                     ),
                     bytes: None,
-                    dir: root.join("dl"),
+                    dir,
                     size_bytes: 1,
                     only_files: None,
                 },
