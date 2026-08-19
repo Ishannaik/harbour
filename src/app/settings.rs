@@ -411,6 +411,7 @@ mod tests {
             events_tx: tokio::sync::mpsc::unbounded_channel().0,
             history: Vec::new(),
             help_open: false,
+            confirm: crate::ui::ConfirmPrompt::default(),
             settings_open: true,
             settings: SettingsState::default(),
             theme: Arc::new(Mutex::new(Theme::titanium())),

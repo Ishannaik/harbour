@@ -63,6 +63,16 @@ pub enum Action {
     Retry,
     /// Forget the highlighted item, keeping its files.
     Remove,
+    /// Forget the highlighted item and delete its files (`shift+X`, FR-76).
+    RemoveAndDelete,
+    /// Confirm overlay: activate the highlighted Yes/No choice.
+    ConfirmChoose,
+    /// Confirm overlay: proceed regardless of highlight.
+    ConfirmYes,
+    /// Confirm overlay: dismiss without doing the pending work.
+    ConfirmCancel,
+    /// Confirm overlay: flip the Yes/No highlight.
+    ConfirmToggle,
     /// Watch the highlighted item: stream it to an external player (FR-57).
     Watch,
     /// Leave the now-playing screen back to the TUI (FR-59).
@@ -157,6 +167,8 @@ fn is_hard_quit(key: &KeyEvent) -> bool {
 pub struct FocusFlags {
     /// The `?` help overlay owns every key while up.
     pub help_open: bool,
+    /// The forget/delete confirm overlay owns every key while up (FR-76).
+    pub confirm_open: bool,
     /// The player picker owns every key while up.
     pub picker_open: bool,
     /// The picker is in custom-path entry mode (typing edits the path).
@@ -206,6 +218,7 @@ pub fn map(
 pub fn map_with_focus(key: KeyEvent, screen: Screen, flags: FocusFlags) -> Action {
     let FocusFlags {
         help_open,
+        confirm_open,
         picker_open,
         picker_custom,
         episode_picker_open,
@@ -225,6 +238,10 @@ pub fn map_with_focus(key: KeyEvent, screen: Screen, flags: FocusFlags) -> Actio
             KeyCode::Char('q') => Action::Quit,
             _ => Action::ToggleHelp,
         };
+    }
+
+    if confirm_open {
+        return map_confirm(&key);
     }
 
     if episode_picker_open {
@@ -379,6 +396,10 @@ pub fn map_with_focus(key: KeyEvent, screen: Screen, flags: FocusFlags) -> Actio
             KeyCode::Char('o') | KeyCode::Enter => Action::OpenFolder,
             KeyCode::Char('c') | KeyCode::Char('C') => Action::ClearCompleted,
             KeyCode::Char('r') => Action::Retry,
+            KeyCode::Char('X') => Action::RemoveAndDelete,
+            KeyCode::Char('x') if key.modifiers.contains(KeyModifiers::SHIFT) => {
+                Action::RemoveAndDelete
+            }
             KeyCode::Delete | KeyCode::Char('x') => Action::Remove,
             KeyCode::Char('w') => Action::Watch,
             KeyCode::Char('L') => Action::CopyBugReport,
@@ -396,6 +417,23 @@ pub fn map_with_focus(key: KeyEvent, screen: Screen, flags: FocusFlags) -> Actio
         // keys.
         Screen::Help => Action::ToggleHelp,
         Screen::Settings => Action::None,
+    }
+}
+
+/// Keys owned by the forget/delete confirm overlay (FR-76).
+fn map_confirm(key: &KeyEvent) -> Action {
+    match key.code {
+        KeyCode::Char('q') => Action::Quit,
+        KeyCode::Esc | KeyCode::Char('n') | KeyCode::Char('N') => Action::ConfirmCancel,
+        KeyCode::Char('y') | KeyCode::Char('Y') => Action::ConfirmYes,
+        KeyCode::Enter => Action::ConfirmChoose,
+        KeyCode::Left
+        | KeyCode::Right
+        | KeyCode::Tab
+        | KeyCode::BackTab
+        | KeyCode::Char('h')
+        | KeyCode::Char('l') => Action::ConfirmToggle,
+        _ => Action::None,
     }
 }
 
@@ -1134,6 +1172,7 @@ mod tests {
             (KeyCode::Char('p'), Action::TogglePause),
             (KeyCode::Char('r'), Action::Retry),
             (KeyCode::Char('x'), Action::Remove),
+            (KeyCode::Char('X'), Action::RemoveAndDelete),
             (KeyCode::Char('s'), Action::ToggleSeeding),
             (KeyCode::Char('q'), Action::Quit),
             (KeyCode::Char('?'), Action::ToggleHelp),
@@ -1149,6 +1188,37 @@ mod tests {
                 "{code:?}"
             );
         }
+    }
+
+    #[test]
+    fn the_confirm_overlay_owns_its_keys() {
+        let flags = FocusFlags {
+            confirm_open: true,
+            ..FocusFlags::default()
+        };
+        let on_downloads = |code| map_with_focus(key(code), Screen::Downloads, flags);
+        assert_eq!(on_downloads(KeyCode::Char('y')), Action::ConfirmYes);
+        assert_eq!(on_downloads(KeyCode::Char('n')), Action::ConfirmCancel);
+        assert_eq!(on_downloads(KeyCode::Esc), Action::ConfirmCancel);
+        assert_eq!(on_downloads(KeyCode::Enter), Action::ConfirmChoose);
+        assert_eq!(on_downloads(KeyCode::Left), Action::ConfirmToggle);
+        assert_eq!(on_downloads(KeyCode::Right), Action::ConfirmToggle);
+        assert_eq!(on_downloads(KeyCode::Char('q')), Action::Quit);
+        assert_eq!(
+            on_downloads(KeyCode::Char('x')),
+            Action::None,
+            "confirm must not leak x to the downloads list"
+        );
+        // Help wins when both are up (overlay order: help → confirm).
+        let both = FocusFlags {
+            help_open: true,
+            confirm_open: true,
+            ..FocusFlags::default()
+        };
+        assert_eq!(
+            map_with_focus(key(KeyCode::Char('y')), Screen::Downloads, both),
+            Action::ToggleHelp
+        );
     }
 
     #[test]
@@ -1187,7 +1257,7 @@ mod tests {
         #[rustfmt::skip]
         let keys = [
             "enter", "↑ ↓", "← →", "d", "shift+D", "o", "tab",
-            "s", "p", "shift+P", "shift+L", "r", "x", "esc", "?", "q",
+            "s", "p", "shift+P", "shift+L", "r", "x", "shift+X", "esc", "?", "q",
         ];
         for key in keys {
             assert!(
