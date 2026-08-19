@@ -109,6 +109,15 @@ flowchart TD
 - **Terminal Emulator:** Any modern terminal with Truecolor support (Windows Terminal, Alacritty, Kitty, WezTerm, Ghostty, iTerm2).
 - **Optional Media Player:** `mpv` or `VLC` installed on `PATH` for Watch-Now streaming.
 
+### Windows
+Copies `harbour` onto your PATH (`%USERPROFILE%\.harbour\bin`):
+
+```powershell
+powershell -ExecutionPolicy Bypass -File install-harbour.ps1
+```
+
+Open a new terminal and type `harbour`.
+
 ### 1. Build from Source
 ```bash
 # Clone the repository
