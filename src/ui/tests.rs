@@ -113,6 +113,10 @@ fn the_results_pane_announces_how_to_get_back_to_typing() {
         "the bar must say where the keyboard is"
     );
     assert!(out.contains("esc"), "…and how to leave it");
+    assert!(
+        out.contains("q quit"),
+        "results footer names the quit binding, got:\n{out}"
+    );
 }
 
 #[test]
@@ -266,6 +270,10 @@ fn downloads_snapshot_active_tab() {
     assert!(out.contains("Shogun"), "paused item visible on active tab");
     assert!(out.contains("recently downloaded"));
     assert!(out.contains("Dune: Part Two"), "history row");
+    assert!(
+        out.contains("q quit"),
+        "downloads footer names the quit binding, got:\n{out}"
+    );
 }
 
 #[test]

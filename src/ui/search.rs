@@ -45,7 +45,7 @@ const CURSOR: &str = "▌";
 const HINT: &str = "↵ search · tab downloads · s settings · ? help · esc results";
 /// The results pane owns the keyboard: plain keys act on the selected row.
 /// Kept short so it fits the main column beside the sidebar (issue #71).
-const RESULTS_HINT: &str = "enter watch · d download · shift+P player · dbl-click";
+const RESULTS_HINT: &str = "enter watch · d download · shift+P · q quit · dbl-click";
 /// Placeholder while the query is empty and idle.
 const PLACEHOLDER: &str = "search torrents…";
 /// Bar label while searching on an empty query — the curated-browse mode

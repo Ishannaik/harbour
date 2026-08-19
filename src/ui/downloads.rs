@@ -39,7 +39,7 @@ const TAB_GAP: &str = "   ";
 const HISTORY_ROWS: usize = 5;
 /// Bottom hint — the actions that matter on this screen.
 const HINT: &str =
-    "o open · c clear completed · p pause · r retry · x remove · w watch · s seeding";
+    "q quit · o open · c clear completed · p pause · r retry · x remove · w watch · s seeding";
 
 /// Smoothing time constant for display progress (spec §3): a 200ms filter
 /// eases a moved bar without ever snapping it.
