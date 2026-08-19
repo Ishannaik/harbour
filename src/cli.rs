@@ -61,8 +61,8 @@ environment
   HARBOUR_MAX_DOWNLOADS   max concurrent downloads (0 or unset = unlimited)
   HARBOUR_SOURCE_TIMEOUT  per-source deadline in seconds (default 10)
   HARBOUR_STATE_DIR       relocate config, ledger and cache (testing/portable)
-  HARBOUR_SENTRY          0/off disables friend crash reports (Sentry)
-  HARBOUR_SENTRY_DSN      override the baked Sentry DSN
+  HARBOUR_SENTRY          0/off disables crash reports even if a DSN is set
+  HARBOUR_SENTRY_DSN      Sentry DSN (unset = no crash reports)
   HARBOUR_SENTRY_ENV      Sentry environment tag (default friends)
 
 tip: quote magnet links — they contain & characters your shell will eat.

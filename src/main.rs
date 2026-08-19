@@ -123,7 +123,7 @@ fn write_crash_log(root: &Path, message: &str, location: Option<&str>) -> io::Re
 async fn run_tui(initial: InitialAction) -> ExitCode {
     // Sentry first so its panic integration wraps the previous hook; we
     // then wrap Sentry so the terminal is restored *before* the event
-    // flushes (FR-09, FR-09a). Friends get the report without env vars.
+    // flushes (FR-09, FR-09a). No-op unless HARBOUR_SENTRY_DSN is set.
     let _sentry = sentry_report::init();
     let after_sentry = std::panic::take_hook();
     // A TUI panic must not leave the user's shell in raw mode with no

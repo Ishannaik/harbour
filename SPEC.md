@@ -91,10 +91,11 @@ requiring private announces; GPU/ASCII-image rendering.
   cursor returns, colors reset — including on panic (panic hook restores, then logs crash
   to a file).
 - **FR-09a** A panic (and a process-level boot failure) sends a crash event to Sentry
-  project `harbour` (org `ishan-rt`). The indexer uses project `harbour-indexer`.
-  Friends need no env: the public DSN is baked. The event is panic/boot payload +
-  release + OS; magnets, queries, and home-dir paths are stripped. `HARBOUR_SENTRY=0`
-  disables both binaries. `HARBOUR_SENTRY_DSN` / `HARBOUR_SENTRY_ENV` override.
+  project `harbour` (org `ishan-rt`) only when `HARBOUR_SENTRY_DSN` is set. No DSN is
+  shipped in the binary or source. The indexer uses project `harbour-indexer` the same
+  way. The event is panic/boot payload + release + OS; magnets, queries, and home-dir
+  paths are stripped. Missing DSN means Sentry stays off. `HARBOUR_SENTRY=0` disables
+  even when a DSN is set. `HARBOUR_SENTRY_ENV` tags the environment (default `friends`).
   Disabled in unit tests (they never call init).
 - **FR-10** All network and engine work runs on tokio; the TUI never blocks on network I/O
   (verified by starting a download with a blackholed network and confirming the UI stays
