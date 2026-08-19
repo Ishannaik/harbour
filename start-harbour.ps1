@@ -8,6 +8,16 @@ $candidates = @(
     $homeBin
 )
 
+$dev = $false
+$forward = @()
+foreach ($a in $args) {
+    if ("$a" -ieq "-Dev") {
+        $dev = $true
+    } else {
+        $forward += $a
+    }
+}
+
 $exe = $null
 foreach ($p in $candidates) {
     if (Test-Path -LiteralPath $p) {
@@ -17,10 +27,10 @@ foreach ($p in $candidates) {
 }
 
 if (-not $exe) {
-    if ($args -contains "-Dev") {
+    if ($dev) {
         Write-Host "harbour.exe not found; -Dev: cargo run --release"
         Set-Location $here
-        cargo run --release -- @args
+        cargo run --release -- @forward
         exit $LASTEXITCODE
     }
     Write-Host "harbour.exe not found. Friend path:" -ForegroundColor Red
@@ -30,5 +40,5 @@ if (-not $exe) {
 }
 
 Write-Host "harbour: $exe"
-& $exe @args
+& $exe @forward
 exit $LASTEXITCODE
