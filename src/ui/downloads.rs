@@ -384,6 +384,27 @@ fn name_line(
     row_line(spans, selected, hovered, colors)
 }
 
+/// Peer/swarm column on an active row (FR-32).
+///
+/// Metadata and swarm join are different waits; `connecting…` named neither
+/// and collided with source-health copy. Paused/errored still use the em dash
+/// so unknown is never `peers 0`.
+fn swarm_label(item: &ItemView) -> String {
+    if item.item.status == QueueStatus::Downloading {
+        let meta_bytes = item.stats.map(|s| s.total_bytes).unwrap_or(0);
+        if meta_bytes == 0 {
+            return "fetching metadata…".into();
+        }
+        if item.peers().unwrap_or(0) == 0 {
+            return "looking for peers…".into();
+        }
+    }
+    match item.peers() {
+        Some(n) => format!("peers {n}"),
+        None => "peers —".into(),
+    }
+}
+
 /// Queue item's second row: the eased progress bar, then right-aligned
 /// percent / speed / peers / ETA. `peers`/`eta` are `Option` per contract B1
 /// (librqbit cannot report them while paused) — `None` renders '—', never 0.
@@ -401,18 +422,15 @@ fn bar_line(
     // both the bar and the percent label so they always agree (FR-33).
     let display = eased_progress(item);
     let pct = (display * 100.0).round() as u32;
-    let peers = item
-        .peers()
-        .map(|p| p.to_string())
-        .unwrap_or_else(|| "—".into());
     let eta = item
         .eta()
         .map(|d| fmt_eta(d.as_secs()))
         .unwrap_or_else(|| "—".into());
+    let swarm = swarm_label(item);
     let suffix = vec![
         suffix_span(format!("{pct:>3}%"), accent),
         suffix_span(format!("  {:.1} MiB/s", item.speed_mib()), accent),
-        suffix_span(format!("  peers {peers}"), muted),
+        suffix_span(format!("  {swarm}"), muted),
         suffix_span(format!("  eta {eta}"), muted),
     ];
     let suffix_w = suffix
@@ -727,6 +745,87 @@ mod tests {
         assert_eq!(
             line.spans[0].content,
             theme.symbols.progress_fill.as_ref().repeat(fill_cells)
+        );
+    }
+
+    fn downloading(id: &str, total_bytes: u64, peers: Option<u32>) -> ItemView {
+        let mut item = QueueItem::new(
+            id.to_string(),
+            id.to_string(),
+            None,
+            None,
+            std::path::PathBuf::from("~/harbour/downloads"),
+            0,
+        );
+        item.status = QueueStatus::Downloading;
+        item.total_bytes = total_bytes;
+        ItemView::new(
+            item,
+            Some(EngineStats {
+                progress: 0.0,
+                downloaded_bytes: 0,
+                total_bytes,
+                speed_mib: 0.0,
+                upload_speed_mib: 0.0,
+                uploaded_bytes: 0,
+                peers,
+                eta: None,
+            }),
+        )
+    }
+
+    fn bar_text(item: &ItemView) -> String {
+        bar_line(item, 80, false, false, &Theme::titanium())
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect()
+    }
+
+    #[test]
+    fn bar_line_fetching_metadata_while_size_is_zero() {
+        let text = bar_text(&downloading("meta-zero", 0, None));
+        assert!(
+            text.contains("fetching metadata…"),
+            "size 0 is metadata fetch, got: {text}"
+        );
+        assert!(
+            !text.contains("connecting"),
+            "never connecting, got: {text}"
+        );
+        assert!(
+            !text.contains("looking for peers"),
+            "metadata precedes swarm, got: {text}"
+        );
+    }
+
+    #[test]
+    fn bar_line_looking_for_peers_after_metadata() {
+        let none = bar_text(&downloading("peers-none", 1000, None));
+        assert!(
+            none.contains("looking for peers…"),
+            "unknown peers after metadata, got: {none}"
+        );
+        let zero = bar_text(&downloading("peers-zero", 1000, Some(0)));
+        assert!(
+            zero.contains("looking for peers…"),
+            "zero live peers, got: {zero}"
+        );
+        assert!(!none.contains("connecting") && !zero.contains("connecting"));
+    }
+
+    #[test]
+    fn bar_line_paused_unknown_peers_is_em_dash() {
+        let mut item = downloading("paused-dash", 1000, None);
+        item.item.status = QueueStatus::Paused;
+        let text = bar_text(&item);
+        assert!(
+            text.contains("peers —"),
+            "paused unknown is an em dash, got: {text}"
+        );
+        assert!(
+            !text.contains("looking for peers"),
+            "paused is not swarm-join, got: {text}"
         );
     }
 }
