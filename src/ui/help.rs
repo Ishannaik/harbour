@@ -58,6 +58,7 @@ pub const BINDINGS: &[(&str, &str)] = &[
         "anywhere: player picker — choose mpv/VLC/Windows Media Player",
     ),
     ("shift+L", "copy the bugreport path for sharing"),
+    ("in mpv", "j cycle subs · # cycle audio"),
     ("shift+S", "downloads: open settings"),
     ("?", "help — when not typing a query"),
     ("q", "quit — anywhere except while typing a query"),
@@ -223,5 +224,15 @@ mod tests {
                 "legend missing `{key}`"
             );
         }
+    }
+
+    #[test]
+    fn help_tells_the_user_how_to_cycle_subs_in_mpv() {
+        let row = BINDINGS
+            .iter()
+            .find(|(k, _)| *k == "in mpv")
+            .expect("in mpv help line");
+        assert!(row.1.contains("j cycle subs"), "got: {}", row.1);
+        assert!(row.1.contains("# cycle audio"), "got: {}", row.1);
     }
 }
