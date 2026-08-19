@@ -12,7 +12,8 @@ use crate::ui::player::PickerMode;
 
 use super::actions::{
     apply_confirm, download_selected, enqueue_magnet, enqueue_torrent, move_selection,
-    move_selection_to, open_clear_cache_confirm, open_remove_confirm, retry_selected, toggle_pause,
+    move_selection_to, open_clear_cache_confirm, open_remove_confirm, request_quit, retry_selected,
+    toggle_pause,
 };
 use super::settings::{
     cancel_folder_prompt, commit_folder_prompt, open_folder_prompt, settings_activate,
@@ -260,7 +261,8 @@ pub(crate) async fn handle_event(app: &mut App, event: Event) {
 async fn apply_action(app: &mut App, action: Action) {
     match action {
         Action::None => {}
-        Action::Quit => app.quitting = true,
+        Action::Quit => request_quit(app).await,
+        Action::ForceQuit => app.quitting = true,
         Action::Dismiss => {
             app.state.screen = Screen::Search;
             if app.state.search.results.is_empty()
