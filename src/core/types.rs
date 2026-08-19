@@ -691,6 +691,13 @@ pub trait Engine: Send + Sync {
     /// librqbit's session limiter applies instantly, no restart needed.
     fn set_speed_limits(&self, _download_mib: Option<u64>, _upload_mib: Option<u64>) {}
 
+    /// Stops the engine session on quit (issue #81). Default is a no-op so
+    /// implementors with nothing to tear down still compile. The real engine
+    /// bounds the wait so a hung DHT cannot trap the user in the TUI.
+    fn shutdown<'a>(&'a self) -> EngineFuture<'a, ()> {
+        Box::pin(async move {})
+    }
+
     /// The infohash `.torrent` bytes will be keyed under, without adding them.
     ///
     /// `None` when the payload is not a parseable `.torrent`, or the engine
