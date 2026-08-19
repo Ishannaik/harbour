@@ -31,7 +31,7 @@ use crate::search::SearchEngine;
 use crate::theme::Theme;
 use crate::ui::player::PlayerPicker;
 use crate::ui::settings::SettingsState;
-use crate::ui::{AppState, Screen};
+use crate::ui::{AppState, ConfirmPrompt, Screen};
 
 mod actions;
 mod events;
@@ -114,6 +114,8 @@ struct App {
     events_tx: mpsc::UnboundedSender<EngineEvent>,
     history: Vec<String>,
     help_open: bool,
+    /// Forget / delete-from-device confirm (FR-76). `open` mirrors `help_open`.
+    confirm: ConfirmPrompt,
     /// The settings overlay (2.5): everything in Config editable from the
     /// TUI. `settings_open` mirrors `help_open` — the overlay floats above
     /// whatever screen is underneath.
@@ -440,6 +442,7 @@ pub async fn run(
         events_tx,
         history,
         help_open: false,
+        confirm: ConfirmPrompt::default(),
         settings_open: false,
         settings: SettingsState::default(),
         theme: theme.clone(),
@@ -628,7 +631,8 @@ fn draw(
     ])
     .split(area);
 
-    let bg_mouse_pos = if app.settings_open || app.help_open || app.picker.open {
+    let bg_mouse_pos = if app.settings_open || app.help_open || app.picker.open || app.confirm.open
+    {
         None
     } else {
         app.state.mouse_pos
@@ -657,6 +661,9 @@ fn draw(
 
     if app.help_open {
         crate::ui::help::draw(frame, area, theme);
+    }
+    if app.confirm.open {
+        crate::ui::confirm::draw(frame, area, theme, &app.confirm);
     }
     if app.episode_picker.open {
         crate::ui::episode_picker::draw(
@@ -781,6 +788,7 @@ mod app_tests {
             events_tx: mpsc::unbounded_channel().0,
             history: Vec::new(),
             help_open: false,
+            confirm: ConfirmPrompt::default(),
             settings_open: false,
             settings: SettingsState::default(),
             theme: Arc::new(Mutex::new(Theme::titanium())),
@@ -853,6 +861,7 @@ mod app_tests {
             events_tx: mpsc::unbounded_channel().0,
             history: Vec::new(),
             help_open: false,
+            confirm: ConfirmPrompt::default(),
             settings_open: false,
             settings: SettingsState::default(),
             theme: Arc::new(Mutex::new(Theme::titanium())),

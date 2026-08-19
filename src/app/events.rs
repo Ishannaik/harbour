@@ -11,8 +11,8 @@ use crate::ui::Screen;
 use crate::ui::player::PickerMode;
 
 use super::actions::{
-    download_selected, enqueue_magnet, enqueue_torrent, move_selection, move_selection_to,
-    remove_selected, retry_selected, toggle_pause,
+    apply_confirm, download_selected, enqueue_magnet, enqueue_torrent, move_selection,
+    move_selection_to, open_remove_confirm, retry_selected, toggle_pause,
 };
 use super::settings::{
     cancel_folder_prompt, commit_folder_prompt, open_folder_prompt, settings_activate,
@@ -83,6 +83,10 @@ async fn handle_mouse_event(app: &mut App, mouse: crossterm::event::MouseEvent) 
     if app.picker.open {
         // The picker is on top of settings when opened from the player row;
         // clicks belong to it (keys already do), not the overlay underneath.
+        return;
+    }
+    if app.confirm.open && !app.help_open {
+        // Confirm owns clicks so the list underneath cannot be selected (FR-76).
         return;
     }
 
@@ -239,6 +243,7 @@ pub(crate) async fn handle_event(app: &mut App, event: Event) {
         app.state.screen,
         crate::input::FocusFlags {
             help_open: app.help_open,
+            confirm_open: app.confirm.open,
             picker_open: app.picker.open,
             picker_custom: app.picker.mode == PickerMode::Custom,
             episode_picker_open: app.episode_picker.open,
@@ -394,7 +399,19 @@ async fn apply_action(app: &mut App, action: Action) {
         Action::FolderCancel => cancel_folder_prompt(app),
         Action::TogglePause => toggle_pause(app).await,
         Action::Retry => retry_selected(app).await,
-        Action::Remove => remove_selected(app).await,
+        Action::Remove => open_remove_confirm(app, false),
+        Action::RemoveAndDelete => open_remove_confirm(app, true),
+        Action::ConfirmChoose => {
+            let yes = app.confirm.yes_selected;
+            apply_confirm(app, yes).await;
+        }
+        Action::ConfirmYes => apply_confirm(app, true).await,
+        Action::ConfirmCancel => apply_confirm(app, false).await,
+        Action::ConfirmToggle => {
+            if app.confirm.open {
+                app.confirm.yes_selected = !app.confirm.yes_selected;
+            }
+        }
         Action::Sort(col) => {
             app.state.search.toggle_sort(col);
         }

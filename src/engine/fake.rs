@@ -71,6 +71,8 @@ pub struct FakeEngine {
     shutdown_called: Mutex<bool>,
     /// Video files `list_video_files` should report, keyed by torrent id.
     videos: Mutex<HashMap<InfoHash, Vec<TorrentFileView>>>,
+    /// The last [`Engine::remove`] call, if any: `(id, delete_files)`.
+    last_remove: Mutex<Option<(InfoHash, bool)>>,
 }
 
 impl FakeEngine {
@@ -106,6 +108,15 @@ impl FakeEngine {
 
     pub fn is_empty(&self) -> bool {
         self.len() == 0
+    }
+
+    /// Whether the last [`Engine::remove`] asked to delete payload files.
+    pub fn last_remove_deleted_files(&self) -> Option<bool> {
+        self.last_remove
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .as_ref()
+            .map(|(_, delete_files)| *delete_files)
     }
 
     // --- test drivers -------------------------------------------------------
@@ -254,11 +265,13 @@ impl Engine for FakeEngine {
     fn remove<'a>(
         &'a self,
         id: &'a str,
-        _delete_files: bool,
+        delete_files: bool,
     ) -> EngineFuture<'a, Result<(), EngineError>> {
         Box::pin(async move {
             // Removing something already gone is success, not an error: the
             // queue must be able to clean up idempotently on a crash path.
+            *self.last_remove.lock().unwrap_or_else(|p| p.into_inner()) =
+                Some((id.to_string(), delete_files));
             self.map().remove(id);
             Ok(())
         })
