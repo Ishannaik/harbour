@@ -30,7 +30,7 @@ pub const ENV_SENTRY_DSN: &str = "HARBOUR_SENTRY_DSN";
 pub const ENV_SENTRY_ENV: &str = "HARBOUR_SENTRY_ENV";
 
 /// Default per-source ceiling, covering follow-up fetches (`docs/sources.md` §6).
-pub const DEFAULT_SOURCE_TIMEOUT: Duration = Duration::from_secs(10);
+pub const DEFAULT_SOURCE_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// Where all harbour state lives.
 ///
@@ -84,6 +84,11 @@ pub fn boot_marker_file(root: &Path) -> PathBuf {
     root.join("boot.marker")
 }
 
+/// Active indexer port file for dynamic discovery.
+pub fn indexer_port_file(root: &Path) -> PathBuf {
+    root.join("indexer.port")
+}
+
 pub fn cache_dir(root: &Path) -> PathBuf {
     root.join("cache")
 }
@@ -116,6 +121,16 @@ pub fn health_marker_file(root: &Path, source: SourceId) -> PathBuf {
     cache_dir(root)
         .join("health")
         .join(format!("{}.json", source.as_str()))
+}
+
+/// Expands leading `~` in a path to the user's home directory.
+pub fn expand_home(path: &Path) -> PathBuf {
+    if let Ok(stripped) = path.strip_prefix("~")
+        && let Some(home) = dirs::home_dir()
+    {
+        return home.join(stripped);
+    }
+    path.to_path_buf()
 }
 
 /// Default download directory: the user's Downloads folder, `harbour` inside it.

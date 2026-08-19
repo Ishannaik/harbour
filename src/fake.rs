@@ -203,12 +203,7 @@ const ANIME_WORDS: &[&str] = &[
 fn category_sources(category: SourceGroup) -> &'static [SourceId] {
     match category {
         SourceGroup::Games => &[SourceId::GamesHub],
-        SourceGroup::Movies => &[
-            SourceId::CineVault,
-            SourceId::VaultMovies,
-            SourceId::ReelSource,
-            SourceId::TorrentHub,
-        ],
+        SourceGroup::Movies => &[SourceId::CineVault, SourceId::VaultMovies, SourceId::TorrentHub],
         SourceGroup::Tv => &[SourceId::ShowPort, SourceId::VaultTv],
         SourceGroup::Anime => &[SourceId::TsukiBase, SourceId::FanSubs],
     }

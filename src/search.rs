@@ -26,7 +26,6 @@ use std::collections::{HashMap, HashSet};
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::core::cancel::CancelToken;
-use crate::core::error::SourceError;
 use crate::core::types::{
     ArcSource, EngineEvent, SearchCtx, SourceId, SourceStatus, TorrentResult,
 };
@@ -145,15 +144,6 @@ impl SearchEngine {
     }
 }
 
-/// One source's whole search.
-async fn run_one(
-    source: &ArcSource,
-    query: &str,
-    ctx: &SearchCtx,
-) -> Result<Vec<TorrentResult>, SourceError> {
-    source.search(query, ctx).await
-}
-
 /// Drives one source's whole search inside its spawn task: the status event,
 /// the fetch, then the outcome events.
 ///
@@ -166,43 +156,14 @@ async fn run_source_search(
     ctx: SearchCtx,
     events: UnboundedSender<EngineEvent>,
 ) {
-    let _ = events.send(EngineEvent::SourceStatus {
-        source: id,
-        status: SourceStatus::Checking,
-    });
-
-    let outcome = run_one(&source, &query, &ctx).await;
-
-    if ctx.cancel.is_cancelled() {
-        // A cancelled search must never touch the UI: its results
-        // belong to a query the user has already replaced.
-        return;
-    }
-
-    match outcome {
-        Ok(results) => {
-            let _ = events.send(EngineEvent::SourceAnswered {
-                source: id,
-                count: results.len(),
-            });
-            let _ = events.send(EngineEvent::SourceResults {
-                source: id,
-                results,
-            });
-        }
-        Err(err) => {
-            let _ = events.send(EngineEvent::SourceFailed {
-                source: id,
-                class: err.class(),
-                message: err.to_string(),
-            });
-        }
-    }
+    let _ = id;
+    source.search_into_events(&query, &ctx, events).await;
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::error::SourceError;
     use crate::core::types::{MagnetFuture, SearchFuture, Source, SourceDef, SourceGroup};
     use std::sync::Arc;
     use std::sync::atomic::{AtomicU32, Ordering};

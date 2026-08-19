@@ -90,6 +90,14 @@ struct PendingWatch {
     ephemeral: bool,
 }
 
+/// Cache entry for instant 0ms search returns.
+type QueryCacheEntry = (
+    Instant,
+    Vec<TorrentResult>,
+    HashMap<SourceId, usize>,
+    HashMap<SourceId, SourceStatus>,
+);
+
 /// Everything the loop needs, assembled once at boot.
 struct App {
     state: AppState,
@@ -121,10 +129,34 @@ struct App {
     picker: PlayerPicker,
     /// A watch waiting on a player choice, if any.
     picker_pending: Option<PendingWatch>,
+    /// The episode picker overlay for multi-file torrents.
+    pub episode_picker: crate::ui::EpisodePicker,
+    /// The batch file picker overlay for selective multi-file downloads.
+    pub batch_picker: crate::ui::BatchPicker,
+    /// Client-side query cache with 15-minute TTL: instant 0ms results.
+    query_cache: HashMap<String, QueryCacheEntry>,
     quitting: bool,
 }
 
 impl App {
+    /// True if the query cache had a fresh hit and results were applied.
+    fn try_apply_cached_search(&mut self, query: &str) -> bool {
+        let cache_ttl = std::time::Duration::from_secs(900);
+        let Some((ts, cached_results, counts, health)) = self.query_cache.get(query) else {
+            return false;
+        };
+        if ts.elapsed() >= cache_ttl || cached_results.is_empty() {
+            return false;
+        }
+        self.state.search.results = cached_results.clone();
+        self.state.search.sort_results();
+        self.state.search.source_counts = counts.clone();
+        self.state.search.source_health = health.clone();
+        self.state.search.searching = false;
+        self.state.search.latency_ms = Some(0);
+        true
+    }
+
     /// Something the user should know that must not stop the app.
     fn warn(&mut self, message: impl Into<String>) {
         self.state.error_banner = Some(message.into());
@@ -179,10 +211,23 @@ impl App {
             .flat_map(|(_, results)| results.iter().cloned())
             .collect();
         self.state.search.results = crate::search::merge(all);
+        self.state.search.sort_results();
         let len = self.state.search.results.len();
         if self.state.search.selected >= len {
             self.state.search.selected = len.saturating_sub(1);
         }
+    }
+
+    /// Sidebar / settings source toggle: hide or show rows we already have.
+    /// Never starts a new search — that was making every other source
+    /// flip back to "querying".
+    pub(crate) fn apply_source_filter(&mut self) {
+        self.config.disabled_sources = self.disabled_sources.iter().copied().collect();
+        if let Err(err) = self.store.save_config(&self.config) {
+            self.warn(format!("could not save source toggle: {err}"));
+        }
+        self.search.set_disabled(self.disabled_sources.clone());
+        self.remerge();
     }
 
     /// Stops an in-flight search: the partial results already merged stay on
@@ -198,10 +243,17 @@ impl App {
         // its curated lists, so the app state says so instead of pretending
         // there is a query to edit.
         self.state.search.browsing = query.trim().is_empty();
+        self.state.error_banner = None;
+        if self.try_apply_cached_search(&query) {
+            return;
+        }
+
         self.partial.clear();
         self.state.search.results.clear();
         self.state.search.selected = 0;
         self.state.search.searching = true;
+        self.state.search.search_started = Some(std::time::Instant::now());
+        self.state.search.latency_ms = None;
         self.state.search.source_counts.clear();
         for id in SourceId::ALL {
             self.state
@@ -231,6 +283,23 @@ impl App {
     }
 }
 
+fn poll_and_send_event(tx: &mpsc::UnboundedSender<Event>) -> bool {
+    match event::poll(std::time::Duration::from_millis(20)) {
+        Ok(true) => match event::read() {
+            Ok(ev) => tx.send(ev).is_ok(),
+            Err(_) => {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+                true
+            }
+        },
+        Ok(false) => true,
+        Err(_) => {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            true
+        }
+    }
+}
+
 /// Reads terminal events on a dedicated thread.
 ///
 /// `crossterm::event::read` blocks, and blocking a tokio worker would stall the
@@ -238,19 +307,7 @@ impl App {
 /// responsive without the async runtime ever waiting on a keypress.
 fn spawn_input_thread() -> mpsc::UnboundedReceiver<Event> {
     let (tx, rx) = mpsc::unbounded_channel();
-    std::thread::spawn(move || {
-        loop {
-            let Ok(ev) = event::read() else {
-                // A terminal that stops producing events is not recoverable
-                // here, and spinning on the error would peg a core.
-                return;
-            };
-            if tx.send(ev).is_err() {
-                // The app has gone; so should we.
-                return;
-            }
-        }
-    });
+    std::thread::spawn(move || while poll_and_send_event(&tx) {});
     rx
 }
 
@@ -385,9 +442,13 @@ pub async fn run(
         watch: None,
         picker: PlayerPicker::default(),
         picker_pending: None,
+        episode_picker: crate::ui::EpisodePicker::default(),
+        batch_picker: crate::ui::BatchPicker::default(),
+        query_cache: HashMap::new(),
         quitting: false,
     };
 
+    app.queue.set_seed_by_default(app.config.seed_by_default);
     app.state.screen = Screen::Splash;
     app.refresh_downloads();
 
@@ -410,7 +471,10 @@ pub async fn run(
     }
 
     match initial {
-        InitialAction::None => {}
+        InitialAction::None => {
+            // Warm up curated browse immediately in background while splash animation plays!
+            app.start_search(String::new());
+        }
         InitialAction::Magnet(magnet) => enqueue_magnet(&mut app, &magnet).await,
         InitialAction::TorrentFile(path) => enqueue_torrent(&mut app, &path).await,
     }
@@ -462,6 +526,12 @@ pub async fn run(
         // The splash is a timed intro, not a state to be stuck in.
         if app.state.screen == Screen::Splash && started.elapsed() >= SPLASH_DURATION {
             app.state.screen = Screen::Search;
+            if app.state.search.results.is_empty()
+                && !app.state.search.searching
+                && app.state.search.query.is_empty()
+            {
+                app.start_search(String::new());
+            }
         }
 
         // FR-59: when the player exits, the watch session ends and the TUI
@@ -539,9 +609,15 @@ fn draw(
     ])
     .split(area);
 
+    let bg_mouse_pos = if app.settings_open || app.help_open || app.picker.open {
+        None
+    } else {
+        app.state.mouse_pos
+    };
+
     match app.state.screen {
         Screen::Downloads => {
-            crate::ui::downloads::draw(frame, rows[0], &app.state.downloads, theme)
+            crate::ui::downloads::draw(frame, rows[0], &app.state.downloads, theme, bg_mouse_pos)
         }
         Screen::NowPlaying => {
             if let Some(np) = &app.state.now_playing {
@@ -554,6 +630,7 @@ fn draw(
             &app.state.search,
             &app.disabled_sources,
             theme,
+            bg_mouse_pos,
         ),
     }
     crate::ui::status::draw(frame, rows[1], app.state.screen, &app.state, theme, glyph);
@@ -570,6 +647,18 @@ fn draw(
             app.config.player.as_deref(),
         );
     }
+    if app.episode_picker.open {
+        crate::ui::episode_picker::draw(
+            frame,
+            area,
+            theme,
+            &app.episode_picker,
+            app.state.mouse_pos,
+        );
+    }
+    if app.batch_picker.open {
+        crate::ui::batch_picker::draw(frame, area, theme, &app.batch_picker, app.state.mouse_pos);
+    }
     if app.settings_open {
         crate::ui::settings::draw(
             frame,
@@ -578,6 +667,7 @@ fn draw(
             &app.disabled_sources,
             &app.settings,
             theme,
+            app.state.mouse_pos,
         );
     }
 }
@@ -596,7 +686,7 @@ fn status_height(app: &App) -> u16 {
 
 /// Banner rows: two borders plus one or two content rows, or zero when there is
 /// nothing to say. Mirrors `ui::status::draw`.
-fn banner_height(message: Option<&str>) -> u16 {
+pub(crate) fn banner_height(message: Option<&str>) -> u16 {
     message.map_or(0, |m| 2 + m.lines().count().clamp(1, 2) as u16)
 }
 
@@ -676,6 +766,9 @@ mod app_tests {
             watch: None,
             picker: PlayerPicker::default(),
             picker_pending: None,
+            episode_picker: crate::ui::EpisodePicker::default(),
+            batch_picker: crate::ui::BatchPicker::default(),
+            query_cache: HashMap::new(),
             quitting: false,
         };
 
