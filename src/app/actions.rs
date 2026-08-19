@@ -571,9 +571,13 @@ pub(crate) fn open_selected_item(app: &mut App) {
     {
         let _ = std::process::Command::new("explorer").arg(dir).spawn();
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
     {
-        let _ = open::that_detached(dir);
+        let _ = std::process::Command::new("open").arg(dir).spawn();
+    }
+    #[cfg(all(not(windows), not(target_os = "macos")))]
+    {
+        let _ = std::process::Command::new("xdg-open").arg(dir).spawn();
     }
 }
 
