@@ -11,7 +11,7 @@
 //! portable-state escape hatch.
 
 use std::env;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::time::Duration;
 
 use crate::core::types::SourceId;
@@ -146,6 +146,27 @@ pub fn expand_home(path: &Path) -> PathBuf {
         return home.join(stripped);
     }
     path.to_path_buf()
+}
+
+/// Expands `~` and collapses `.` / `..` so equivalent download dirs compare equal.
+///
+/// FR-77 refuses delete-files when two ledger items share a directory. User-typed
+/// paths can include `.`/`..`; without this they would look distinct. Symlinks
+/// are left unresolved: `canonicalize` needs the path to exist and on Windows
+/// prefixes `\\?\`, which breaks `Path::starts_with`.
+pub fn normalize_dir(path: &Path) -> PathBuf {
+    let expanded = expand_home(path);
+    let mut out = PathBuf::new();
+    for component in expanded.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                out.pop();
+            }
+            other => out.push(other),
+        }
+    }
+    out
 }
 
 /// Default download directory: the user's Downloads folder, `harbour` inside it.
@@ -320,6 +341,18 @@ mod tests {
             torrent_cache_file(&root, lower),
             torrent_cache_file(&root, &lower.to_uppercase()),
             "the same torrent must not get two cache files"
+        );
+    }
+
+    #[test]
+    fn normalize_dir_collapses_dot_and_dotdot() {
+        assert_eq!(
+            normalize_dir(Path::new("/tmp/shared/./here")),
+            PathBuf::from("/tmp/shared/here")
+        );
+        assert_eq!(
+            normalize_dir(Path::new("/tmp/shared/here/../here")),
+            PathBuf::from("/tmp/shared/here")
         );
     }
 }

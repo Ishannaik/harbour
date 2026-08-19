@@ -43,7 +43,11 @@ pub const BINDINGS: &[(&str, &str)] = &[
     ),
     ("p", "downloads: pause or resume the selected item"),
     ("r", "downloads: retry a failed item"),
-    ("x", "downloads: remove the selected item (keeps files)"),
+    ("x", "downloads: forget the selected item (keeps files)"),
+    (
+        "shift+X",
+        "downloads: forget the selected item and delete its files",
+    ),
     (
         "shift+P",
         "anywhere: player picker — choose mpv/VLC/Windows Media Player",

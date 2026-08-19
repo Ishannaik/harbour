@@ -223,6 +223,7 @@ pub struct NowPlaying {
 }
 
 pub mod batch_picker;
+pub mod confirm;
 pub mod downloads;
 pub mod episode_picker;
 pub mod help;
@@ -233,6 +234,7 @@ pub mod settings;
 pub mod status;
 
 pub use batch_picker::BatchPicker;
+pub use confirm::{ConfirmAction, ConfirmPrompt};
 pub use episode_picker::EpisodePicker;
 
 #[cfg(test)]

@@ -654,8 +654,9 @@ pub trait Engine: Send + Sync {
     fn add<'a>(&'a self, req: AddRequest) -> EngineFuture<'a, Result<(), EngineError>>;
     fn pause<'a>(&'a self, id: &'a str) -> EngineFuture<'a, Result<(), EngineError>>;
     fn resume<'a>(&'a self, id: &'a str) -> EngineFuture<'a, Result<(), EngineError>>;
-    /// Drops the torrent. `delete_files` is destructive and is never the default
-    /// anywhere in the UI.
+    /// Drops the torrent. `delete_files` is destructive and is never the UI
+    /// default — `shift+X` still confirms first (FR-76), and the `.torrent`
+    /// cache is kept (FR-78).
     fn remove<'a>(
         &'a self,
         id: &'a str,
