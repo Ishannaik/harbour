@@ -1154,9 +1154,12 @@ mod tests {
             .iter()
             .map(|(key, _)| *key)
             .collect();
-        for key in [
-            "enter", "↑ ↓", "← →", "d", "shift+D", "o", "tab", "s", "p", "r", "x", "esc", "?", "q",
-        ] {
+        #[rustfmt::skip]
+        let keys = [
+            "enter", "↑ ↓", "← →", "d", "shift+D", "o", "tab",
+            "s", "p", "r", "x", "esc", "?", "q",
+        ];
+        for key in keys {
             assert!(
                 documented.contains(&key),
                 "`{key}` is missing from the help overlay"
