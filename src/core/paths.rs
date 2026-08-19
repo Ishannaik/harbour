@@ -22,6 +22,12 @@ pub const ENV_STATE_DIR: &str = "HARBOUR_STATE_DIR";
 pub const ENV_MAX_DOWNLOADS: &str = "HARBOUR_MAX_DOWNLOADS";
 /// Env var: per-source total deadline, in seconds.
 pub const ENV_SOURCE_TIMEOUT: &str = "HARBOUR_SOURCE_TIMEOUT";
+/// Env var: set to `0`/`off`/`false` to disable friend crash reports (FR-09a).
+pub const ENV_SENTRY: &str = "HARBOUR_SENTRY";
+/// Env var: override the baked Sentry DSN (tests / a fork).
+pub const ENV_SENTRY_DSN: &str = "HARBOUR_SENTRY_DSN";
+/// Env var: Sentry environment tag (default `friends`).
+pub const ENV_SENTRY_ENV: &str = "HARBOUR_SENTRY_ENV";
 
 /// Default per-source ceiling, covering follow-up fetches (`docs/sources.md` §6).
 pub const DEFAULT_SOURCE_TIMEOUT: Duration = Duration::from_secs(10);
