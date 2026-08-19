@@ -66,10 +66,8 @@ pub fn scrub_event(mut event: Event<'static>) -> Option<Event<'static>> {
         }
         !v.to_string().contains("magnet:") && !looks_private(&v.to_string())
     });
-    if let Some(msg) = event.message.as_ref() {
-        if looks_private(msg) {
-            event.message = Some("redacted".into());
-        }
+    if event.message.as_deref().is_some_and(looks_private) {
+        event.message = Some("redacted".into());
     }
     Some(event)
 }
@@ -90,7 +88,7 @@ pub fn init() -> Option<ClientInitGuard> {
     opts.environment = Some(environment(env::var(ENV_SENTRY_ENV).ok().as_deref()));
     opts.send_default_pii = false;
     opts.attach_stacktrace = true;
-    opts.before_send = Some(Arc::new(|event| scrub_event(event)));
+    opts.before_send = Some(Arc::new(scrub_event));
     let guard = sentry::init(opts);
     sentry::configure_scope(|scope| {
         scope.set_tag("app", APP_TAG);
