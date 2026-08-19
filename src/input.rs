@@ -414,6 +414,22 @@ pub fn mouse_to_action(
     help_open: bool,
     show_seeding: bool,
 ) -> Action {
+    mouse_to_action_click(screen, view_area, col, row, help_open, show_seeding, false)
+}
+
+/// Like [`mouse_to_action`], with `double_click` distinguishing a second
+/// press on the same search result (download, same as `d`) from a first
+/// press (select only). Crossterm has no `DoubleClick` kind, so the app
+/// loop detects the pair and passes the flag.
+pub fn mouse_to_action_click(
+    screen: Screen,
+    view_area: Rect,
+    col: u16,
+    row: u16,
+    help_open: bool,
+    show_seeding: bool,
+    double_click: bool,
+) -> Action {
     if help_open {
         // The modal is dismissible and position carries no meaning: a click
         // anywhere — on the modal or on the screen behind it — closes help
@@ -434,7 +450,7 @@ pub fn mouse_to_action(
     }
 
     match screen {
-        Screen::Search => search_mouse_action(view_area, col, row),
+        Screen::Search => search_mouse_action(view_area, col, row, double_click),
         Screen::Downloads => {
             // Mirrors `ui::downloads::draw`'s layout: a 1-cell panel
             // border, then a 2-row tab band (label row + underline row)
@@ -491,7 +507,7 @@ fn status_bar_click_action(col: u16, width: u16, screen: Screen) -> Option<Actio
     Some(action)
 }
 
-fn search_mouse_action(view_area: Rect, col: u16, row: u16) -> Action {
+fn search_mouse_action(view_area: Rect, col: u16, row: u16, double_click: bool) -> Action {
     let inner_x = view_area.x + 1;
     let main_col = inner_x + SIDEBAR_WIDTH;
     let header_row = view_area.y + 1 + SEARCH_BAR_H;
@@ -517,7 +533,13 @@ fn search_mouse_action(view_area: Rect, col: u16, row: u16) -> Action {
     if row >= results_bottom {
         return Action::None;
     }
-    Action::ClickRow((row - results_top) as usize)
+    // Single click highlights; double-click downloads (same as `d`) so a
+    // misclick cannot enqueue. The app loop selects the row first.
+    if double_click {
+        Action::Download
+    } else {
+        Action::ClickRow((row - results_top) as usize)
+    }
 }
 
 #[cfg(test)]
@@ -1190,6 +1212,49 @@ mod tests {
         // counts — clicks do not need to hit the name text.
         assert_eq!(
             mouse_to_action(Screen::Search, view, 99, results_top(), false, false),
+            Action::ClickRow(0)
+        );
+    }
+
+    #[test]
+    fn a_double_click_on_a_search_result_downloads() {
+        let view = search_view();
+        assert_eq!(
+            mouse_to_action_click(
+                Screen::Search,
+                view,
+                30,
+                results_top() + 2,
+                false,
+                false,
+                true
+            ),
+            Action::Download
+        );
+        // A double-click is not a mis-aimed single click: the search bar
+        // still focuses, and a downloads row still selects.
+        assert_eq!(
+            mouse_to_action_click(
+                Screen::Search,
+                view,
+                1 + SIDEBAR_WIDTH + 10,
+                0,
+                false,
+                false,
+                true
+            ),
+            Action::FocusSearchInput
+        );
+        assert_eq!(
+            mouse_to_action_click(
+                Screen::Downloads,
+                downloads_view(),
+                30,
+                downloads_items_top(),
+                false,
+                false,
+                true
+            ),
             Action::ClickRow(0)
         );
     }
