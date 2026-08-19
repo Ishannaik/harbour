@@ -502,6 +502,15 @@ async fn apply_action(app: &mut App, action: Action) {
         }
         Action::ClearCompleted => super::actions::clear_completed(app).await,
         Action::OpenFolder => super::actions::open_selected_item(app),
+        Action::CopyBugReport => {
+            match crate::bugreport::share_bugreport(&crate::core::paths::state_dir()) {
+                Ok((_, true)) => app.warn(crate::bugreport::COPIED_BANNER),
+                Ok((path, false)) => {
+                    app.warn(format!("bugreport written to {}", path.display()));
+                }
+                Err(err) => app.warn(format!("could not write bugreport: {err}")),
+            }
+        }
     }
 }
 

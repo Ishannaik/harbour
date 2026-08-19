@@ -89,6 +89,21 @@ pub fn indexer_port_file(root: &Path) -> PathBuf {
     root.join("indexer.port")
 }
 
+/// Panic report (`FR-09`).
+pub fn crash_log_file(root: &Path) -> PathBuf {
+    root.join("crash.log")
+}
+
+/// Shareable local bug report (`FR-04a`).
+pub fn bugreport_file(root: &Path) -> PathBuf {
+    root.join("bugreport.txt")
+}
+
+/// Debug log written by the TUI (may be absent).
+pub fn harbour_log_file(root: &Path) -> PathBuf {
+    root.join("harbour.log")
+}
+
 pub fn cache_dir(root: &Path) -> PathBuf {
     root.join("cache")
 }
@@ -259,6 +274,10 @@ mod tests {
         assert_eq!(ledger_file(&root), root.join("downloads.json"));
         assert_eq!(history_file(&root), root.join("history.json"));
         assert_eq!(boot_marker_file(&root), root.join("boot.marker"));
+        assert_eq!(indexer_port_file(&root), root.join("indexer.port"));
+        assert_eq!(crash_log_file(&root), root.join("crash.log"));
+        assert_eq!(bugreport_file(&root), root.join("bugreport.txt"));
+        assert_eq!(harbour_log_file(&root), root.join("harbour.log"));
         assert_eq!(
             torrent_cache_dir(&root),
             root.join("cache").join("torrents")

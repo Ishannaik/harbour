@@ -15,6 +15,7 @@
 
 mod anim;
 mod app;
+mod bugreport;
 mod cli;
 mod core;
 mod engine;
@@ -63,6 +64,20 @@ async fn main() -> ExitCode {
         cli::Command::Run => run_tui(InitialAction::None).await,
         cli::Command::RunWithMagnet(magnet) => run_tui(InitialAction::Magnet(magnet)).await,
         cli::Command::RunWithTorrent(path) => run_tui(InitialAction::TorrentFile(path)).await,
+        cli::Command::BugReport => {
+            match crate::bugreport::write_bugreport(&crate::core::paths::state_dir()) {
+                Ok(path) => {
+                    let shown = path.display().to_string();
+                    println!("{shown}");
+                    let _ = crate::bugreport::copy_to_clipboard(&shown);
+                    ExitCode::SUCCESS
+                }
+                Err(err) => {
+                    eprintln!("harbour: could not write bugreport: {err}");
+                    ExitCode::FAILURE
+                }
+            }
+        }
     }
 }
 
