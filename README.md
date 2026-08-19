@@ -8,7 +8,27 @@
 /_/ /_/\__,_/_/    /_.___/\____/\__,_/_/      
 ```
 
-### Curated torrents straight from your terminal.
+### BitTorrent from your terminal.
+
+**Mac friend (Terminal):**
+
+```bash
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+source "$HOME/.cargo/env"
+brew install mpv
+```
+
+Unzip `harbour` and `harbour-indexer` next to each other, then:
+
+```bash
+cd harbour-indexer && cargo build --release
+mkdir -p ~/.harbour/bin
+cp target/release/harbour-indexer ~/.harbour/bin/
+cd ../harbour && cargo build --release
+./target/release/harbour
+```
+
+The indexer GitHub repo is private. Send them a zip of both folders.
 
 A high-performance, asynchronous BitTorrent TUI client built in Rust with Ratatui & librqbit.
 
