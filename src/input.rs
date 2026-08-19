@@ -1150,7 +1150,10 @@ mod tests {
     #[test]
     fn every_action_the_keymap_can_produce_is_documented_in_the_help() {
         // UR-10: the overlay must show exactly what the app implements.
-        let documented: Vec<&str> = crate::ui::help::BINDINGS.iter().map(|(k, _)| *k).collect();
+        let documented: Vec<&str> = crate::ui::help::BINDINGS
+            .iter()
+            .map(|(key, _)| *key)
+            .collect();
         for key in [
             "enter", "↑ ↓", "← →", "d", "shift+D", "o", "tab", "s", "p", "r", "x", "esc", "?", "q",
         ] {

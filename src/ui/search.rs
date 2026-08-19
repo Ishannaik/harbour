@@ -44,7 +44,10 @@ const CURSOR: &str = "▌";
 /// with an empty query.
 const HINT: &str = "↵ search · tab downloads · s settings · ? help · esc results";
 /// The results pane owns the keyboard: plain keys act on the selected row.
-const RESULTS_HINT: &str = "↵ watch now · d download · s settings · ? help · / search · esc input";
+const RESULTS_HINT: &str = concat!(
+    "↵ watch now · d download · s settings · ",
+    "? help · / search · esc input",
+);
 /// Placeholder while the query is empty and idle.
 const PLACEHOLDER: &str = "search torrents…";
 /// Bar label while searching on an empty query — the curated-browse mode

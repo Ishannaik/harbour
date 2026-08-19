@@ -114,7 +114,10 @@ impl BatchPicker {
 }
 
 /// The hint line at the footer of the batch file picker modal.
-pub const HINT: &str = "↑/↓ move · space toggle · a all · u none · enter download · esc cancel";
+pub const HINT: &str = concat!(
+    "↑/↓ move · space toggle · a all · u none · ",
+    "enter download · esc cancel",
+);
 
 /// Draws the batch file picker overlay.
 pub fn draw(
