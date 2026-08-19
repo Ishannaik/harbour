@@ -61,8 +61,8 @@ pub const BINDINGS: &[(&str, &str)] = &[
     ("in mpv", "j cycle subs · # cycle audio"),
     ("shift+S", "downloads: open settings"),
     ("?", "help — when not typing a query"),
-    ("q", "quit — anywhere except while typing a query"),
-    ("ctrl+c", "quit"),
+    ("q", "quit — confirms first, except while typing a query"),
+    ("ctrl+c", "quit immediately"),
 ];
 
 /// One ELI5 line per field in a search result row — the "reading results"
