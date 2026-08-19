@@ -305,8 +305,10 @@ fn hovered_search_result_renders_highlighted() {
 
 #[test]
 fn error_banner_dismiss_button_renders() {
-    let mut state = AppState::default();
-    state.error_banner = Some("Something went wrong".into());
+    let state = AppState {
+        error_banner: Some("Something went wrong".into()),
+        ..AppState::default()
+    };
     let theme = Theme::titanium();
     let out = render(|f| {
         status::draw(f, f.area(), Screen::Search, &state, &theme, "⠋");

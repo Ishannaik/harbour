@@ -279,6 +279,67 @@ impl HttpSource {
         format!("{}{url}", self.base_url)
     }
 
+    /// One NDJSON line. `None` means stop the stream (cancel / emit refused).
+    fn ingest_ndjson_line(
+        &self,
+        ctx: &SearchCtx,
+        events: &tokio::sync::mpsc::UnboundedSender<EngineEvent>,
+        raw: &[u8],
+    ) -> Option<usize> {
+        let line = String::from_utf8_lossy(raw);
+        let line = line.trim();
+        if line.is_empty() {
+            return Some(0);
+        }
+        let Ok(chunk) = serde_json::from_str::<StreamChunk>(line) else {
+            return Some(0);
+        };
+        let Some(id) = SourceId::parse(&chunk.source) else {
+            return Some(0);
+        };
+        let fallback = if chunk.results.is_empty() {
+            SourceStatus::Empty
+        } else {
+            SourceStatus::Online
+        };
+        let status = status_from_wire(&chunk.status).unwrap_or(fallback);
+        self.record_one(id, status, chunk.count);
+        let answered = EngineEvent::SourceAnswered {
+            source: id,
+            count: chunk.results.len(),
+        };
+        let results = EngineEvent::SourceResults {
+            source: id,
+            results: chunk.results,
+        };
+        if Self::emit(ctx, events, answered) && Self::emit(ctx, events, results) {
+            Some(1)
+        } else {
+            None
+        }
+    }
+
+    fn mark_sites_checking(
+        &self,
+        ctx: &SearchCtx,
+        events: &tokio::sync::mpsc::UnboundedSender<EngineEvent>,
+    ) {
+        for id in SourceId::ALL
+            .iter()
+            .copied()
+            .filter(|id| !ctx.disabled.contains(id))
+        {
+            let _ = Self::emit(
+                ctx,
+                events,
+                EngineEvent::SourceStatus {
+                    source: id,
+                    status: SourceStatus::Checking,
+                },
+            );
+        }
+    }
+
     fn emit(
         ctx: &SearchCtx,
         events: &tokio::sync::mpsc::UnboundedSender<EngineEvent>,
@@ -355,53 +416,29 @@ impl HttpSource {
                 Err(_) => return Ok(landed),
             };
             buf.extend_from_slice(&bytes);
-            while let Some(pos) = buf.iter().position(|&b| b == b'\n') {
-                if ctx.cancel.is_cancelled() {
-                    return Ok(landed);
-                }
-                let line = buf.drain(..=pos).collect::<Vec<_>>();
-                let line = String::from_utf8_lossy(&line);
-                let line = line.trim();
-                if line.is_empty() {
-                    continue;
-                }
-                let Ok(chunk) = serde_json::from_str::<StreamChunk>(line) else {
-                    continue;
-                };
-                let Some(id) = SourceId::parse(&chunk.source) else {
-                    continue;
-                };
-                let status =
-                    status_from_wire(&chunk.status).unwrap_or(if chunk.results.is_empty() {
-                        SourceStatus::Empty
-                    } else {
-                        SourceStatus::Online
-                    });
-                self.record_one(id, status, chunk.count);
-                landed += 1;
-                if !Self::emit(
-                    ctx,
-                    events,
-                    EngineEvent::SourceAnswered {
-                        source: id,
-                        count: chunk.results.len(),
-                    },
-                ) {
-                    return Ok(landed);
-                }
-                if !Self::emit(
-                    ctx,
-                    events,
-                    EngineEvent::SourceResults {
-                        source: id,
-                        results: chunk.results,
-                    },
-                ) {
-                    return Ok(landed);
-                }
-            }
+            let Some(n) = self.drain_complete_lines(ctx, events, &mut buf) else {
+                return Ok(landed);
+            };
+            landed += n;
         }
         Ok(landed)
+    }
+
+    fn drain_complete_lines(
+        &self,
+        ctx: &SearchCtx,
+        events: &tokio::sync::mpsc::UnboundedSender<EngineEvent>,
+        buf: &mut Vec<u8>,
+    ) -> Option<usize> {
+        let mut added = 0usize;
+        while let Some(pos) = buf.iter().position(|&b| b == b'\n') {
+            if ctx.cancel.is_cancelled() {
+                return None;
+            }
+            let raw = buf.drain(..=pos).collect::<Vec<_>>();
+            added += self.ingest_ndjson_line(ctx, events, &raw)?;
+        }
+        Some(added)
     }
 
     fn emit_batch_or_fail(
@@ -517,18 +554,7 @@ impl Source for HttpSource {
                 return;
             }
             self.clear_health();
-            for id in SourceId::ALL {
-                if !ctx.disabled.contains(&id) {
-                    let _ = Self::emit(
-                        ctx,
-                        &events,
-                        EngineEvent::SourceStatus {
-                            source: id,
-                            status: SourceStatus::Checking,
-                        },
-                    );
-                }
-            }
+            self.mark_sites_checking(ctx, &events);
             let streamed = self.consume_stream(query, ctx, &events).await;
             if ctx.cancel.is_cancelled() {
                 return;
@@ -611,6 +637,29 @@ mod tests {
             body.len()
         );
         let _ = stream.flush();
+    }
+
+    async fn wait_for_yts_results(
+        rx: &mut tokio::sync::mpsc::UnboundedReceiver<EngineEvent>,
+        budget: Duration,
+    ) -> bool {
+        let deadline = tokio::time::Instant::now() + budget;
+        while tokio::time::Instant::now() < deadline {
+            let ev = tokio::time::timeout(Duration::from_millis(50), rx.recv())
+                .await
+                .ok()
+                .flatten();
+            if matches!(
+                ev,
+                Some(EngineEvent::SourceResults {
+                    source: SourceId::Yts,
+                    ..
+                })
+            ) {
+                return true;
+            }
+        }
+        false
     }
 
     /// Reads one HTTP request; the request line is all these tests assert on.
@@ -1087,7 +1136,7 @@ mod tests {
 
         let source = HttpSource::new(base);
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        let mut search_ctx = SearchCtx::default();
+        let search_ctx = SearchCtx::default();
         let cancel = search_ctx.cancel.clone();
 
         let source_task = source.clone();
@@ -1099,18 +1148,7 @@ mod tests {
         });
 
         // Wait for yts to land, then cancel — nyaa is 500ms behind.
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
-        let mut saw_yts = false;
-        while tokio::time::Instant::now() < deadline {
-            match tokio::time::timeout(Duration::from_millis(50), rx.recv()).await {
-                Ok(Some(EngineEvent::SourceResults { source, .. })) if source == SourceId::Yts => {
-                    saw_yts = true;
-                    break;
-                }
-                Ok(Some(_)) => {}
-                _ => {}
-            }
-        }
+        let saw_yts = wait_for_yts_results(&mut rx, Duration::from_secs(5)).await;
         assert!(saw_yts, "the first chunk's results must arrive");
         cancel.cancel();
         handle.await.expect("search task");

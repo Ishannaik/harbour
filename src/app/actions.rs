@@ -298,6 +298,20 @@ fn persist(app: &mut App) {
     }
 }
 
+/// Copy per-site dots off a batch Indexer answer (FR-15/18).
+fn paint_indexer_site_dots(app: &mut App, source: crate::core::types::SourceId) {
+    if source != crate::core::types::SourceId::Indexer {
+        return;
+    }
+    for (site, (status, count)) in app.search.reported_source_health() {
+        if status == SourceStatus::Unknown {
+            continue;
+        }
+        app.state.search.source_health.insert(site, status);
+        app.state.search.source_counts.insert(site, count as usize);
+    }
+}
+
 /// True while any source is still working.
 fn still_searching(app: &App) -> bool {
     app.state
@@ -328,14 +342,7 @@ pub(crate) fn apply_event(app: &mut App, event: EngineEvent) {
             // Batch `/search` answers as the Indexer proxy: fold the report
             // for this query only. Per-site stream lines must not replay
             // leftover Empty/Offline from the previous search.
-            if source == crate::core::types::SourceId::Indexer {
-                for (site, (status, count)) in app.search.reported_source_health() {
-                    if status != SourceStatus::Unknown {
-                        app.state.search.source_health.insert(site, status);
-                        app.state.search.source_counts.insert(site, count as usize);
-                    }
-                }
-            }
+            paint_indexer_site_dots(app, source);
             app.state.search.searching = still_searching(app);
         }
         EngineEvent::SourceResults { source, results } => {

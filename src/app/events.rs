@@ -456,10 +456,11 @@ fn normalize_dropped(raw: &str) -> String {
     let s = raw.trim().trim_matches('"').trim_matches('\'');
     let s = s.strip_prefix("file://").unwrap_or(s);
     // Windows: file:///C:/foo → C:/foo
-    if let Some(rest) = s.strip_prefix('/') {
-        if rest.len() >= 2 && rest.as_bytes()[1] == b':' {
-            return rest.to_string();
-        }
+    if let Some(rest) = s.strip_prefix('/')
+        && rest.len() >= 2
+        && rest.as_bytes()[1] == b':'
+    {
+        return rest.to_string();
     }
     s.to_string()
 }

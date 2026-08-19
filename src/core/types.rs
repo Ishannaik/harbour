@@ -281,10 +281,7 @@ pub trait Source: Send + Sync + 'static {
                 status: SourceStatus::Checking,
             });
             match self.search(query, ctx).await {
-                Ok(results) => {
-                    if ctx.cancel.is_cancelled() {
-                        return;
-                    }
+                Ok(results) if !ctx.cancel.is_cancelled() => {
                     let _ = events.send(EngineEvent::SourceAnswered {
                         source: id,
                         count: results.len(),
@@ -294,16 +291,14 @@ pub trait Source: Send + Sync + 'static {
                         results,
                     });
                 }
-                Err(err) => {
-                    if ctx.cancel.is_cancelled() {
-                        return;
-                    }
+                Err(err) if !ctx.cancel.is_cancelled() => {
                     let _ = events.send(EngineEvent::SourceFailed {
                         source: id,
                         class: err.class(),
                         message: err.to_string(),
                     });
                 }
+                _ => {}
             }
         })
     }
