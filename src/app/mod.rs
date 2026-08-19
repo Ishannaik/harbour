@@ -135,6 +135,10 @@ struct App {
     pub batch_picker: crate::ui::BatchPicker,
     /// Client-side query cache with 15-minute TTL: instant 0ms results.
     query_cache: HashMap<String, QueryCacheEntry>,
+    /// Last left-click on a real search result row. Crossterm has no
+    /// double-click kind, so two Downs on the same index within a short
+    /// window become download (#71).
+    last_search_click: Option<(Instant, usize)>,
     quitting: bool,
 }
 
@@ -445,6 +449,7 @@ pub async fn run(
         episode_picker: crate::ui::EpisodePicker::default(),
         batch_picker: crate::ui::BatchPicker::default(),
         query_cache: HashMap::new(),
+        last_search_click: None,
         quitting: false,
     };
 
@@ -769,6 +774,7 @@ mod app_tests {
             episode_picker: crate::ui::EpisodePicker::default(),
             batch_picker: crate::ui::BatchPicker::default(),
             query_cache: HashMap::new(),
+            last_search_click: None,
             quitting: false,
         };
 
