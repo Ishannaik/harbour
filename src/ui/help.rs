@@ -158,6 +158,13 @@ pub fn draw(frame: &mut Frame, area: Rect, theme: &Theme) {
                     " keys ",
                     Style::default().fg(colors.accent().to_ratatui()),
                 ))
+                .title(
+                    Line::from(Span::styled(
+                        " [✕] ",
+                        Style::default().fg(colors.error().to_ratatui()),
+                    ))
+                    .alignment(ratatui::layout::Alignment::Right),
+                )
                 .style(Style::default().bg(colors.bg().to_ratatui())),
         ),
         panel,

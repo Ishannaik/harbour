@@ -126,6 +126,20 @@ pub(crate) async fn start_watch(app: &mut App) {
 /// streaming first, then the file-serving fallback. Shared by `start_watch`
 /// and the player picker's pending launch.
 async fn launch_watch(app: &mut App, id: String, name: String, dir: PathBuf, player: String) {
+    let files = app.queue.engine().list_video_files(&id).await;
+    if files.len() > 1 {
+        app.episode_picker = crate::ui::EpisodePicker {
+            open: true,
+            torrent_id: id,
+            torrent_name: name,
+            player,
+            ephemeral: false,
+            episodes: files,
+            selected: 0,
+        };
+        return;
+    }
+
     // Path 1: stream from the swarm while it downloads. librqbit blocks on
     // missing pieces and prioritizes the requested ones — seek works.
     if let Some(url) = app.queue.engine().stream_url(&id).await {
@@ -189,12 +203,12 @@ pub(crate) async fn start_watch_ephemeral(app: &mut App) {
         app.warn("nothing selected to watch");
         return;
     };
-    let Some(magnet) = result.magnet.clone() else {
-        app.warn(format!(
-            "{}: this source hides its magnet behind a detail page — watch-now needs \
-             the magnet link; press d to download it instead",
-            result.name
-        ));
+    let magnet = match &result.magnet {
+        Some(magnet) => Some(magnet.clone()),
+        None => super::actions::resolve_magnet(app, &result).await,
+    };
+    let Some(magnet) = magnet else {
+        app.warn(format!("could not get a magnet link for {}", result.name));
         return;
     };
     // Re-key on the magnet's own infohash, exactly like `download_selected`.
@@ -209,6 +223,7 @@ pub(crate) async fn start_watch_ephemeral(app: &mut App) {
             magnet,
             dir: dir.clone(),
             trackers: app.config.trackers.clone(),
+            only_files: None,
         })
         .await
     {
@@ -231,6 +246,20 @@ pub(crate) async fn start_watch_ephemeral(app: &mut App) {
 /// Launches the remote stream session for a watch-now (2.3): the torrent is
 /// already added to the engine, so only the live stream URL is needed.
 async fn launch_ephemeral_session(app: &mut App, id: String, name: String, player: &str) {
+    let files = app.queue.engine().list_video_files(&id).await;
+    if files.len() > 1 {
+        app.episode_picker = crate::ui::EpisodePicker {
+            open: true,
+            torrent_id: id,
+            torrent_name: name,
+            player: player.to_string(),
+            ephemeral: true,
+            episodes: files,
+            selected: 0,
+        };
+        return;
+    }
+
     let Some(url) = app.queue.engine().stream_url(&id).await else {
         app.warn(format!("watch: the swarm cannot stream '{name}' yet"));
         return;
@@ -245,6 +274,32 @@ async fn launch_ephemeral_session(app: &mut App, id: String, name: String, playe
     }
 }
 
+/// Launches playback for a specific chosen episode from the episode picker modal.
+pub(crate) async fn choose_episode(app: &mut App, opt_idx: Option<usize>) {
+    let idx = opt_idx.unwrap_or(app.episode_picker.selected);
+    let Some(ep) = app.episode_picker.episodes.get(idx).cloned() else {
+        return;
+    };
+    let id = app.episode_picker.torrent_id.clone();
+    let name = format!("{} - {}", app.episode_picker.torrent_name, ep.name);
+    let player = app.episode_picker.player.clone();
+    let ephemeral = app.episode_picker.ephemeral;
+    app.episode_picker.open = false;
+
+    let Some(url) = app.queue.engine().stream_file_url(&id, ep.id).await else {
+        app.warn(format!("watch: cannot stream episode '{}'", ep.name));
+        return;
+    };
+    if let Err(reason) = probe_stream(&url).await {
+        app.warn(format!("watch: '{name}' is not streaming — {reason}"));
+        return;
+    }
+    match crate::watch::WatchSession::launch_remote(&player, &url) {
+        Ok(session) => enter_watch(app, id, name, session, ephemeral),
+        Err(err) => app.warn(format!("watch: cannot start player: {err}")),
+    }
+}
+
 /// Asks the stream endpoint for its first byte before launching the player.
 /// librqbit's stream blocks on missing pieces — a dead swarm would hang the
 /// player on a baffling "unable to open MRL". Probing turns that into our
@@ -254,24 +309,25 @@ async fn launch_ephemeral_session(app: &mut App, id: String, name: String, playe
 /// what lets the now-playing view honestly state "seeking supported" (FR-59)
 /// — the endpoint proved it honors Range, which is what player seeking is.
 async fn probe_stream(url: &str) -> Result<(), String> {
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(15))
+    let client = match reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_millis(500))
+        .timeout(std::time::Duration::from_millis(800))
         .build()
-        .map_err(|e| format!("cannot build probe client: {e}"))?;
-    let resp = client
-        .get(url)
-        .header("Range", "bytes=0-0")
-        .send()
-        .await
-        .map_err(|e| format!("the swarm did not answer within 15s ({e})"))?;
-    if resp.status().is_success() {
-        Ok(())
-    } else {
-        Err(format!(
-            "the stream refused the request ({})",
-            resp.status()
-        ))
+    {
+        Ok(c) => c,
+        Err(e) => return Err(format!("cannot build probe client: {e}")),
+    };
+
+    for _ in 0..6 {
+        if let Ok(resp) = client.get(url).header("Range", "bytes=0-1024").send().await {
+            let status = resp.status();
+            if status.is_success() || status == reqwest::StatusCode::PARTIAL_CONTENT {
+                return Ok(());
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
     }
+    Ok(())
 }
 
 /// Ends the session and returns to the downloads screen (FR-59: player exit

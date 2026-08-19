@@ -313,6 +313,7 @@ mod tests {
             magnet: format!("magnet:?xt=urn:btih:{id}"),
             dir: PathBuf::from("/tmp"),
             trackers: Vec::new(),
+            only_files: None,
         }
     }
 
