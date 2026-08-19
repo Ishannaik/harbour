@@ -169,10 +169,13 @@ requiring private announces; GPU/ASCII-image rendering.
 - **FR-31** Concurrency cap: at most `HARBOUR_MAX_DOWNLOADS` items download at once;
   when a slot frees, the oldest `queued` item is promoted (`promote()`) automatically.
 - **FR-32** Active download rows show: animated progress bar, speed, peers, and ETA.
-  Peers and ETA are **absent, not zero**, whenever the engine cannot report them (paused,
-  initializing, or errored): the UI renders an em dash, never `0`, so a paused item is
-  never mistaken for one nobody is connected to. Otherwise:
-  values refresh at the 30fps render cadence with a 500ms stats poll from the engine.
+  Peers and ETA are **absent, not zero**, whenever the engine cannot report them (paused
+  or errored): the UI renders an em dash, never `0`, so a paused item is never mistaken
+  for one nobody is connected to. A downloading row with no size yet says
+  `fetching metadata…`; after metadata and before the first peer, `looking for peers…`;
+  with peers, `peers N`. Never `connecting…` — that word is BitTorrent, not source
+  health (the search sidebar says `checking source…`). Otherwise values refresh at the
+  30fps render cadence with a 500ms stats poll from the engine.
 - **FR-33** Progress bars ease toward the target value — the rendered value never jumps
   more than a bounded per-frame step (fixed-tick determinism test).
 - **FR-34** Downloads continue while the user searches/browses; starting a new search

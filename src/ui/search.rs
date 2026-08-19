@@ -749,9 +749,11 @@ fn searching_source_line<'a>(
                 Style::default().fg(theme.colors.success().to_ratatui()),
             )
         }
+        // Source health, not a BitTorrent handshake — `connecting…` made this
+        // look like torrent-peer UX (issue #75 / FR-32).
         SourceStatus::Checking => (
             spinner,
-            "connecting…".to_string(),
+            "checking source…".to_string(),
             Style::default().fg(theme.colors.accent().to_ratatui()),
         ),
         SourceStatus::Offline => (
@@ -1541,5 +1543,44 @@ mod tests {
         let fg = span_color(&line, "2.0 GiB");
         assert_eq!(fg, theme.colors.text().to_ratatui(), "size uses text()");
         assert_ne!(fg, theme.colors.muted().to_ratatui(), "size is not muted()");
+    }
+
+    fn source_status_text(health: SourceStatus, count: usize) -> String {
+        let mut state = SearchState::default();
+        state.source_health.insert(SourceId::Yts, health);
+        if count > 0 {
+            state.source_counts.insert(SourceId::Yts, count);
+        }
+        let line = searching_source_line(
+            SourceId::Yts,
+            "YTS",
+            &SourceGroup::Movies,
+            &state,
+            &Theme::titanium(),
+            "⠋",
+        );
+        line.spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
+    #[test]
+    fn checking_source_is_not_connecting() {
+        let text = source_status_text(SourceStatus::Checking, 0);
+        assert!(
+            text.contains("checking source…"),
+            "Checking is source health, got: {text}"
+        );
+        assert!(
+            !text.contains("connecting"),
+            "connecting belongs to BitTorrent, got: {text}"
+        );
+    }
+
+    #[test]
+    fn online_source_reports_result_count() {
+        let text = source_status_text(SourceStatus::Online, 3);
+        assert!(
+            text.contains("3 results"),
+            "answered sources show a count, got: {text}"
+        );
     }
 }
