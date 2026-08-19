@@ -25,6 +25,10 @@ pub enum Action {
     ToggleSeeding,
     MoveUp,
     MoveDown,
+    PageUp,
+    PageDown,
+    MoveHome,
+    MoveEnd,
     /// Run the current query.
     Submit,
     /// Append to the query.
@@ -34,6 +38,8 @@ pub enum Action {
     Escape,
     /// Return focus from the search results pane to the input pane.
     FocusSearchInput,
+    /// Sort search results by a column (size, seed, leech, name, source, or default).
+    Sort(crate::ui::SortColumn),
     /// Download the highlighted result.
     Download,
     /// Download the highlighted result into a folder you pick (shift+D,
@@ -100,6 +106,28 @@ pub enum Action {
     SettingsType(char),
     /// Delete the last character from the settings text-edit buffer.
     SettingsBackspace,
+    // --- Episode picker: browse & select an episode from a multi-file torrent ---
+    EpisodeUp,
+    EpisodeDown,
+    EpisodePageUp,
+    EpisodePageDown,
+    EpisodeChoose(Option<usize>),
+    EpisodeClose,
+    // --- Batch file picker: selective multi-file download ---
+    BatchUp,
+    BatchDown,
+    BatchPageUp,
+    BatchPageDown,
+    BatchToggle(Option<usize>),
+    BatchSelectAll,
+    BatchUnselectAll,
+    BatchInvert,
+    BatchConfirm,
+    BatchClose,
+    /// Clear all completed / finished items from the downloads queue.
+    ClearCompleted,
+    /// Open the selected downloaded item or containing directory in the file manager.
+    OpenFolder,
 }
 
 /// Ctrl-C always quits, everywhere — a terminal convention users rely on more
@@ -131,6 +159,10 @@ pub struct FocusFlags {
     pub picker_open: bool,
     /// The picker is in custom-path entry mode (typing edits the path).
     pub picker_custom: bool,
+    /// The episode picker modal owns every key while up.
+    pub episode_picker_open: bool,
+    /// The batch file picker modal owns every key while up.
+    pub batch_picker_open: bool,
     /// The settings overlay owns every key while up.
     pub settings_open: bool,
     /// The folder prompt (shift+d / o) owns every key while up.
@@ -174,6 +206,8 @@ pub fn map_with_focus(key: KeyEvent, screen: Screen, flags: FocusFlags) -> Actio
         help_open,
         picker_open,
         picker_custom,
+        episode_picker_open,
+        batch_picker_open,
         settings_open,
         folder_open,
         search_focus,
@@ -188,6 +222,36 @@ pub fn map_with_focus(key: KeyEvent, screen: Screen, flags: FocusFlags) -> Actio
         return match key.code {
             KeyCode::Char('q') => Action::Quit,
             _ => Action::ToggleHelp,
+        };
+    }
+
+    if episode_picker_open {
+        return match key.code {
+            KeyCode::Char('q') => Action::Quit,
+            KeyCode::Esc => Action::EpisodeClose,
+            KeyCode::Up | KeyCode::Char('k') => Action::EpisodeUp,
+            KeyCode::Down | KeyCode::Char('j') => Action::EpisodeDown,
+            KeyCode::PageUp => Action::EpisodePageUp,
+            KeyCode::PageDown => Action::EpisodePageDown,
+            KeyCode::Enter => Action::EpisodeChoose(None),
+            _ => Action::None,
+        };
+    }
+
+    if batch_picker_open {
+        return match key.code {
+            KeyCode::Char('q') => Action::Quit,
+            KeyCode::Esc => Action::BatchClose,
+            KeyCode::Up | KeyCode::Char('k') => Action::BatchUp,
+            KeyCode::Down | KeyCode::Char('j') => Action::BatchDown,
+            KeyCode::PageUp => Action::BatchPageUp,
+            KeyCode::PageDown => Action::BatchPageDown,
+            KeyCode::Char(' ') => Action::BatchToggle(None),
+            KeyCode::Char('a') | KeyCode::Char('A') => Action::BatchSelectAll,
+            KeyCode::Char('u') | KeyCode::Char('U') => Action::BatchUnselectAll,
+            KeyCode::Char('i') | KeyCode::Char('I') => Action::BatchInvert,
+            KeyCode::Enter => Action::BatchConfirm,
+            _ => Action::None,
         };
     }
 
@@ -259,6 +323,8 @@ pub fn map_with_focus(key: KeyEvent, screen: Screen, flags: FocusFlags) -> Actio
             KeyCode::Enter => Action::Submit,
             KeyCode::Up => Action::MoveUp,
             KeyCode::Down => Action::MoveDown,
+            KeyCode::PageUp => Action::PageUp,
+            KeyCode::PageDown => Action::PageDown,
             KeyCode::Tab => Action::SwitchScreen,
             KeyCode::Esc => Action::Escape,
             KeyCode::Backspace => Action::Backspace,
@@ -274,10 +340,19 @@ pub fn map_with_focus(key: KeyEvent, screen: Screen, flags: FocusFlags) -> Actio
             KeyCode::Char('s') => Action::OpenSettings,
             KeyCode::Char('?') => Action::ToggleHelp,
             KeyCode::Char('q') => Action::Quit,
+            KeyCode::Char('1') => Action::Sort(crate::ui::SortColumn::Seeds),
+            KeyCode::Char('2') => Action::Sort(crate::ui::SortColumn::Size),
+            KeyCode::Char('3') => Action::Sort(crate::ui::SortColumn::Leechers),
+            KeyCode::Char('4') => Action::Sort(crate::ui::SortColumn::Name),
+            KeyCode::Char('0') => Action::Sort(crate::ui::SortColumn::Default),
             KeyCode::Up => Action::MoveUp,
             KeyCode::Down => Action::MoveDown,
+            KeyCode::PageUp => Action::PageUp,
+            KeyCode::PageDown => Action::PageDown,
+            KeyCode::Home => Action::MoveHome,
+            KeyCode::End => Action::MoveEnd,
             KeyCode::Tab => Action::SwitchScreen,
-            KeyCode::Esc | KeyCode::Backspace => Action::FocusSearchInput,
+            KeyCode::Esc | KeyCode::Backspace | KeyCode::Char('/') => Action::FocusSearchInput,
             KeyCode::Char(c) => Action::Type(c),
             _ => Action::None,
         },
@@ -288,14 +363,19 @@ pub fn map_with_focus(key: KeyEvent, screen: Screen, flags: FocusFlags) -> Actio
             KeyCode::Tab | KeyCode::Esc => Action::SwitchScreen,
             KeyCode::Up => Action::MoveUp,
             KeyCode::Down => Action::MoveDown,
+            KeyCode::PageUp => Action::PageUp,
+            KeyCode::PageDown => Action::PageDown,
+            KeyCode::Home => Action::MoveHome,
+            KeyCode::End => Action::MoveEnd,
             KeyCode::Left | KeyCode::Right => Action::ToggleSeeding,
             KeyCode::Char('s') => Action::ToggleSeeding,
             KeyCode::Char('p') => Action::TogglePause,
             KeyCode::Char('P') => Action::OpenPlayerPicker,
             KeyCode::Char('S') => Action::OpenSettings,
-            KeyCode::Char('o') => Action::ChangeDefaultFolder,
+            KeyCode::Char('o') | KeyCode::Enter => Action::OpenFolder,
+            KeyCode::Char('c') | KeyCode::Char('C') => Action::ClearCompleted,
             KeyCode::Char('r') => Action::Retry,
-            KeyCode::Char('x') => Action::Remove,
+            KeyCode::Delete | KeyCode::Char('x') => Action::Remove,
             KeyCode::Char('w') => Action::Watch,
             _ => Action::None,
         },
@@ -343,37 +423,18 @@ pub fn mouse_to_action(
         return Action::ToggleHelp;
     }
 
+    // Status bar row clicks on the tab buttons (exactly 1 line below view_area):
+    let is_status_row = row == view_area.y + view_area.height;
+    if is_status_row
+        && col >= view_area.x
+        && col < view_area.right()
+        && let Some(action) = status_bar_click_action(col, view_area.width, screen)
+    {
+        return action;
+    }
+
     match screen {
-        Screen::Search => {
-            // Mirrors `ui::search::draw`'s layout: a 1-cell panel border,
-            // then a 22-wide sidebar; the main column starts after both.
-            // Inside it, the search bar is SEARCH_BAR_H rows, the results
-            // header 1 row, then one result row per line. The hint line
-            // owns the last inner row, and the panel's bottom border sits
-            // one row below that.
-            let inner_x = view_area.x + 1;
-            let main_col = inner_x + SIDEBAR_WIDTH;
-            let results_top = view_area.y + 1 + SEARCH_BAR_H + 1;
-            let results_bottom = view_area.y + view_area.height.saturating_sub(2);
-            if col < inner_x {
-                // The panel's left border is not clickable.
-                Action::None
-            } else if col < main_col {
-                // A click on a sidebar source row toggles that source (2.2).
-                // The "Sources" title, group dividers, and rows past the last
-                // source map to None — nothing to toggle there.
-                sidebar_source_at(row.saturating_sub(view_area.y + 1))
-                    .map_or(Action::None, Action::ToggleSource)
-            } else if row < results_top {
-                // The panel top border and the search bar: a click here means
-                // "I want to type" — focus the input pane.
-                Action::FocusSearchInput
-            } else if row >= results_bottom {
-                Action::None
-            } else {
-                Action::ClickRow((row - results_top) as usize)
-            }
-        }
+        Screen::Search => search_mouse_action(view_area, col, row),
         Screen::Downloads => {
             // Mirrors `ui::downloads::draw`'s layout: a 1-cell panel
             // border, then a 2-row tab band (label row + underline row)
@@ -411,6 +472,52 @@ pub fn mouse_to_action(
         // `settings_open` (app.rs guards clicks while it is up).
         Screen::Settings => Action::None,
     }
+}
+
+fn status_bar_click_action(col: u16, width: u16, screen: Screen) -> Option<Action> {
+    let tab = crate::ui::status::status_button_at(col, width)?;
+    let action = match tab {
+        crate::ui::status::StatusTab::Search => {
+            if screen == Screen::Search {
+                Action::FocusSearchInput
+            } else {
+                Action::Dismiss
+            }
+        }
+        crate::ui::status::StatusTab::Downloads => Action::SwitchScreen,
+        crate::ui::status::StatusTab::Settings => Action::OpenSettings,
+        crate::ui::status::StatusTab::Help => Action::ToggleHelp,
+    };
+    Some(action)
+}
+
+fn search_mouse_action(view_area: Rect, col: u16, row: u16) -> Action {
+    let inner_x = view_area.x + 1;
+    let main_col = inner_x + SIDEBAR_WIDTH;
+    let header_row = view_area.y + 1 + SEARCH_BAR_H;
+    let results_top = header_row + 1;
+    let results_bottom = view_area.y + view_area.height.saturating_sub(2);
+    if col < inner_x {
+        return Action::None;
+    }
+    if col < main_col {
+        return sidebar_source_at(row.saturating_sub(view_area.y + 1))
+            .map_or(Action::None, Action::ToggleSource);
+    }
+    if row < results_top {
+        if row == header_row {
+            let header_w = view_area.right().saturating_sub(main_col + 1);
+            let header_area = Rect::new(main_col, header_row, header_w, 1);
+            if let Some(sort_col) = crate::ui::search::header_sort_col_at(header_area, col, row) {
+                return Action::Sort(sort_col);
+            }
+        }
+        return Action::FocusSearchInput;
+    }
+    if row >= results_bottom {
+        return Action::None;
+    }
+    Action::ClickRow((row - results_top) as usize)
 }
 
 #[cfg(test)]
@@ -809,7 +916,7 @@ mod tests {
                 false,
                 false
             ),
-            Action::ChangeDefaultFolder
+            Action::OpenFolder
         );
         assert_eq!(
             map(
@@ -1043,10 +1150,16 @@ mod tests {
     #[test]
     fn every_action_the_keymap_can_produce_is_documented_in_the_help() {
         // UR-10: the overlay must show exactly what the app implements.
-        let documented: Vec<&str> = crate::ui::help::BINDINGS.iter().map(|(k, _)| *k).collect();
-        for key in [
-            "enter", "↑ ↓", "← →", "d", "shift+D", "o", "tab", "s", "p", "r", "x", "esc", "?", "q",
-        ] {
+        let documented: Vec<&str> = crate::ui::help::BINDINGS
+            .iter()
+            .map(|(key, _)| *key)
+            .collect();
+        #[rustfmt::skip]
+        let keys = [
+            "enter", "↑ ↓", "← →", "d", "shift+D", "o", "tab",
+            "s", "p", "r", "x", "esc", "?", "q",
+        ];
+        for key in keys {
             assert!(
                 documented.contains(&key),
                 "`{key}` is missing from the help overlay"
@@ -1146,9 +1259,8 @@ mod tests {
     fn a_click_on_a_sidebar_source_toggles_it() {
         let view = search_view();
         // Sidebar rows (offset 0 = "Sources" title, matching the painter):
-        // title, Games divider, FitGirl, Movies divider, YTS, TPB, 1337x,
-        // BitTorrented, TV divider, EZTV, TPB-TV, 1337x-TV, Anime divider,
-        // Nyaa, SubsPlease.
+        // title, Games, FitGirl, Movies, YTS, TPB, BitTorrented,
+        // TV, EZTV, TPB-TV, showRSS, Anime, Nyaa, SubsPlease, AnimeTosho.
         let cases = [
             (1, None),
             (2, None),
@@ -1156,15 +1268,15 @@ mod tests {
             (4, None),
             (5, Some(SourceId::Yts)),
             (6, Some(SourceId::TpbMovies)),
-            (7, Some(SourceId::X1337Movies)),
-            (8, Some(SourceId::Bittorrented)),
-            (9, None),
-            (10, Some(SourceId::Eztv)),
-            (11, Some(SourceId::TpbTv)),
-            (12, Some(SourceId::X1337Tv)),
-            (13, None),
-            (14, Some(SourceId::Nyaa)),
-            (15, Some(SourceId::SubsPlease)),
+            (7, Some(SourceId::Bittorrented)),
+            (8, None),
+            (9, Some(SourceId::Eztv)),
+            (10, Some(SourceId::TpbTv)),
+            (11, Some(SourceId::ShowRss)),
+            (12, None),
+            (13, Some(SourceId::Nyaa)),
+            (14, Some(SourceId::SubsPlease)),
+            (15, Some(SourceId::AnimeTosho)),
             (16, None),
             (29, None),
         ];

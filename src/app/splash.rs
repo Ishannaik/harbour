@@ -23,12 +23,8 @@ const DRAW_IN: Duration = Duration::from_millis(700);
 /// After this much time the splash status line flips to "ready".
 const READY_AFTER: Duration = Duration::from_millis(1600);
 
-/// Shimmer band sweep period (a bright highlight crosses the logo once per
-/// period).
+/// Shimmer band sweep period.
 const SHIMMER_PERIOD: Duration = Duration::from_millis(2200);
-
-/// Harbor wave scroll period — the water line under the logo.
-const WAVE_PERIOD: Duration = Duration::from_millis(1300);
 
 /// Border breathing period (border → accent → border).
 const BREATH_PERIOD: Duration = Duration::from_millis(3000);
@@ -43,28 +39,27 @@ const VERSION_FADE_DUR: Duration = Duration::from_millis(350);
 /// literal color in the splash (a highlight, not a theme choice).
 const HOT: Color = Color::Rgb(255, 255, 255);
 
-/// The splash hero: an ASCII anchor — harbour's icon, drawn without emoji so
-/// every terminal renders it identically. 13 rows, monospace-safe; rows
-/// converge top-down with a CRT-style flicker. `logo_row` skips the art's
-/// spacing columns, so alignment lives in the art itself.
+/// The splash hero: a clean, symmetrical marine anchor.
 const LOGO_ART: &[&str] = &[
-    "        __   __",
-    "       /  \\ /  \\",
-    "      |    |    |",
-    "       \\  |  /",
-    "        \\ | /",
-    "    _____\\|/_____",
-    "   /      |      \\",
-    "  /       |       \\",
-    " /        |        \\",
-    "|         |         |",
-    "|         |         |",
-    " \\        |        /",
-    "  \\_______|_______/",
+    "         .---.         ",
+    "        /     \\        ",
+    "       |   O   |       ",
+    "        \\     /        ",
+    "         '---'         ",
+    "           |           ",
+    "      .----+----.      ",
+    "     /     |     \\     ",
+    "           |           ",
+    "           |           ",
+    "           |           ",
+    "     \\     |     /     ",
+    "      \\    |    /      ",
+    "       `---o---'       ",
+    "          \\_/          ",
 ];
 
-/// Number of particles twinkling around the logo (positioned by seeded PRNG).
-const PARTICLE_COUNT: usize = 14;
+/// Number of particles twinkling around the logo.
+const PARTICLE_COUNT: usize = 0;
 
 /// A tiny xorshift64* PRNG. Seeded at splash construction so every run shows
 /// the same particle field and glitch pattern — deterministic, testable.
@@ -211,20 +206,16 @@ fn logo_row(
 /// and column, the leading crest rendered in success. Decorative line — a
 /// minor glyph-width drift here is cosmetic and acceptable.
 fn wave_line(elapsed: Duration, colors: &crate::theme::ThemeColors, width: usize) -> Line<'static> {
-    const GLYPHS: &[char] = &['~', '≈', '⌇', '≈', '~'];
-    let phase = elapsed.as_secs_f64() / WAVE_PERIOD.as_secs_f64() * std::f64::consts::TAU;
     let mut spans: Vec<Span<'static>> = Vec::new();
-    for col in 0..width {
-        let g = GLYPHS[((col as f64 * 0.9 + phase * 2.0).round() as usize) % GLYPHS.len()];
-        let wave = ((col as f64 / width.max(1) as f64) * std::f64::consts::TAU + phase).sin();
-        let color = if wave > 0.65 {
-            colors.success() // crest
-        } else if wave < -0.65 {
-            colors.text()
-        } else {
-            colors.accent()
-        };
-        push_run(&mut spans, &g.to_string(), color);
+    let bar_len = width.min(36);
+    let pad = width.saturating_sub(bar_len) / 2;
+    if pad > 0 {
+        spans.push(Span::raw(" ".repeat(pad)));
+    }
+    for col in 0..bar_len {
+        let shimmer = shimmer_intensity(col, bar_len, elapsed);
+        let color = lerp_color(colors.dim(), colors.accent(), shimmer);
+        push_run(&mut spans, "─", color);
     }
     Line::from(spans)
 }
@@ -306,9 +297,9 @@ pub(crate) fn draw_splash(
         colors.muted()
     };
     let label = if ready {
-        "ready — press q to quit"
+        "ready — press enter or type to search"
     } else {
-        "raising anchor…"
+        "warming up curated library…"
     };
     let mut status = Line::default();
     status.push_span(Span::styled(

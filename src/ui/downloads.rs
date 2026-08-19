@@ -19,7 +19,9 @@ use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::Style;
 use ratatui::symbols::border::Set as BorderSet;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph};
+use ratatui::widgets::{
+    Block, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
+};
 
 use crate::anim::EasedValue;
 use crate::core::types::{CompletedItem, ItemView, QueueStatus};
@@ -36,7 +38,8 @@ const TAB_GAP: &str = "   ";
 /// Cap on recently-downloaded rows; no scrolling in phase 2.
 const HISTORY_ROWS: usize = 5;
 /// Bottom hint — the actions that matter on this screen.
-const HINT: &str = "s seeding · p pause · r retry · x remove · w watch · tab search · q quit";
+const HINT: &str =
+    "o open · c clear completed · p pause · r retry · x remove · w watch · s seeding";
 
 /// Smoothing time constant for display progress (spec §3): a 200ms filter
 /// eases a moved bar without ever snapping it.
@@ -94,7 +97,13 @@ fn prune_eased(items: &[ItemView]) {
 }
 
 /// Renders the downloads screen: tabs, queue/seeding body, hint line.
-pub fn draw(frame: &mut Frame, area: Rect, state: &DownloadsState, theme: &Theme) {
+pub fn draw(
+    frame: &mut Frame,
+    area: Rect,
+    state: &DownloadsState,
+    theme: &Theme,
+    mouse_pos: Option<(u16, u16)>,
+) {
     prune_eased(&state.items);
     let colors = &theme.colors;
     let bg = colors.bg().to_ratatui();
@@ -127,11 +136,14 @@ pub fn draw(frame: &mut Frame, area: Rect, state: &DownloadsState, theme: &Theme
     ])
     .split(inner);
 
-    frame.render_widget(Paragraph::new(tab_lines(state, theme)), chunks[0]);
+    frame.render_widget(
+        Paragraph::new(tab_lines(state, theme, chunks[0], mouse_pos)),
+        chunks[0],
+    );
     if state.show_seeding {
-        draw_seeding(frame, chunks[1], state, theme);
+        draw_seeding(frame, chunks[1], state, theme, mouse_pos);
     } else {
-        draw_active(frame, chunks[1], state, theme);
+        draw_active(frame, chunks[1], state, theme, mouse_pos);
     }
     frame.render_widget(
         Paragraph::new(Line::from(suffix_span(
@@ -144,22 +156,49 @@ pub fn draw(frame: &mut Frame, area: Rect, state: &DownloadsState, theme: &Theme
 
 /// Tab row plus underline row. The whole underline is one accent span — the
 /// spaces in it are invisible, so only the active tab's border glyphs show.
-fn tab_lines(state: &DownloadsState, theme: &Theme) -> Vec<Line<'static>> {
+fn tab_lines(
+    state: &DownloadsState,
+    theme: &Theme,
+    area: Rect,
+    mouse_pos: Option<(u16, u16)>,
+) -> Vec<Line<'static>> {
     let colors = &theme.colors;
     let downloads_active = !state.show_seeding;
     let accent = colors.accent().to_ratatui();
     let dim = colors.dim().to_ratatui();
+    let muted = colors.muted().to_ratatui();
+
+    let tab_y_match = mouse_pos.is_some_and(|(_, my)| my == area.y || my == area.y + 1);
+    let downloads_hovered = tab_y_match
+        && mouse_pos.is_some_and(|(mx, _)| {
+            mx >= area.x && mx < area.x + 2 + TAB_DOWNLOADS.chars().count() as u16 + 2
+        });
+    let seeding_hovered = tab_y_match
+        && mouse_pos.is_some_and(|(mx, _)| {
+            mx >= area.x + 2 + TAB_DOWNLOADS.chars().count() as u16 + TAB_GAP.chars().count() as u16
+        });
+
+    let downloads_fg = if downloads_active {
+        accent
+    } else if downloads_hovered {
+        muted
+    } else {
+        dim
+    };
+
+    let seeding_fg = if !downloads_active {
+        accent
+    } else if seeding_hovered {
+        muted
+    } else {
+        dim
+    };
+
     let label = vec![
         Span::raw("  "),
-        Span::styled(
-            TAB_DOWNLOADS,
-            Style::default().fg(if downloads_active { accent } else { dim }),
-        ),
+        Span::styled(TAB_DOWNLOADS, Style::default().fg(downloads_fg)),
         Span::raw(TAB_GAP),
-        Span::styled(
-            TAB_SEEDING,
-            Style::default().fg(if downloads_active { dim } else { accent }),
-        ),
+        Span::styled(TAB_SEEDING, Style::default().fg(seeding_fg)),
         Span::raw("  "),
     ];
     let underline = format!(
@@ -184,7 +223,13 @@ fn tab_underline(active: bool, tab: &str, theme: &Theme) -> String {
 }
 
 /// Active tab body: queue rows (name + bar lines) above recently downloaded.
-fn draw_active(frame: &mut Frame, area: Rect, state: &DownloadsState, theme: &Theme) {
+fn draw_active(
+    frame: &mut Frame,
+    area: Rect,
+    state: &DownloadsState,
+    theme: &Theme,
+    mouse_pos: Option<(u16, u16)>,
+) {
     // The queue takes the flexible remainder so the recent header never
     // vanishes; the section is capped at HISTORY_ROWS.
     let recent_h = (1 + state.history.len().min(HISTORY_ROWS)) as u16;
@@ -208,10 +253,31 @@ fn draw_active(frame: &mut Frame, area: Rect, state: &DownloadsState, theme: &Th
         // Keep the selection on screen without a scrollbar: a selection past
         // the bottom shifts the window so it sits on the last visible row.
         let start = scroll_start(&active, state.selected, vis);
-        for &(i, item) in active.iter().skip(start).take(vis.max(1)) {
+        for (rel_idx, &(i, item)) in active.iter().skip(start).take(vis.max(1)).enumerate() {
             let sel = i == state.selected;
-            lines.push(name_line(item, width, sel, theme));
-            lines.push(bar_line(item, width, sel, theme));
+            let y1 = chunks[0].y + (rel_idx * 2) as u16;
+            let y2 = y1 + 1;
+            let hovered = mouse_pos.is_some_and(|(mx, my)| {
+                mx >= chunks[0].x && mx < chunks[0].right() && (my == y1 || my == y2)
+            });
+            lines.push(name_line(item, width, sel, hovered, theme));
+            lines.push(bar_line(item, width, sel, hovered, theme));
+        }
+        if active.len() > vis {
+            let max_scroll = active.len().saturating_sub(vis);
+            let mut scrollbar_state = ScrollbarState::new(max_scroll)
+                .position(start)
+                .viewport_content_length(vis);
+            let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+                .thumb_symbol("█")
+                .track_symbol(Some("│"))
+                .begin_symbol(Some("▲"))
+                .end_symbol(Some("▼"))
+                .thumb_style(Style::default().fg(theme.colors.accent().to_ratatui()))
+                .track_style(Style::default().fg(theme.colors.dim().to_ratatui()))
+                .begin_style(Style::default().fg(theme.colors.dim().to_ratatui()))
+                .end_style(Style::default().fg(theme.colors.dim().to_ratatui()));
+            frame.render_stateful_widget(scrollbar, chunks[0], &mut scrollbar_state);
         }
     }
     frame.render_widget(Paragraph::new(lines), chunks[0]);
@@ -232,7 +298,13 @@ fn draw_active(frame: &mut Frame, area: Rect, state: &DownloadsState, theme: &Th
 }
 
 /// Seeding tab body: one row per seeding/missing item.
-fn draw_seeding(frame: &mut Frame, area: Rect, state: &DownloadsState, theme: &Theme) {
+fn draw_seeding(
+    frame: &mut Frame,
+    area: Rect,
+    state: &DownloadsState,
+    theme: &Theme,
+    mouse_pos: Option<(u16, u16)>,
+) {
     let seeding: Vec<(usize, &ItemView)> = state
         .items
         .iter()
@@ -249,8 +321,27 @@ fn draw_seeding(frame: &mut Frame, area: Rect, state: &DownloadsState, theme: &T
         let width = area.width as usize;
         let vis = area.height as usize;
         let start = scroll_start(&seeding, state.selected, vis);
-        for &(i, item) in seeding.iter().skip(start).take(vis.max(1)) {
-            lines.push(seed_row(item, i == state.selected, width, theme));
+        for (rel_idx, &(i, item)) in seeding.iter().skip(start).take(vis.max(1)).enumerate() {
+            let row_y = area.y + rel_idx as u16;
+            let hovered =
+                mouse_pos.is_some_and(|(mx, my)| mx >= area.x && mx < area.right() && my == row_y);
+            lines.push(seed_row(item, i == state.selected, hovered, width, theme));
+        }
+        if seeding.len() > vis {
+            let max_scroll = seeding.len().saturating_sub(vis);
+            let mut scrollbar_state = ScrollbarState::new(max_scroll)
+                .position(start)
+                .viewport_content_length(vis);
+            let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+                .thumb_symbol("█")
+                .track_symbol(Some("│"))
+                .begin_symbol(Some("▲"))
+                .end_symbol(Some("▼"))
+                .thumb_style(Style::default().fg(theme.colors.accent().to_ratatui()))
+                .track_style(Style::default().fg(theme.colors.dim().to_ratatui()))
+                .begin_style(Style::default().fg(theme.colors.dim().to_ratatui()))
+                .end_style(Style::default().fg(theme.colors.dim().to_ratatui()));
+            frame.render_stateful_widget(scrollbar, area, &mut scrollbar_state);
         }
     }
     frame.render_widget(Paragraph::new(lines), area);
@@ -266,7 +357,13 @@ fn scroll_start(list: &[(usize, &ItemView)], selected: usize, vis: usize) -> usi
 }
 
 /// Queue item's first row: name, status chip, right-aligned downloaded/total.
-fn name_line(item: &ItemView, width: usize, selected: bool, theme: &Theme) -> Line<'static> {
+fn name_line(
+    item: &ItemView,
+    width: usize,
+    selected: bool,
+    hovered: bool,
+    theme: &Theme,
+) -> Line<'static> {
     let colors = &theme.colors;
     let chip = format!("[{}]", item.item.status.label());
     let size = format!(
@@ -284,13 +381,19 @@ fn name_line(item: &ItemView, width: usize, selected: bool, theme: &Theme) -> Li
         Span::raw(" ".repeat(pad)),
         suffix_span(size, colors.muted().to_ratatui()),
     ];
-    row_line(spans, selected, colors)
+    row_line(spans, selected, hovered, colors)
 }
 
 /// Queue item's second row: the eased progress bar, then right-aligned
 /// percent / speed / peers / ETA. `peers`/`eta` are `Option` per contract B1
 /// (librqbit cannot report them while paused) — `None` renders '—', never 0.
-fn bar_line(item: &ItemView, width: usize, selected: bool, theme: &Theme) -> Line<'static> {
+fn bar_line(
+    item: &ItemView,
+    width: usize,
+    selected: bool,
+    hovered: bool,
+    theme: &Theme,
+) -> Line<'static> {
     let colors = &theme.colors;
     let accent = colors.accent().to_ratatui();
     let muted = colors.muted().to_ratatui();
@@ -322,7 +425,7 @@ fn bar_line(item: &ItemView, width: usize, selected: bool, theme: &Theme) -> Lin
         spans.push(Span::raw("  "));
     }
     spans.extend(suffix);
-    row_line(spans, selected, colors)
+    row_line(spans, selected, hovered, colors)
 }
 
 /// Progress bar glyphs: `fill` cells, a `half` cell past the fractional
@@ -365,7 +468,13 @@ fn bar_spans(progress: f64, width: usize, theme: &Theme) -> Vec<Span<'static>> {
 
 /// One Seeding-tab row: name, upload speed (accent — the one live number),
 /// uploaded total, peers, status chip.
-fn seed_row(item: &ItemView, selected: bool, width: usize, theme: &Theme) -> Line<'static> {
+fn seed_row(
+    item: &ItemView,
+    selected: bool,
+    hovered: bool,
+    width: usize,
+    theme: &Theme,
+) -> Line<'static> {
     let colors = &theme.colors;
     let chip = format!("[{}]", item.item.status.label());
     let uploaded = human_bytes(item.stats.map_or(0, |s| s.uploaded_bytes));
@@ -396,7 +505,7 @@ fn seed_row(item: &ItemView, selected: bool, width: usize, theme: &Theme) -> Lin
         Span::raw(" ".repeat(pad)),
     ];
     spans.extend(suffix);
-    row_line(spans, selected, colors)
+    row_line(spans, selected, hovered, colors)
 }
 
 /// One recently-downloaded row: name, right-aligned size + success chip.
@@ -418,15 +527,17 @@ fn history_line(h: &CompletedItem, width: usize, theme: &Theme) -> Line<'static>
 
 /// Selected-row background as the line's base style; spans set only fg, so
 /// the highlight shows through every cell.
-fn row_line(spans: Vec<Span<'static>>, selected: bool, colors: &ThemeColors) -> Line<'static> {
-    let base = if selected {
+fn row_line(
+    spans: Vec<Span<'static>>,
+    selected: bool,
+    hovered: bool,
+    colors: &ThemeColors,
+) -> Line<'static> {
+    let base = if selected || hovered {
         Style::default().bg(colors.selected_bg().to_ratatui())
     } else {
         Style::default()
     };
-    // `Line::styled` builds a line from *text*; a line already made of spans
-    // takes its base style via `.style()`. Same result, and the per-span fg
-    // still wins over the line's bg.
     Line::from(spans).style(base)
 }
 
@@ -600,7 +711,7 @@ mod tests {
             .insert(item.item.id.clone(), EasedValue::new(0.0, EASE_TAU));
         let expected = crate::anim::eased(0.0, 0.5, FRAME_DT, EASE_TAU);
 
-        let line = bar_line(&item, 60, false, &Theme::titanium());
+        let line = bar_line(&item, 60, false, false, &Theme::titanium());
         let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
         let pct = format!("{:>3}%", (expected * 100.0).round() as u32);
         assert!(

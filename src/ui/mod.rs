@@ -41,6 +41,26 @@ pub enum Screen {
     NowPlaying,
 }
 
+/// Column to sort search results by.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SortColumn {
+    #[default]
+    Default,
+    Name,
+    Size,
+    Seeds,
+    Leechers,
+    Source,
+}
+
+/// Sort direction: descending (highest/largest first) or ascending.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SortOrder {
+    #[default]
+    Desc,
+    Asc,
+}
+
 /// Search-view state.
 #[derive(Debug, Clone)]
 pub struct SearchState {
@@ -62,6 +82,55 @@ pub struct SearchState {
     /// browse-mode search — the indexer treats it as curated, and the UI can
     /// say so instead of pretending nothing was searched.
     pub browsing: bool,
+    pub search_started: Option<std::time::Instant>,
+    pub latency_ms: Option<u64>,
+    pub sort_column: SortColumn,
+    pub sort_order: SortOrder,
+}
+
+impl SearchState {
+    /// Sorts `results` in-place according to `sort_column` and `sort_order`.
+    pub fn sort_results(&mut self) {
+        if self.sort_column == SortColumn::Default {
+            return;
+        }
+        let order = self.sort_order;
+        self.results.sort_by(|a, b| {
+            let ord = match self.sort_column {
+                SortColumn::Default => std::cmp::Ordering::Equal,
+                SortColumn::Name => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
+                SortColumn::Size => a.size_bytes.cmp(&b.size_bytes),
+                SortColumn::Seeds => a.seeders.cmp(&b.seeders),
+                SortColumn::Leechers => a.leechers.cmp(&b.leechers),
+                SortColumn::Source => a.source.as_str().cmp(b.source.as_str()),
+            };
+            if order == SortOrder::Desc {
+                ord.reverse()
+            } else {
+                ord
+            }
+        });
+    }
+
+    /// Toggles sort on a column: Desc -> Asc -> Default -> Desc.
+    pub fn toggle_sort(&mut self, col: SortColumn) {
+        if self.sort_column == col {
+            match self.sort_order {
+                SortOrder::Desc => self.sort_order = SortOrder::Asc,
+                SortOrder::Asc => {
+                    self.sort_column = SortColumn::Default;
+                    self.sort_order = SortOrder::Desc;
+                }
+            }
+        } else {
+            self.sort_column = col;
+            self.sort_order = match col {
+                SortColumn::Name | SortColumn::Source => SortOrder::Asc,
+                _ => SortOrder::Desc,
+            };
+        }
+        self.sort_results();
+    }
 }
 
 impl Default for SearchState {
@@ -75,6 +144,10 @@ impl Default for SearchState {
             source_health: HashMap::new(),
             source_counts: HashMap::new(),
             browsing: false,
+            search_started: None,
+            latency_ms: None,
+            sort_column: SortColumn::Default,
+            sort_order: SortOrder::Desc,
         }
     }
 }
@@ -106,6 +179,8 @@ pub struct AppState {
     pub folder_prompt: FolderPrompt,
     /// The item being watched, if watch mode is active (FR-57).
     pub now_playing: Option<NowPlaying>,
+    /// Current mouse position (col, row) for hover highlighting and hit testing.
+    pub mouse_pos: Option<(u16, u16)>,
 }
 
 /// The folder-prompt overlay (FR-29/40): a minimal inline text input for a
@@ -147,13 +222,18 @@ pub struct NowPlaying {
     pub ephemeral: bool,
 }
 
+pub mod batch_picker;
 pub mod downloads;
+pub mod episode_picker;
 pub mod help;
 pub mod now_playing;
 pub mod player;
 pub mod search;
 pub mod settings;
 pub mod status;
+
+pub use batch_picker::BatchPicker;
+pub use episode_picker::EpisodePicker;
 
 #[cfg(test)]
 mod tests;

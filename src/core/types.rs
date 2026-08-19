@@ -69,6 +69,10 @@ pub enum SourceId {
     SubsPlease,
     #[serde(rename = "bittorrented")]
     Bittorrented,
+    #[serde(rename = "animetosho")]
+    AnimeTosho,
+    #[serde(rename = "showrss")]
+    ShowRss,
 }
 
 impl SourceId {
@@ -78,13 +82,13 @@ impl SourceId {
         SourceId::FitGirl,
         SourceId::Yts,
         SourceId::TpbMovies,
-        SourceId::X1337Movies,
         SourceId::Bittorrented,
         SourceId::Eztv,
         SourceId::TpbTv,
-        SourceId::X1337Tv,
+        SourceId::ShowRss,
         SourceId::Nyaa,
         SourceId::SubsPlease,
+        SourceId::AnimeTosho,
     ];
 
     /// The stable wire/table id. Also the cache directory name, which is why it
@@ -102,6 +106,8 @@ impl SourceId {
             SourceId::Nyaa => "nyaa",
             SourceId::SubsPlease => "subsplease",
             SourceId::Bittorrented => "bittorrented",
+            SourceId::AnimeTosho => "animetosho",
+            SourceId::ShowRss => "showrss",
         }
     }
 
@@ -257,6 +263,46 @@ pub trait Source: Send + Sync + 'static {
     /// the deadline expires.
     fn search<'a>(&'a self, query: &'a str, ctx: &'a SearchCtx) -> SearchFuture<'a>;
 
+    /// Run a search and push [`EngineEvent`]s as sites land.
+    ///
+    /// Default: one `search()` then a single answered/failed pair. The indexer
+    /// proxy overrides this to consume `/search/stream` so the UI fills in
+    /// per site instead of waiting for every scraper.
+    fn search_into_events<'a>(
+        &'a self,
+        query: &'a str,
+        ctx: &'a SearchCtx,
+        events: tokio::sync::mpsc::UnboundedSender<EngineEvent>,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
+        let id = self.def().id;
+        Box::pin(async move {
+            let _ = events.send(EngineEvent::SourceStatus {
+                source: id,
+                status: SourceStatus::Checking,
+            });
+            match self.search(query, ctx).await {
+                Ok(results) if !ctx.cancel.is_cancelled() => {
+                    let _ = events.send(EngineEvent::SourceAnswered {
+                        source: id,
+                        count: results.len(),
+                    });
+                    let _ = events.send(EngineEvent::SourceResults {
+                        source: id,
+                        results,
+                    });
+                }
+                Err(err) if !ctx.cancel.is_cancelled() => {
+                    let _ = events.send(EngineEvent::SourceFailed {
+                        source: id,
+                        class: err.class(),
+                        message: err.to_string(),
+                    });
+                }
+                _ => {}
+            }
+        })
+    }
+
     /// Per-site health this source last reported, if any.
     ///
     /// The default reports nothing. The lone `HttpSource` overrides it with the
@@ -361,6 +407,9 @@ pub struct QueueItem {
     pub total_bytes: u64,
     /// Why this item is `Failed`, kept so the reason survives a restart.
     pub error: Option<String>,
+    /// Selected file indices for selective batch downloads.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub only_files: Option<HashSet<usize>>,
     pub added_at_epoch_ms: i64,
 }
 
@@ -386,6 +435,7 @@ impl QueueItem {
             bytes: None,
             total_bytes: 0,
             error: None,
+            only_files: None,
             added_at_epoch_ms,
         }
     }
@@ -551,6 +601,8 @@ pub struct AddRequest {
     pub dir: PathBuf,
     /// Extra announce URLs appended to whatever the magnet carries.
     pub trackers: Vec<String>,
+    /// Specific file indices to download (None = download everything).
+    pub only_files: Option<HashSet<usize>>,
 }
 
 /// What the engine is asked to start from a `.torrent` file's raw bytes
@@ -566,6 +618,8 @@ pub struct AddBytesRequest {
     pub dir: PathBuf,
     /// Extra announce URLs appended to whatever the file carries.
     pub trackers: Vec<String>,
+    /// Specific file indices to download (None = download everything).
+    pub only_files: Option<HashSet<usize>>,
 }
 
 /// One engine observation, as read by the queue's poll.
@@ -579,6 +633,14 @@ pub struct EngineSnapshot {
     pub error: Option<String>,
     /// Present once metadata has arrived.
     pub name: Option<String>,
+}
+
+/// One playable file inside a multi-file torrent.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TorrentFileView {
+    pub id: usize,
+    pub name: String,
+    pub size_bytes: u64,
 }
 
 /// Future returned by the [`Engine`] mutators.
@@ -607,6 +669,20 @@ pub trait Engine: Send + Sync {
     /// is none — the file-based watch path is the fallback. Additive: the
     /// trait is frozen, so a default keeps every implementor compiling.
     fn stream_url<'a>(&'a self, _id: &'a str) -> EngineFuture<'a, Option<String>> {
+        Box::pin(async move { None })
+    }
+
+    /// Playable video files in `id`, sorted naturally (e.g. Episode 01 first).
+    fn list_video_files<'a>(&'a self, _id: &'a str) -> EngineFuture<'a, Vec<TorrentFileView>> {
+        Box::pin(async move { Vec::new() })
+    }
+
+    /// Stream URL for a specific file index in `id`.
+    fn stream_file_url<'a>(
+        &'a self,
+        _id: &'a str,
+        _file_id: usize,
+    ) -> EngineFuture<'a, Option<String>> {
         Box::pin(async move { None })
     }
 

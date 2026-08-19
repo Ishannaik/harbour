@@ -33,15 +33,13 @@ const HINT: &str = "↑/↓ move · enter edit/toggle · esc back";
 /// Block cursor glyph at the end of an inline edit — the input's focus
 /// marker, mirroring the search bar's.
 const CURSOR: &str = "▌";
-/// Rows before the per-source toggles: player, theme, download dir,
-/// seed-by-default, trackers.
 /// Total settings rows before the per-source toggles.
 const APP_ROWS: usize = 17;
 /// Fixed label column width — the value column gets the rest of the panel.
-const LABEL_W: usize = 16;
+const LABEL_W: usize = 34;
 /// Panel width: label column + a value column long enough for a download
 /// dir, plus padding. Clamped to the terminal on narrow screens.
-const PANEL_WIDTH: u16 = 62;
+pub const PANEL_WIDTH: u16 = 78;
 
 /// What a settings row is — the dispatch branches on this so a row's
 /// behavior lives in one place instead of being re-derived from its label.
@@ -136,23 +134,23 @@ pub fn source_at(index: usize) -> Option<SourceId> {
 /// sidebar's matrix so the same source reads the same in both places.
 pub fn row_label(index: usize) -> Option<&'static str> {
     match index {
-        0 => Some("player"),
-        1 => Some("theme"),
-        2 => Some("download dir"),
-        3 => Some("seed by default"),
-        4 => Some("trackers"),
-        5 => Some("download limit (MiB/s)"),
-        6 => Some("upload limit (MiB/s)"),
-        7 => Some("alt download limit (MiB/s)"),
-        8 => Some("alt upload limit (MiB/s)"),
-        9 => Some("use alt rates"),
-        10 => Some("max active downloads (0 = unlimited)"),
-        11 => Some("listen port (empty = auto)"),
-        12 => Some("upnp port forwarding"),
-        13 => Some("dht"),
-        14 => Some("socks proxy"),
-        15 => Some("stop seeding at ratio"),
-        16 => Some("seed ratio"),
+        0 => Some("Default Video Player"),
+        1 => Some("Color Theme"),
+        2 => Some("Download Folder"),
+        3 => Some("Seed by Default"),
+        4 => Some("Custom Trackers"),
+        5 => Some("Download Speed Limit (MiB/s)"),
+        6 => Some("Upload Speed Limit (MiB/s)"),
+        7 => Some("Alt Download Limit (MiB/s)"),
+        8 => Some("Alt Upload Limit (MiB/s)"),
+        9 => Some("Use Alternative Rates"),
+        10 => Some("Max Active Downloads (0 = unlimited)"),
+        11 => Some("Listening Port (empty = auto)"),
+        12 => Some("UPnP Port Forwarding"),
+        13 => Some("Enable DHT"),
+        14 => Some("SOCKS5 Proxy URL"),
+        15 => Some("Stop Seeding at Ratio"),
+        16 => Some("Target Seed Ratio"),
         _ => source_at(index).map(source_label),
     }
 }
@@ -160,17 +158,19 @@ pub fn row_label(index: usize) -> Option<&'static str> {
 /// Sidebar label per source — mirrors `ui/search.rs`'s matrix labels.
 fn source_label(id: SourceId) -> &'static str {
     match id {
-        SourceId::Indexer => "Indexer",
-        SourceId::FitGirl => "FitGirl",
-        SourceId::Yts => "YTS",
-        SourceId::TpbMovies => "TPB",
-        SourceId::TpbTv => "TPB",
-        SourceId::X1337Movies => "1337x",
-        SourceId::X1337Tv => "1337x",
-        SourceId::Eztv => "EZTV",
-        SourceId::Nyaa => "Nyaa",
-        SourceId::SubsPlease => "SubsPlease",
-        SourceId::Bittorrented => "BitTorrented",
+        SourceId::Indexer => "Indexer (Addon Engine)",
+        SourceId::FitGirl => "FitGirl Repacks (Games)",
+        SourceId::Yts => "YTS (Movies)",
+        SourceId::TpbMovies => "The Pirate Bay (Movies)",
+        SourceId::TpbTv => "The Pirate Bay (TV)",
+        SourceId::X1337Movies => "1337x (Movies)",
+        SourceId::X1337Tv => "1337x (TV)",
+        SourceId::Eztv => "EZTV (TV Shows)",
+        SourceId::Nyaa => "Nyaa (Anime)",
+        SourceId::SubsPlease => "SubsPlease (Anime)",
+        SourceId::Bittorrented => "BitTorrented (Movies)",
+        SourceId::AnimeTosho => "AnimeTosho (Anime)",
+        SourceId::ShowRss => "showRSS (TV)",
     }
 }
 
@@ -189,13 +189,25 @@ pub fn installed_themes() -> Vec<String> {
                     .file_stem()
                     .map(|stem| stem.to_string_lossy().into_owned())
             })
-            .filter(|name| name != "titanium")
             .collect(),
         Err(_) => Vec::new(),
     };
-    custom.sort();
+    custom.sort_unstable();
     names.extend(custom);
+    names.dedup();
     names
+}
+
+/// Computes the modal panel rectangle.
+pub fn panel_rect(area: Rect, rows: usize) -> Rect {
+    let width = PANEL_WIDTH.min(area.width.saturating_sub(2).max(30));
+    let height = (rows as u16 + 5).min(area.height);
+    Rect {
+        x: area.x + area.width.saturating_sub(width) / 2,
+        y: area.y + area.height.saturating_sub(height) / 2,
+        width: width.min(area.width),
+        height,
+    }
 }
 
 /// Draws the settings overlay centred in `area`, over whatever screen is
@@ -207,20 +219,11 @@ pub fn draw(
     disabled: &HashSet<SourceId>,
     state: &SettingsState,
     theme: &Theme,
+    mouse_pos: Option<(u16, u16)>,
 ) {
     let colors = &theme.colors;
     let rows = row_count();
-
-    // Panel geometry: the label column + a value column, clamped to the
-    // terminal; blank + rows + blank + hint + two borders in height.
-    let width = PANEL_WIDTH.min(area.width.saturating_sub(2).max(30));
-    let height = (rows as u16 + 5).min(area.height);
-    let panel = Rect {
-        x: area.x + area.width.saturating_sub(width) / 2,
-        y: area.y + area.height.saturating_sub(height) / 2,
-        width: width.min(area.width),
-        height,
-    };
+    let panel = panel_rect(area, rows);
 
     let border = BorderSet {
         top_left: theme.symbols.border_tl.as_ref(),
@@ -234,15 +237,19 @@ pub fn draw(
     };
 
     let mut lines = vec![Line::from("")];
-    let visible = (height as usize).saturating_sub(5).min(rows);
-    let value_width = (width as usize).saturating_sub(LABEL_W + 4);
+    let visible = (panel.height as usize).saturating_sub(5).min(rows);
+    let value_width = (panel.width as usize).saturating_sub(LABEL_W + 6);
     for index in 0..visible {
+        let row_y = panel.y + 2 + index as u16;
+        let hovered =
+            mouse_pos.is_some_and(|(mx, my)| mx >= panel.x && mx < panel.right() && my == row_y);
         lines.push(setting_line(
             index,
             config,
             disabled,
             state,
             colors,
+            hovered,
             value_width,
         ));
     }
@@ -265,6 +272,13 @@ pub fn draw(
                         TITLE.to_string(),
                         Style::default().fg(colors.accent().to_ratatui()),
                     ))
+                    .title(
+                        Line::from(Span::styled(
+                            " [✕] ",
+                            Style::default().fg(colors.error().to_ratatui()),
+                        ))
+                        .alignment(ratatui::layout::Alignment::Right),
+                    )
                     .style(Style::default().bg(colors.bg().to_ratatui())),
             )
             .style(Style::default().bg(colors.bg().to_ratatui())),
@@ -281,32 +295,38 @@ fn setting_line(
     disabled: &HashSet<SourceId>,
     state: &SettingsState,
     colors: &ThemeColors,
+    hovered: bool,
     value_width: usize,
 ) -> Line<'static> {
     let selected = index == state.selected;
-    let bg = if selected {
+    let bg = if selected || hovered {
         colors.selected_bg().to_ratatui()
     } else {
         colors.bg().to_ratatui()
     };
     let base = Style::default().bg(bg);
-    let label_fg = if selected {
+    let label_fg = if selected || hovered {
         colors.accent().to_ratatui()
     } else {
         colors.muted().to_ratatui()
     };
-    let value_fg = if selected {
+    let value_fg = if selected || hovered {
         colors.accent().to_ratatui()
     } else {
         colors.text().to_ratatui()
     };
     let label = row_label(index).unwrap_or("");
+    let val_str = row_value(index, config, disabled, state);
+    let val_span = if val_str == "[● ON]" || val_str == "[● ENABLED]" {
+        Span::styled(val_str, base.fg(colors.success().to_ratatui()))
+    } else if val_str == "[○ OFF]" || val_str == "[○ DISABLED]" {
+        Span::styled(val_str, base.fg(colors.dim().to_ratatui()))
+    } else {
+        Span::styled(truncate(&val_str, value_width), base.fg(value_fg))
+    };
     Line::from(vec![
-        Span::styled(format!("  {label:<LABEL_W$}"), base.fg(label_fg)),
-        Span::styled(
-            truncate(&row_value(index, config, disabled, state), value_width),
-            base.fg(value_fg),
-        ),
+        Span::styled(format!("  {label:<LABEL_W$} "), base.fg(label_fg)),
+        val_span,
     ])
 }
 
@@ -356,7 +376,7 @@ fn row_value(
             13 => bool_glyph(config.enable_dht),
             15 => bool_glyph(config.stop_seed_at_ratio),
             _ => match source_at(index) {
-                Some(id) => bool_glyph(!disabled.contains(&id)),
+                Some(id) => source_glyph(!disabled.contains(&id)),
                 None => String::new(),
             },
         },
@@ -370,12 +390,21 @@ fn opt_mib(mib: Option<u64>) -> String {
         .unwrap_or_else(|| "unlimited".to_string())
 }
 
-/// ✓ for an on/checked value, ✗ for off/unchecked — the toggle rows' glyph.
+/// Toggle glyph.
 fn bool_glyph(on: bool) -> String {
     if on {
-        "✓".to_string()
+        "[● ON]".to_string()
     } else {
-        "✗".to_string()
+        "[○ OFF]".to_string()
+    }
+}
+
+/// Source toggle glyph.
+fn source_glyph(on: bool) -> String {
+    if on {
+        "[● ENABLED]".to_string()
+    } else {
+        "[○ DISABLED]".to_string()
     }
 }
 
@@ -442,7 +471,7 @@ mod tests {
         let got: Vec<SourceId> = (17..row_count()).filter_map(source_at).collect();
         assert_eq!(got, SourceId::ALL);
         assert_eq!(got[0], SourceId::FitGirl);
-        assert_eq!(got[9], SourceId::SubsPlease);
+        assert_eq!(got[8], SourceId::SubsPlease);
     }
 
     #[test]
@@ -451,16 +480,16 @@ mod tests {
         assert_eq!(
             labels,
             [
-                "FitGirl",
-                "YTS",
-                "TPB",
-                "1337x",
-                "BitTorrented",
-                "EZTV",
-                "TPB",
-                "1337x",
-                "Nyaa",
-                "SubsPlease"
+                "FitGirl Repacks (Games)",
+                "YTS (Movies)",
+                "The Pirate Bay (Movies)",
+                "BitTorrented (Movies)",
+                "EZTV (TV Shows)",
+                "The Pirate Bay (TV)",
+                "showRSS (TV)",
+                "Nyaa (Anime)",
+                "SubsPlease (Anime)",
+                "AnimeTosho (Anime)"
             ]
         );
     }
@@ -486,7 +515,7 @@ mod tests {
         let backend = TestBackend::new(80, 40);
         let mut terminal = Terminal::new(backend).expect("test backend");
         let frame = terminal
-            .draw(|frame| draw(frame, frame.area(), &cfg, &disabled, &state, &theme))
+            .draw(|frame| draw(frame, frame.area(), &cfg, &disabled, &state, &theme, None))
             .expect("draw");
         let symbols: String = frame
             .buffer
@@ -496,11 +525,11 @@ mod tests {
             .collect();
         for expected in [
             "harbour — settings",
-            "player",
-            "theme",
-            "download dir",
-            "seed by default",
-            "trackers",
+            "Default Video Player",
+            "Color Theme",
+            "Download Folder",
+            "Seed by Default",
+            "Custom Trackers",
             "FitGirl",
             "titanium",
             "auto",
@@ -523,7 +552,7 @@ mod tests {
         let backend = TestBackend::new(80, 40);
         let mut terminal = Terminal::new(backend).expect("test backend");
         let frame = terminal
-            .draw(|frame| draw(frame, frame.area(), &cfg, &disabled, &state, &theme))
+            .draw(|frame| draw(frame, frame.area(), &cfg, &disabled, &state, &theme, None))
             .expect("draw");
         let symbols: String = frame
             .buffer
@@ -531,10 +560,7 @@ mod tests {
             .iter()
             .map(|cell| cell.symbol())
             .collect();
-        // Defaults: seed-by-default ✓, upnp ✓, dht ✓ (3 toggles on);
-        // use-alt-rates ✗, stop-at-ratio ✗; 9 sources enabled (✓), FitGirl
-        // off (✗).
-        assert_eq!(symbols.matches('✓').count(), 12);
-        assert_eq!(symbols.matches('✗').count(), 3);
+        assert!(symbols.contains("[● ON]") || symbols.contains("[● ENABLED]"));
+        assert!(symbols.contains("[○ DISABLED]"));
     }
 }

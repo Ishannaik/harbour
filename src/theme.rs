@@ -352,7 +352,10 @@ impl Preset {
     }
 }
 
-const DEFAULT_SPINNER: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+#[rustfmt::skip]
+const DEFAULT_SPINNER: &[&str] = &[
+    "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏",
+];
 
 /// A fully validated, resolved theme.
 #[derive(Debug, Clone, PartialEq)]

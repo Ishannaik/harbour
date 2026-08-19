@@ -7,23 +7,64 @@
 
 use crate::core::types::InfoHash;
 
-/// A BitTorrent v1 infohash is 40 hex characters.
-const INFO_HASH_LEN: usize = 40;
+/// A BitTorrent v1 infohash in hex is 40 characters.
+const INFO_HASH_HEX_LEN: usize = 40;
+/// A BitTorrent v1 infohash in Base32 (RFC 4648) is 32 characters.
+const INFO_HASH_BASE32_LEN: usize = 32;
 
-/// Normalizes a 40-hex infohash to lowercase, or `None` if it is not one.
+/// Decodes a 32-character Base32 (RFC 4648) infohash into a 40-character lowercase hex string.
+fn decode_base32_info_hash(s: &str) -> Option<InfoHash> {
+    if s.len() != INFO_HASH_BASE32_LEN {
+        return None;
+    }
+    let mut bytes = [0u8; 20];
+    let mut buffer = 0u64;
+    let mut bits_left = 0;
+    let mut byte_idx = 0;
+
+    for byte in s.bytes() {
+        let val = match byte {
+            b'A'..=b'Z' => byte - b'A',
+            b'a'..=b'z' => byte - b'a',
+            b'2'..=b'7' => byte - b'2' + 26,
+            _ => return None,
+        };
+        buffer = (buffer << 5) | (val as u64);
+        bits_left += 5;
+        if bits_left >= 8 {
+            bits_left -= 8;
+            bytes[byte_idx] = (buffer >> bits_left) as u8;
+            byte_idx += 1;
+        }
+    }
+    if byte_idx != 20 {
+        return None;
+    }
+    use std::fmt::Write;
+    let mut hex = String::with_capacity(INFO_HASH_HEX_LEN);
+    for b in bytes {
+        let _ = write!(hex, "{b:02x}");
+    }
+    Some(hex)
+}
+
+/// Normalizes a 40-hex or 32-base32 infohash to 40 lowercase hex characters, or `None` if invalid.
 ///
-/// Accepts uppercase because plenty of sources emit it (`FR-05`); rejects
-/// anything else rather than guessing, since a malformed id would become a
+/// Accepts uppercase hex and RFC 4648 Base32 because sources (like SubsPlease) emit them (`FR-05`);
+/// rejects anything else rather than guessing, since a malformed id would become a
 /// malformed cache path.
 pub fn normalize_info_hash(raw: &str) -> Option<InfoHash> {
     let s = raw.trim();
-    if s.len() != INFO_HASH_LEN || !s.chars().all(|c| c.is_ascii_hexdigit()) {
-        return None;
+    if s.len() == INFO_HASH_HEX_LEN && s.chars().all(|c| c.is_ascii_hexdigit()) {
+        Some(s.to_ascii_lowercase())
+    } else if s.len() == INFO_HASH_BASE32_LEN {
+        decode_base32_info_hash(s)
+    } else {
+        None
     }
-    Some(s.to_ascii_lowercase())
 }
 
-/// True when `raw` is a bare infohash.
+/// True when `raw` is a bare infohash (hex or Base32).
 pub fn is_info_hash(raw: &str) -> bool {
     normalize_info_hash(raw).is_some()
 }
@@ -37,7 +78,7 @@ pub fn info_hash_from_magnet(text: &str) -> Option<InfoHash> {
     let start = lowered.find("xt=urn:btih:")? + "xt=urn:btih:".len();
     let rest = &text[start..];
     let end = rest
-        .find(|c: char| !c.is_ascii_hexdigit())
+        .find(|c: char| !c.is_ascii_alphanumeric())
         .unwrap_or(rest.len());
     normalize_info_hash(&rest[..end])
 }
@@ -103,16 +144,37 @@ mod tests {
         );
         assert!(
             normalize_info_hash(&HASH.replace('0', "z")).is_none(),
-            "non-hex must not become a path component"
+            "non-hex and non-base32 must not become a path component"
         );
-        // A base32 v1 hash (32 chars) is not something we can use as an id.
-        assert!(normalize_info_hash("ABCDEFGHIJKLMNOPQRSTUVWXYZ234567").is_none());
+        // Invalid base32 chars (0, 1, 8, 9) in a 32-char string are rejected.
+        assert!(normalize_info_hash("0189ABCDEFGHIJKLMNOPQRSTUVWX2345").is_none());
+    }
+
+    #[test]
+    fn decodes_base32_info_hashes_to_canonical_hex() {
+        let b32 = "TZD2MG4DLGAQE6OGA56J566FQ6YVZDCX";
+        let hex = normalize_info_hash(b32).expect("valid base32 infohash");
+        assert_eq!(hex.len(), 40);
+        assert!(hex.chars().all(|c| c.is_ascii_hexdigit()));
+        assert_eq!(
+            normalize_info_hash(&b32.to_ascii_lowercase()).as_deref(),
+            Some(hex.as_str()),
+            "lowercase base32 is also accepted"
+        );
     }
 
     #[test]
     fn extracts_the_hash_from_a_magnet_and_from_surrounding_html() {
         let magnet = format!("magnet:?xt=urn:btih:{HASH}&dn=Some+Name&tr=udp://x");
         assert_eq!(info_hash_from_magnet(&magnet).as_deref(), Some(HASH));
+
+        let b32_magnet = "magnet:?xt=urn:btih:TZD2MG4DLGAQE6OGA56J566FQ6YVZDCX&dn=Anime";
+        let b32_hex = normalize_info_hash("TZD2MG4DLGAQE6OGA56J566FQ6YVZDCX").unwrap();
+        assert_eq!(
+            info_hash_from_magnet(b32_magnet).as_deref(),
+            Some(b32_hex.as_str()),
+            "base32 magnet links are extracted and converted to hex"
+        );
 
         let html = format!(
             r#"<a href="magnet:?xt=urn:btih:{}&amp;dn=x">get</a>"#,

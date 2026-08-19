@@ -23,7 +23,7 @@
 
 #![allow(dead_code)]
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -68,6 +68,8 @@ pub struct AddInput {
     pub bytes: Option<Vec<u8>>,
     pub dir: PathBuf,
     pub size_bytes: u64,
+    /// Selected file indices for batch downloads (None = download all).
+    pub only_files: Option<HashSet<usize>>,
 }
 
 /// Outcome of [`Queue::add`], so callers can tell the user what happened.
@@ -96,6 +98,7 @@ pub struct Queue {
     /// reached it pauses itself (qBittorrent `max_ratio` + `max_ratio_act` =
     /// stop). The seed keeps its files; it is a paused seed, per AGENTS.
     stop_ratio: Option<f64>,
+    pub seed_by_default: bool,
     trackers: Vec<String>,
 }
 
@@ -112,6 +115,7 @@ impl Queue {
             runtime: HashMap::new(),
             max_downloads,
             stop_ratio: None,
+            seed_by_default: true,
             trackers: Vec::new(),
         }
     }
@@ -129,6 +133,31 @@ impl Queue {
     /// Live seed-stop ratio policy from settings; `None` disables it.
     pub fn set_stop_ratio(&mut self, ratio: Option<f64>) {
         self.stop_ratio = ratio;
+    }
+
+    /// Live auto-seeding policy from settings.
+    pub fn set_seed_by_default(&mut self, val: bool) {
+        self.seed_by_default = val;
+    }
+
+    /// Removes all completed / seeding items from the queue, keeping their files on disk.
+    pub async fn clear_completed(&mut self) -> Vec<InfoHash> {
+        let completed: Vec<InfoHash> = self
+            .items
+            .iter()
+            .filter(|i| {
+                i.finished || matches!(i.status, QueueStatus::Seeding | QueueStatus::Missing)
+            })
+            .map(|i| i.id.clone())
+            .collect();
+
+        for id in &completed {
+            let _ = self.engine.remove(id, false).await;
+            self.items.retain(|i| &i.id != id);
+            self.runtime.remove(id);
+        }
+        self.promote().await;
+        completed
     }
 
     pub fn items(&self) -> &[QueueItem] {
@@ -203,6 +232,7 @@ impl Queue {
         );
         item.total_bytes = input.size_bytes;
         item.bytes = input.bytes;
+        item.only_files = input.only_files;
         let id = item.id.clone();
         self.items.push(item);
         self.runtime.insert(id.clone(), Runtime::default());
@@ -262,6 +292,7 @@ impl Queue {
                         bytes: bytes.clone(),
                         dir: item.dir.clone(),
                         trackers,
+                        only_files: item.only_files.clone(),
                     })
                     .await
             }
@@ -273,6 +304,7 @@ impl Queue {
                         magnet,
                         dir: item.dir.clone(),
                         trackers,
+                        only_files: item.only_files.clone(),
                     })
                     .await
             }
@@ -414,12 +446,17 @@ impl Queue {
             }
 
             let item = &mut self.items[idx];
-            if snap.finished && !item.finished {
+            let newly_finished = snap.finished && !item.finished;
+            if newly_finished {
                 item.finished = true;
                 events.push(EngineEvent::Done {
                     id: snap.id.clone(),
                 });
                 freed_slot = true;
+            }
+            if newly_finished && !self.seed_by_default {
+                item.status = QueueStatus::Paused;
+                ratio_paused.push(snap.id.clone());
             }
 
             let status_changed = projected != previous;
@@ -631,6 +668,7 @@ mod tests {
             bytes: None,
             dir: PathBuf::from("/tmp/dl"),
             size_bytes: 1000,
+            only_files: None,
         }
         .with_time(at)
     }
@@ -758,6 +796,7 @@ mod tests {
                     bytes: Some(payload.clone()),
                     dir: PathBuf::from("/tmp/dl"),
                     size_bytes: 0,
+                    only_files: None,
                 },
                 1,
             )
@@ -780,6 +819,7 @@ mod tests {
                     bytes: Some(payload),
                     dir: PathBuf::from("/tmp/dl"),
                     size_bytes: 0,
+                    only_files: None,
                 },
                 2,
             )
@@ -810,8 +850,9 @@ mod tests {
                 bytes: Some(payload.clone()),
                 dir: PathBuf::from("/tmp/dl"),
                 size_bytes: 0,
+                only_files: None,
             },
-            1,
+            3,
         )
         .await;
 
