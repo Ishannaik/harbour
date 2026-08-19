@@ -1,15 +1,16 @@
-//! Now-playing view (FR-57..FR-59, phase 6): the watch screen shown while an
-//! external player (mpv/VLC) plays the item's stream.
+//! Now-playing view (FR-57..FR-59, FR-105, phase 6): the watch screen shown
+//! while an external player (mpv/VLC) plays the item's stream.
 //!
 //! Pure paint: `draw` renders the item + stream URL + what harbour actually
 //! knows about the playback; the app loop owns the player lifecycle (launch
 //! on `w`, return on player exit or `q`/esc). harbour ships no render engine
 //! — the external player is the renderer (design.md §2.4), and it is launched
 //! with a bare URL, so it never reports position back. The view is therefore
-//! deliberately honest about progress (FR-59): it states that the stream is
-//! live, that seeking is supported (every harbour stream is Range-served),
-//! and that position is the player's — it never invents an elapsed/total no
-//! one measured.
+//! deliberately honest about progress (FR-59/FR-105): it states that the
+//! stream is live, that seeking is supported (every harbour stream is
+//! Range-served), measured download progress/speed from the live `ItemView`,
+//! and that player position is the player's — it never invents an
+//! elapsed/total or a buffer percentage no one measured.
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -18,6 +19,7 @@ use ratatui::symbols::border::Set as BorderSet;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 
+use crate::core::types::ItemView;
 use crate::theme::Theme;
 use crate::ui::NowPlaying;
 
@@ -27,10 +29,17 @@ const TITLE: &str = " harbour — now playing ";
 const HINT: &str = "q / esc back to the TUI";
 
 /// Renders the now-playing screen: item name, the loopback stream URL the
-/// player opened, and the playback state harbour knows (FR-59) — the stream
-/// is live, seeking works, position lives in the player. Player transport
-/// (seek/volume) lives in the player; this view is a status screen.
-pub fn draw(frame: &mut Frame, area: Rect, state: &NowPlaying, theme: &Theme) {
+/// player opened, and the playback state harbour knows (FR-59/FR-105) — the
+/// stream is live, seeking works, download progress/speed are measured,
+/// position lives in the player. Player transport (seek/volume) lives in the
+/// player; this view is a status screen.
+pub fn draw(
+    frame: &mut Frame,
+    area: Rect,
+    state: &NowPlaying,
+    stats: Option<&ItemView>,
+    theme: &Theme,
+) {
     let colors = &theme.colors;
     let bg = colors.bg().to_ratatui();
     let accent = colors.accent().to_ratatui();
@@ -77,6 +86,19 @@ pub fn draw(frame: &mut Frame, area: Rect, state: &NowPlaying, theme: &Theme) {
             state.stream_url.clone(),
             Style::default().fg(muted),
         )),
+    ];
+    if let Some(view) = stats {
+        // FR-105: measured bytes-so-far and speed, never a fake buffer bar.
+        lines.push(Line::from(Span::styled(
+            format!(
+                "{:.0}% · {:.1} MiB/s",
+                view.progress() * 100.0,
+                view.speed_mib()
+            ),
+            Style::default().fg(muted),
+        )));
+    }
+    lines.extend([
         Line::default(),
         // Honest playback state (FR-59): harbour streams are Range-served, so
         // seeking works — but the external player owns position and does not
@@ -87,16 +109,20 @@ pub fn draw(frame: &mut Frame, area: Rect, state: &NowPlaying, theme: &Theme) {
         )),
         Line::default(),
         Line::from(Span::styled(HINT.to_string(), Style::default().fg(muted))),
-    ];
-    lines.push(Line::default());
+        Line::default(),
+    ]);
     frame.render_widget(Paragraph::new(lines), inner);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
+
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
+
+    use crate::core::types::{EngineStats, QueueItem};
 
     fn state() -> NowPlaying {
         NowPlaying {
@@ -107,11 +133,11 @@ mod tests {
         }
     }
 
-    fn render_text(state: &NowPlaying, theme: &Theme) -> String {
+    fn render_text(state: &NowPlaying, stats: Option<&ItemView>, theme: &Theme) -> String {
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).expect("test backend");
         terminal
-            .draw(|f| draw(f, f.area(), state, theme))
+            .draw(|f| draw(f, f.area(), state, stats, theme))
             .expect("draw must succeed");
         let buf = terminal.backend().buffer();
         (0..24)
@@ -122,7 +148,7 @@ mod tests {
     #[test]
     fn now_playing_renders_stream_and_honest_playback_state() {
         let theme = Theme::titanium();
-        let text = render_text(&state(), &theme);
+        let text = render_text(&state(), None, &theme);
         assert!(text.contains("now playing"), "panel title shown");
         assert!(text.contains("Frieren"), "item name shown");
         assert!(text.contains("127.0.0.1:4567"), "stream URL shown");
@@ -132,12 +158,42 @@ mod tests {
         assert!(text.contains("streaming"), "live stream stated");
         assert!(text.contains("seeking supported"), "Range seek stated");
         assert!(text.contains("position"), "player owns position");
+        assert!(
+            !text.contains("buffer"),
+            "must never fabricate a buffer percentage"
+        );
+    }
+
+    #[test]
+    fn now_playing_shows_measured_progress_and_speed() {
+        let mut item = QueueItem::new(
+            "abc".into(),
+            "Frieren".into(),
+            None,
+            None,
+            PathBuf::from("dl"),
+            0,
+        );
+        item.total_bytes = 1000;
+        let view = ItemView::new(
+            item,
+            Some(EngineStats {
+                progress: 0.4,
+                downloaded_bytes: 400,
+                total_bytes: 1000,
+                speed_mib: 2.1,
+                ..EngineStats::default()
+            }),
+        );
+        let text = render_text(&state(), Some(&view), &Theme::titanium());
+        assert!(text.contains("40%"), "measured progress, not a fake buffer");
+        assert!(text.contains("2.1 MiB/s"), "measured speed from ItemView");
     }
 
     #[test]
     fn now_playing_stream_dot_uses_the_online_glyph() {
         let theme = Theme::titanium();
-        let text = render_text(&state(), &theme);
+        let text = render_text(&state(), None, &theme);
         assert!(
             text.contains(theme.symbols.dot_online.as_ref()),
             "streaming status marked with the theme's online dot"

@@ -262,12 +262,15 @@ requiring private announces; GPU/ASCII-image rendering.
 - **FR-56** Duplicate detection: enqueuing an info_hash already in the ledger focuses the
   existing item instead of creating a duplicate.
 
-### 4.7 Watch mode — phase 6 (FR-57 … FR-61)
+### 4.7 Watch mode — phase 6 (FR-57 … FR-61, FR-104, FR-105)
 
-- **FR-57** `w` on a playable (seeding/complete) item opens the now-playing view and
-  streams the file through a librqbit HTTP Range-served stream endpoint to libmpv — the
-  external player is the renderer; harbour ships no render engine.
-- **FR-58** The stream endpoint serves HTTP Range requests so libmpv can seek; seeking
+- **FR-57** `w` on a playable item whose metadata has arrived — including an item that
+  is still downloading — opens the now-playing view and streams the file through a
+  librqbit HTTP Range-served stream endpoint to the external player (mpv/VLC). The
+  player is the renderer; harbour ships no render engine. Complete and seeding items
+  remain playable. Stopping watch never deletes sequential pieces that already
+  landed for a real queue item; only the watch-now (2.3) cache is stream-and-delete.
+- **FR-58** The stream endpoint serves HTTP Range requests so the player can seek; seeking
   works on complete and partially-downloaded-but-watchable files.
 - **FR-59** Playback progress and player state are reflected in the now-playing view;
   `q`/esc returns to the previous view and stops the stream cleanly.
@@ -275,6 +278,12 @@ requiring private announces; GPU/ASCII-image rendering.
   insufficient data shows an error banner instead of a broken stream.
 - **FR-61** The stream endpoint binds to loopback only (no external network exposure);
   verified by connecting from a non-loopback address and getting a refusal.
+- **FR-104** Watch launches only after a real HTTP `206 Partial Content` on the opening
+  Range request within a deadline. Timeout, transport failure, or a bare `200` (Range
+  not honored) is an error banner, never a player — no silent "unable to open MRL".
+- **FR-105** Now-playing shows measured download progress and speed from the live
+  `ItemView`. It never fabricates a buffer percentage. A slow-stream warning is
+  allowed only from measured speed versus the file's bitrate.
 
 ### 4.8 Code quality (FR-62 … FR-68)
 

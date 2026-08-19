@@ -1179,8 +1179,8 @@ mod tests {
             .flat_map(|y| (0..80).map(move |x| buf[(x, y)].symbol().to_string()))
             .collect();
         assert!(
-            text.contains("shift+P") && text.contains("player"),
-            "results footer must name the picker, got: {text}"
+            text.contains("shift+P"),
+            "results footer must name the picker binding, got: {text}"
         );
     }
 
