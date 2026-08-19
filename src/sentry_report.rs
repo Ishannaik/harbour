@@ -16,7 +16,10 @@ use sentry::{ClientInitGuard, ClientOptions, Level};
 use crate::core::paths::{ENV_SENTRY, ENV_SENTRY_DSN, ENV_SENTRY_ENV};
 
 /// Public DSN for org `ishan-rt`, project `harbour`. Not a secret.
-const DEFAULT_DSN: &str = "https://7ee8959645b1088d397de02881a9f945@o4508130310946816.ingest.de.sentry.io/4511935607210064";
+const DEFAULT_DSN: &str = concat!(
+    "https://7ee8959645b1088d397de02881a9f945@",
+    "o4508130310946816.ingest.de.sentry.io/4511935607210064",
+);
 
 const APP_TAG: &str = "harbour";
 
