@@ -411,6 +411,9 @@ impl Queue {
     /// Removes an item entirely. `delete_files` is destructive and is never a
     /// default anywhere above this layer; overlapping dirs and `missing`
     /// items force it false even when a caller passes true (FR-77/FR-79).
+    /// Even with `delete_files == false` the engine drops the torrent so a
+    /// forgotten in-progress download stops writing (FR-80); leftover pieces
+    /// in the download dir are shift+X.
     pub async fn remove(&mut self, id: &str, delete_files: bool) -> Result<(), EngineError> {
         if !self.items.iter().any(|i| i.id == id) {
             return Err(EngineError::NotFound);
@@ -1219,6 +1222,48 @@ mod tests {
             Some(false),
             "FR-79: missing items skip deletion silently"
         );
+    }
+
+    #[tokio::test]
+    async fn forgetting_a_partial_download_stops_the_engine_and_keeps_files() {
+        // Issue #82: `x` on a still-downloading torrent must stop the engine
+        // so it cannot keep writing, while leaving download-dir files alone
+        // (those are `shift+X` / #77).
+        let dir = std::env::temp_dir().join(format!(
+            "harbour-forget-partial-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&dir).expect("scratch download dir");
+        let leftover = dir.join("piece.bin");
+        std::fs::write(&leftover, b"10-percent").expect("partial file");
+
+        let (mut q, engine) = setup(0);
+        let mut add = input("a", 1);
+        add.dir = dir.clone();
+        q.add(add, 1).await;
+        engine.set_progress(&id_of("a"), 0.10, 4.2);
+        assert!(
+            engine.is_writing(&id_of("a")),
+            "a live 10% download is still writing"
+        );
+
+        q.remove(&id_of("a"), false).await.unwrap();
+
+        assert!(q.get(&id_of("a")).is_none(), "the ledger row is gone");
+        assert!(
+            !engine.is_writing(&id_of("a")),
+            "the engine must stop writing after forget"
+        );
+        assert!(!engine.contains(&id_of("a")));
+        assert!(
+            leftover.exists(),
+            "download-dir pieces stay — that is #77, not #82"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]

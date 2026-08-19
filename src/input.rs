@@ -65,6 +65,8 @@ pub enum Action {
     Remove,
     /// Forget the highlighted item and delete its files (`shift+X`, FR-76).
     RemoveAndDelete,
+    /// Open the clear-cache confirm (settings / shift+C, FR-80).
+    ClearCache,
     /// Confirm overlay: activate the highlighted Yes/No choice.
     ConfirmChoose,
     /// Confirm overlay: proceed regardless of highlight.
@@ -394,7 +396,8 @@ pub fn map_with_focus(key: KeyEvent, screen: Screen, flags: FocusFlags) -> Actio
             KeyCode::Char('P') => Action::OpenPlayerPicker,
             KeyCode::Char('S') => Action::OpenSettings,
             KeyCode::Char('o') | KeyCode::Enter => Action::OpenFolder,
-            KeyCode::Char('c') | KeyCode::Char('C') => Action::ClearCompleted,
+            KeyCode::Char('c') => Action::ClearCompleted,
+            KeyCode::Char('C') => Action::ClearCache,
             KeyCode::Char('r') => Action::Retry,
             KeyCode::Char('X') => Action::RemoveAndDelete,
             KeyCode::Char('x') if key.modifiers.contains(KeyModifiers::SHIFT) => {
@@ -770,6 +773,45 @@ mod tests {
                 false,
                 false,
                 true
+            ),
+            Action::ToggleHelp
+        );
+    }
+
+    #[test]
+    fn the_confirm_overlay_owns_its_keys_and_defaults_are_loud() {
+        let c = |code| {
+            map_with_focus(
+                key(code),
+                Screen::Downloads,
+                FocusFlags {
+                    confirm_open: true,
+                    ..FocusFlags::default()
+                },
+            )
+        };
+        assert_eq!(c(KeyCode::Char('y')), Action::ConfirmYes);
+        assert_eq!(c(KeyCode::Char('n')), Action::ConfirmCancel);
+        assert_eq!(c(KeyCode::Esc), Action::ConfirmCancel);
+        assert_eq!(c(KeyCode::Enter), Action::ConfirmChoose);
+        assert_eq!(c(KeyCode::Left), Action::ConfirmToggle);
+        assert_eq!(c(KeyCode::Right), Action::ConfirmToggle);
+        assert_eq!(c(KeyCode::Char('q')), Action::Quit);
+        assert_eq!(
+            c(KeyCode::Char('x')),
+            Action::None,
+            "forget must not leak through a cache confirm"
+        );
+        // Help still wins: a ? overlay on top of confirm dismisses help first.
+        assert_eq!(
+            map_with_focus(
+                key(KeyCode::Char('y')),
+                Screen::Downloads,
+                FocusFlags {
+                    help_open: true,
+                    confirm_open: true,
+                    ..FocusFlags::default()
+                },
             ),
             Action::ToggleHelp
         );
@@ -1174,6 +1216,8 @@ mod tests {
             (KeyCode::Char('x'), Action::Remove),
             (KeyCode::Char('X'), Action::RemoveAndDelete),
             (KeyCode::Char('s'), Action::ToggleSeeding),
+            (KeyCode::Char('c'), Action::ClearCompleted),
+            (KeyCode::Char('C'), Action::ClearCache),
             (KeyCode::Char('q'), Action::Quit),
             (KeyCode::Char('?'), Action::ToggleHelp),
             (KeyCode::Char('L'), Action::CopyBugReport),
@@ -1257,7 +1301,7 @@ mod tests {
         #[rustfmt::skip]
         let keys = [
             "enter", "↑ ↓", "← →", "d", "shift+D", "o", "tab",
-            "s", "p", "shift+P", "shift+L", "r", "x", "shift+X", "esc", "?", "q",
+            "s", "p", "shift+P", "shift+L", "r", "x", "shift+X", "c", "shift+C", "esc", "?", "q",
         ];
         for key in keys {
             assert!(
