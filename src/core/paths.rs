@@ -24,7 +24,7 @@ pub const ENV_MAX_DOWNLOADS: &str = "HARBOUR_MAX_DOWNLOADS";
 pub const ENV_SOURCE_TIMEOUT: &str = "HARBOUR_SOURCE_TIMEOUT";
 /// Env var: set to `0`/`off`/`false` to disable friend crash reports (FR-09a).
 pub const ENV_SENTRY: &str = "HARBOUR_SENTRY";
-/// Env var: override the baked Sentry DSN (tests / a fork).
+/// Env var: Sentry DSN. Unset or empty means crash reports are off (FR-09a).
 pub const ENV_SENTRY_DSN: &str = "HARBOUR_SENTRY_DSN";
 /// Env var: Sentry environment tag (default `friends`).
 pub const ENV_SENTRY_ENV: &str = "HARBOUR_SENTRY_ENV";
