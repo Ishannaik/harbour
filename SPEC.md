@@ -321,6 +321,19 @@ requiring private announces; GPU/ASCII-image rendering.
   decomposed by responsibility (splash / loop / watch / dispatch), boundaries drawn per
   concept, not to a line count; the FR-67 signal tightens after it lands.
 
+### 4.9 Forget and delete (FR-76 … FR-79)
+
+- **FR-76** `x` (forget) and `shift+X` (forget + delete files) both open a confirm overlay
+  naming the item and, for `shift+X`, the exact directory. Overlay defaults to the
+  non-destructive choice (No); `y` confirms, Enter activates the highlighted choice,
+  `n`/Esc cancels.
+- **FR-77** Delete-files is refused (error banner) when another ledger item shares that
+  dir (or an ancestor/descendant of it) or a watch session is streaming it. The item is
+  still forgotten; only file deletion is skipped.
+- **FR-78** Delete never removes the FR-37 `.torrent` cache entry
+  (`cache/torrents/<id>.torrent`).
+- **FR-79** Deleting a `missing` item skips file deletion silently.
+
 ## 5. UI/UX requirements (UR)
 
 - **UR-01** Views, in order: splash (animated logo draw-in + gradient sweep) → search
@@ -349,9 +362,10 @@ requiring private announces; GPU/ASCII-image rendering.
   crash, the terminal is restored to its prior state.
 - **UR-10** Keybinds (normative): Enter=search, `d`=download to default folder,
   `shift+d`=download to folder, `o`=change output folder, `p`=pause/stop seed,
-  `?`=help, `q`=quit, `w`=watch (phase 6). Screen navigation: `Tab` cycles
-  search ⇄ downloads; `←`/`→` switch the downloads tabs (Downloads/Seeding);
-  `esc` closes the help overlay. `?` shows exactly these.
+  `x`=forget selected download (files stay), `shift+X`=forget and delete files
+  (both confirm, FR-76), `?`=help, `q`=quit, `w`=watch (phase 6). Screen
+  navigation: `Tab` cycles search ⇄ downloads; `←`/`→` switch the downloads
+  tabs (Downloads/Seeding); `esc` closes the help overlay. `?` shows exactly these.
 - **UR-11** Every async operation shows state: streaming search shows shimmer + per-source
   dots; downloads show bars; empty results show an empty state ("no results — try another
   query"), never a blank pane.
@@ -467,9 +481,9 @@ requiring private announces; GPU/ASCII-image rendering.
 
 ## 9. Open questions
 
-- ~~**OQ-1**~~ *Resolved:* `p` is pause-only; deletion sits behind an explicit confirm.
-  librqbit offers both `pause`/`unpause` and `delete(delete_files)`, so this was a product
-  decision rather than a technical one.
+- ~~**OQ-1**~~ *Resolved:* `p` is pause-only; deletion sits behind an explicit confirm
+  (FR-76). librqbit offers both `pause`/`unpause` and `delete(delete_files)`, so this was
+  a product decision rather than a technical one.
 - **OQ-2** Result pagination: source responses can exceed one screen; whether blocks
   virtualize (scroll within a source's block) or paginate per source is undecided —
   ratatui buffer tests depend on this.
