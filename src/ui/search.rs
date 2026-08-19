@@ -645,7 +645,7 @@ fn draw_header(
     } else {
         ""
     };
-    let seed_label = format!("{:>5} ", format!("seed{seed_arrow}"));
+    let seed_label = format!("{:>COL_SEEDS_W$}", format!("seed{seed_arrow}"));
 
     let leech_arrow = if cur == SortColumn::Leechers {
         if ord == SortOrder::Asc { "▲" } else { "▼" }
@@ -903,22 +903,8 @@ fn result_line(
     let quality = quality_tag(&result.name).map(|tag| format!("[{tag}]"));
     let chip = format!("[{}]", chip_label(result.source));
     let size = fmt_size(result.size_bytes);
-    let seeds = if result.seeders > 0 {
-        result.seeders.to_string()
-    } else if result.source == SourceId::FitGirl || result.source == SourceId::SubsPlease {
-        "50+".into()
-    } else if result.source == SourceId::Eztv {
-        "10+".into()
-    } else {
-        "—".into()
-    };
-    let leeches = if result.leechers > 0 {
-        result.leechers.to_string()
-    } else if result.source == SourceId::FitGirl || result.source == SourceId::SubsPlease {
-        "10+".into()
-    } else {
-        "—".into()
-    };
+    let seeds = swarm_cell(result.seeders, reports_health(result.source));
+    let leeches = swarm_cell(result.leechers, reports_health(result.source));
     let name_width = width.saturating_sub(SUFFIX_TOTAL_W + 1);
     let name = marquee_text(&result.name, name_width, selected || hovered, clock());
     let pad = width.saturating_sub(name.chars().count() + SUFFIX_TOTAL_W);
@@ -929,11 +915,6 @@ fn result_line(
     };
     let seed_fg = if result.seeders > 0 {
         health_color(result.seeders, colors)
-    } else if result.source == SourceId::FitGirl
-        || result.source == SourceId::SubsPlease
-        || result.source == SourceId::Eztv
-    {
-        colors.success()
     } else {
         colors.dim()
     };
@@ -948,7 +929,7 @@ fn result_line(
         colors.dim()
     };
     let size_col = format!("{:<COL_SIZE_W$}", truncate(&size, COL_SIZE_W));
-    let seed_col = format!("{:>5} ", truncate(&seeds, COL_SEEDS_W - 1));
+    let seed_col = format!("{:>COL_SEEDS_W$}", truncate(&seeds, COL_SEEDS_W));
     let leech_col = format!("{:>4} ", truncate(&leeches, COL_LEECH_W - 1));
     let (quality_col, quality_fg) = match quality {
         Some(ref q) => (format!("{:<COL_QUAL_W$}", truncate(q, COL_QUAL_W)), chip_fg),
@@ -989,6 +970,26 @@ fn marquee_text(text: &str, width: usize, active: bool, elapsed: Duration) -> St
         overflow
     };
     text.chars().skip(offset).take(width).collect()
+}
+
+/// Whether this site's feed carries trustworthy swarm counts.
+///
+/// FitGirl is a blog and SubsPlease RSS has no seed fields — harbour-indexer
+/// sets `reports_health` false, so `seeders: 0` means *unknown*, not *dead*.
+fn reports_health(id: SourceId) -> bool {
+    !matches!(id, SourceId::FitGirl | SourceId::SubsPlease)
+}
+
+/// Format a seeder/leecher count (FR-24). Unknown health is an em dash, never
+/// a guessed swarm band. A source that reports health renders a real 0.
+fn swarm_cell(count: u32, reports_health: bool) -> String {
+    if count > 0 {
+        count.to_string()
+    } else if reports_health {
+        "0".into()
+    } else {
+        "—".into()
+    }
 }
 
 /// Health tier for a seeder/leecher count (FR-24): >=100 is a healthy swarm
@@ -1284,9 +1285,82 @@ mod tests {
             ..result("Dune")
         };
         let line = result_line(&dead, false, false, &state, &theme, 60);
-        // Both columns render the '—' dash (unreported health) in dim.
-        assert_eq!(span_color(&line, "—"), dim, "zero seeders is dim");
-        assert_eq!(span_color(&line, "—"), dim, "zero leechers is dim");
+        // YTS reports swarm health, so a real 0 is the digit 0, dim.
+        assert_eq!(span_color(&line, "0"), dim, "reported zero seeders is dim");
+    }
+
+    fn line_text(line: &Line) -> String {
+        line.spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
+    #[test]
+    fn unreported_health_is_an_em_dash_never_a_guessed_band() {
+        // FR-24: FitGirl/SubsPlease carry no swarm counts. seeders: 0 means
+        // unknown — an em dash — never a made-up 50+/10+ band.
+        let theme = Theme::titanium();
+        let state = SearchState::default();
+        for source in [SourceId::FitGirl, SourceId::SubsPlease] {
+            let row = TorrentResult {
+                seeders: 0,
+                leechers: 0,
+                source,
+                ..result("Cyberpunk 2077")
+            };
+            let text = line_text(&result_line(&row, false, false, &state, &theme, 80));
+            assert!(
+                !text.contains("50+") && !text.contains("10+"),
+                "{source:?} must not invent a swarm band: {text}"
+            );
+            assert!(
+                text.contains('—'),
+                "{source:?} unknown health is an em dash: {text}"
+            );
+            assert_eq!(
+                span_color(&result_line(&row, false, false, &state, &theme, 80), "—"),
+                theme.colors.dim().to_ratatui(),
+                "{source:?} unknown health is dim"
+            );
+        }
+    }
+
+    #[test]
+    fn reported_zero_swarm_renders_zero() {
+        let theme = Theme::titanium();
+        let state = SearchState::default();
+        for source in [SourceId::Yts, SourceId::Eztv] {
+            let row = TorrentResult {
+                seeders: 0,
+                leechers: 0,
+                source,
+                ..result("Dune")
+            };
+            let text = line_text(&result_line(&row, false, false, &state, &theme, 80));
+            assert!(
+                text.contains('0'),
+                "{source:?} reports health, so 0 is 0: {text}"
+            );
+            assert!(
+                !text.contains("10+") && !text.contains("50+") && !text.contains('—'),
+                "{source:?} must not guess a band or dash a real 0: {text}"
+            );
+        }
+    }
+
+    #[test]
+    fn six_digit_seed_counts_are_not_clipped() {
+        let theme = Theme::titanium();
+        let state = SearchState::default();
+        let row = TorrentResult {
+            seeders: 999_999,
+            leechers: 1,
+            ..result("Dune")
+        };
+        let text = line_text(&result_line(&row, false, false, &state, &theme, 80));
+        assert!(
+            text.contains("999999"),
+            "six visible seed digits must fit: {text}"
+        );
+        assert!(!text.contains('…'), "999999 must not clip: {text}");
     }
 
     #[test]

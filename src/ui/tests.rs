@@ -138,6 +138,55 @@ fn a_disabled_source_renders_dim_in_the_sidebar() {
 }
 
 #[test]
+fn search_snapshot_unreported_health_is_em_dash() {
+    // FitGirl and SubsPlease publish no swarm counts; the row must show an
+    // em dash, never a guessed 50+/10+ band (issue #70 / FR-24).
+    let mut state = SearchState {
+        query: "cyberpunk".into(),
+        results: vec![
+            TorrentResult {
+                info_hash: "fitgirl-row".into(),
+                name: "Cyberpunk 2077".into(),
+                size_bytes: 5 * 1024 * 1024 * 1024,
+                seeders: 0,
+                leechers: 0,
+                num_files: Some(1),
+                source: SourceId::FitGirl,
+                magnet: None,
+                added: Some(1_786_000_000),
+            },
+            TorrentResult {
+                info_hash: "subs-row".into(),
+                name: "Cyberpunk - 01".into(),
+                size_bytes: 734_003_200,
+                seeders: 0,
+                leechers: 0,
+                num_files: Some(1),
+                source: SourceId::SubsPlease,
+                magnet: None,
+                added: Some(1_786_000_000),
+            },
+        ],
+        selected: 0,
+        ..SearchState::default()
+    };
+    state.source_counts.insert(SourceId::FitGirl, 1);
+    state.source_counts.insert(SourceId::SubsPlease, 1);
+    let theme = Theme::titanium();
+    let out = render(|f| {
+        search::draw(f, f.area(), &state, &HashSet::new(), &theme, None);
+    });
+    assert!(out.contains("[fitgirl]"), "FitGirl row visible:\n{out}");
+    assert!(out.contains("[subs]"), "SubsPlease row visible:\n{out}");
+    assert!(!out.contains("50+"), "FitGirl must not invent 50+:\n{out}");
+    assert!(!out.contains("10+"), "must not invent 10+:\n{out}");
+    assert!(
+        out.contains('—'),
+        "SubsPlease unknown health is an em dash:\n{out}"
+    );
+}
+
+#[test]
 fn search_snapshot_empty_state() {
     let theme = Theme::titanium();
     let out = render(|f| {
