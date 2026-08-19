@@ -515,6 +515,9 @@ impl Engine for RqbitEngine {
         Box::pin(async move {
             self.handles().remove(id);
             let torrent = Self::id_of(id)?;
+            // FR-78: session.delete removes the torrent's payload, never
+            // cache/torrents/<id>.torrent — that file is how a later re-seed
+            // verifies local files without the swarm (FR-37).
             match self.session.delete(torrent, delete_files).await {
                 Ok(()) => Ok(()),
                 // Removing something already gone is success: the queue cleans
