@@ -102,6 +102,14 @@ impl FakeEngine {
         self.map().contains_key(id)
     }
 
+    /// True while the torrent is live and unfinished — the engine is still
+    /// writing pieces. Forget (`x`) must make this false without deleting files.
+    pub fn is_writing(&self, id: &str) -> bool {
+        self.map().get(id).is_some_and(|t| {
+            t.state == EngineItemState::Live && !t.finished && t.stats.progress < 1.0
+        })
+    }
+
     pub fn len(&self) -> usize {
         self.map().len()
     }
