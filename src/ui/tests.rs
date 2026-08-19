@@ -418,6 +418,7 @@ fn now_playing_snapshot() {
         name: "Frieren - 01 [1080p]".into(),
         stream_url: "http://127.0.0.1:4567/stream".into(),
         ephemeral: false,
+        subtitle: None,
     };
     let out = render(|f| {
         now_playing::draw(f, f.area(), &np, None, &theme);
