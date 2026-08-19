@@ -861,6 +861,7 @@ mod app_tests {
             episode_picker: crate::ui::EpisodePicker::default(),
             batch_picker: crate::ui::BatchPicker::default(),
             query_cache: HashMap::new(),
+            last_search_click: None,
             quitting: false,
         };
         (app, root)
