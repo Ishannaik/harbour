@@ -35,7 +35,10 @@ pub(crate) fn settings_activate(app: &mut App) {
 /// their labels say.
 fn settings_toggle_row(app: &mut App) {
     match app.settings.selected {
-        3 => app.config.seed_by_default = !app.config.seed_by_default,
+        3 => {
+            app.config.seed_by_default = !app.config.seed_by_default;
+            app.queue.set_seed_by_default(app.config.seed_by_default);
+        }
         9 => {
             app.config.use_alt_rates = !app.config.use_alt_rates;
             apply_rate_limits(app);
@@ -304,18 +307,7 @@ fn settings_toggle_source(app: &mut App, id: SourceId) {
     // Deterministic config output: the persisted list is always sorted.
     app.config.disabled_sources.sort_by_key(|s| s.as_str());
     save_settings(app);
-    refresh_search_after_sources(app);
-}
-
-/// Re-runs the current search (or browse) so results reflect the new
-/// enabled-source set — a settings toggle and the sidebar toggle behave
-/// identically. No-op when nothing has been searched yet.
-fn refresh_search_after_sources(app: &mut App) {
-    if !app.state.search.searching && app.partial.is_empty() && app.state.search.query.is_empty() {
-        return;
-    }
-    let query = app.state.search.query.clone();
-    app.start_search(query);
+    app.apply_source_filter();
 }
 
 /// Persists `app.config` through the existing store, then re-derives the

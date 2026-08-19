@@ -74,7 +74,7 @@ fn search_snapshot_idle_with_results() {
     let state = search_state("dune");
     let theme = Theme::titanium();
     let out = render(|f| {
-        search::draw(f, f.area(), &state, &HashSet::new(), &theme);
+        search::draw(f, f.area(), &state, &HashSet::new(), &theme, None);
     });
     // "dune" hits the movie catalog: real title in the rows, sidebar visible.
     assert!(out.contains("harbour — search") || out.contains("search"));
@@ -90,7 +90,7 @@ fn the_results_pane_announces_how_to_get_back_to_typing() {
     state.focus = false; // Enter moved the keyboard to the results pane
     let theme = Theme::titanium();
     let out = render(|f| {
-        search::draw(f, f.area(), &state, &HashSet::new(), &theme);
+        search::draw(f, f.area(), &state, &HashSet::new(), &theme, None);
     });
     assert!(
         out.contains("results focused"),
@@ -111,7 +111,7 @@ fn a_disabled_source_renders_dim_in_the_sidebar() {
     let backend = TestBackend::new(W, H);
     let mut terminal = Terminal::new(backend).expect("test backend");
     terminal
-        .draw(|f| search::draw(f, f.area(), &state, &disabled, &theme))
+        .draw(|f| search::draw(f, f.area(), &state, &disabled, &theme, None))
         .expect("draw");
     let buf = terminal.backend().buffer();
     let dim = theme.colors.dim().to_ratatui();
@@ -133,6 +133,7 @@ fn search_snapshot_empty_state() {
             &SearchState::default(),
             &HashSet::new(),
             &theme,
+            None,
         );
     });
     assert!(
@@ -148,7 +149,7 @@ fn downloads_snapshot_active_tab() {
     let state = downloads_state();
     let theme = Theme::titanium();
     let out = render(|f| {
-        downloads::draw(f, f.area(), &state, &theme);
+        downloads::draw(f, f.area(), &state, &theme, None);
     });
     assert!(out.contains("Oppenheimer"));
     assert!(out.contains("downloading") || out.contains("[downloading]"));
@@ -163,7 +164,7 @@ fn downloads_snapshot_seeding_tab() {
     state.show_seeding = true;
     let theme = Theme::titanium();
     let out = render(|f| {
-        downloads::draw(f, f.area(), &state, &theme);
+        downloads::draw(f, f.area(), &state, &theme, None);
     });
     assert!(out.contains("Frieren"));
     assert!(
@@ -254,11 +255,63 @@ fn selected_row_uses_selected_bg() {
     let backend = TestBackend::new(W, H);
     let mut terminal = Terminal::new(backend).expect("test backend");
     terminal
-        .draw(|f| search::draw(f, f.area(), &state, &HashSet::new(), &theme))
+        .draw(|f| search::draw(f, f.area(), &state, &HashSet::new(), &theme, None))
         .expect("draw");
     let buf = terminal.backend().buffer();
     let selected_bg = theme.colors.selected_bg().to_ratatui();
     // Scan for any cell with the selection background (the selected row).
     let found = (0..H).any(|y| (0..W).any(|x| buf[(x, y)].bg == selected_bg));
     assert!(found, "selected row must render on selectedBg");
+}
+
+#[test]
+fn hovered_sidebar_source_renders_highlighted() {
+    let theme = Theme::titanium();
+    let state = search_state("dune");
+    let backend = TestBackend::new(W, H);
+    let mut terminal = Terminal::new(backend).expect("test backend");
+    // Row 3 is GamesHub in the sidebar (panel inner y=1 + offset 2 = row 3)
+    terminal
+        .draw(|f| search::draw(f, f.area(), &state, &HashSet::new(), &theme, Some((5, 3))))
+        .expect("draw");
+    let buf = terminal.backend().buffer();
+    let selected_bg = theme.colors.selected_bg().to_ratatui();
+    let found_on_row = (1..20).any(|x| buf[(x, 3)].bg == selected_bg);
+    assert!(
+        found_on_row,
+        "hovered sidebar source row must have selectedBg"
+    );
+}
+
+#[test]
+fn hovered_search_result_renders_highlighted() {
+    let theme = Theme::titanium();
+    let mut state = search_state("dune");
+    state.selected = 0;
+    let backend = TestBackend::new(W, H);
+    let mut terminal = Terminal::new(backend).expect("test backend");
+    // Result row 1 is below search bar (y=1..3) + header (y=4) -> row 0 is at y=5, row 1 is at y=6
+    terminal
+        .draw(|f| search::draw(f, f.area(), &state, &HashSet::new(), &theme, Some((35, 6))))
+        .expect("draw");
+    let buf = terminal.backend().buffer();
+    let selected_bg = theme.colors.selected_bg().to_ratatui();
+    let found_on_hovered_row = (30..70).any(|x| buf[(x, 6)].bg == selected_bg);
+    assert!(
+        found_on_hovered_row,
+        "hovered search result row must have selectedBg"
+    );
+}
+
+#[test]
+fn error_banner_dismiss_button_renders() {
+    let state = AppState {
+        error_banner: Some("Something went wrong".into()),
+        ..AppState::default()
+    };
+    let theme = Theme::titanium();
+    let out = render(|f| {
+        status::draw(f, f.area(), Screen::Search, &state, &theme, "⠋");
+    });
+    assert!(out.contains("[✕ dismiss]"));
 }

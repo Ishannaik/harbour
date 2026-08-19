@@ -237,6 +237,7 @@ M0 ships when every item above holds in a live session — not when the code com
 | Cover art / inline images | Terminal support for sixel/halfblocks is uneven; polish, not parity; adds a fetch/cache pipeline | Spike in phase 7 |
 | Headless daemon modes (`watch`/`serve`/`files`/`attach`, `--daemon`) | Power-user surface; TUI is the product; requires a stable engine API that only exists after M0 | Spike in phase 7 |
 | Built-in updater | Distribution story unresolved (cargo install vs. packaged binaries); updater is a supply-chain surface, not a parity feature | No date |
+| README Visual Overhaul & Terminal Demos | Add ASCII art header, VHS/SVG demo GIF of search & download flow, keyboard shortcut matrix, feature bento/cards, truecolor Tokyo Night theme preview, one-liner quickstart | Next polish slice |
 
 ## 6. Suggested parallelization
 

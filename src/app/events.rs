@@ -9,7 +9,8 @@ use crate::ui::Screen;
 use crate::ui::player::PickerMode;
 
 use super::actions::{
-    download_selected, move_selection, remove_selected, retry_selected, toggle_pause,
+    download_selected, enqueue_magnet, enqueue_torrent, move_selection, move_selection_to,
+    remove_selected, retry_selected, toggle_pause,
 };
 use super::settings::{
     cancel_folder_prompt, commit_folder_prompt, open_folder_prompt, settings_activate,
@@ -19,36 +20,159 @@ use super::watch::{
 };
 use super::{App, mouse_view_area};
 
+async fn handle_mouse_event(app: &mut App, mouse: crossterm::event::MouseEvent) {
+    // Track mouse position on any mouse movement or interaction.
+    app.state.mouse_pos = Some((mouse.column, mouse.row));
+
+    // Handle mouse wheel scrolling (scrolls by a page of ~8 rows for fast browsing):
+    if app.episode_picker.open {
+        let (term_w, term_h) = crossterm::terminal::size().unwrap_or((80, 24));
+        let area = ratatui::layout::Rect::new(0, 0, term_w, term_h);
+        if mouse.kind == MouseEventKind::ScrollDown {
+            app.episode_picker.select_next();
+            return;
+        }
+        if mouse.kind == MouseEventKind::ScrollUp {
+            app.episode_picker.select_prev();
+            return;
+        }
+        if mouse.kind == MouseEventKind::Down(MouseButton::Left) {
+            if let Some(ep_idx) = crate::ui::episode_picker::episode_at_mouse(
+                &app.episode_picker,
+                area,
+                mouse.column,
+                mouse.row,
+            ) {
+                apply_action(app, Action::EpisodeChoose(Some(ep_idx))).await;
+            } else {
+                app.episode_picker.open = false;
+            }
+        }
+        return;
+    }
+
+    if app.batch_picker.open {
+        let (term_w, term_h) = crossterm::terminal::size().unwrap_or((80, 24));
+        let area = ratatui::layout::Rect::new(0, 0, term_w, term_h);
+        if mouse.kind == MouseEventKind::ScrollDown {
+            app.batch_picker.select_next();
+            return;
+        }
+        if mouse.kind == MouseEventKind::ScrollUp {
+            app.batch_picker.select_prev();
+            return;
+        }
+        if mouse.kind == MouseEventKind::Down(MouseButton::Left) {
+            if let Some(file_idx) = crate::ui::batch_picker::file_at_mouse(
+                &app.batch_picker,
+                area,
+                mouse.column,
+                mouse.row,
+            ) {
+                app.batch_picker.selected = file_idx;
+                app.batch_picker.toggle_index(file_idx);
+            } else {
+                app.batch_picker.open = false;
+            }
+        }
+        return;
+    }
+
+    if mouse.kind == MouseEventKind::ScrollDown {
+        if app.settings_open {
+            apply_action(app, Action::SettingsMoveDown).await;
+        } else {
+            apply_action(app, Action::PageDown).await;
+        }
+        return;
+    }
+    if mouse.kind == MouseEventKind::ScrollUp {
+        if app.settings_open {
+            apply_action(app, Action::SettingsMoveUp).await;
+        } else {
+            apply_action(app, Action::PageUp).await;
+        }
+        return;
+    }
+
+    if app.settings_open {
+        let (term_w, term_h) = crossterm::terminal::size().unwrap_or((80, 24));
+        let area = ratatui::layout::Rect::new(0, 0, term_w, term_h);
+        let panel = crate::ui::settings::panel_rect(area, crate::ui::settings::row_count());
+        let in_panel = mouse.column >= panel.x
+            && mouse.column < panel.right()
+            && mouse.row >= panel.y
+            && mouse.row < panel.bottom();
+
+        if !in_panel {
+            if mouse.kind == MouseEventKind::Down(MouseButton::Left) {
+                app.settings_open = false;
+            }
+            return;
+        }
+
+        // Check if clicking [✕] button on top border:
+        if mouse.row == panel.y && mouse.column >= panel.right().saturating_sub(6) {
+            if mouse.kind == MouseEventKind::Down(MouseButton::Left) {
+                app.settings_open = false;
+            }
+            return;
+        }
+
+        // Row hit test:
+        let rel_row = mouse.row.saturating_sub(panel.y + 1);
+        let row_idx = rel_row.saturating_sub(1) as usize;
+        if rel_row > 0 && row_idx < crate::ui::settings::row_count() {
+            app.settings.selected = row_idx;
+            if mouse.kind == MouseEventKind::Down(MouseButton::Left) {
+                settings_activate(app);
+            }
+        }
+        return;
+    }
+    if app.state.folder_prompt.open {
+        return;
+    }
+    if mouse.kind != MouseEventKind::Down(MouseButton::Left) {
+        return;
+    }
+    // Dismiss error banner if clicked directly or on its [✕ dismiss] button
+    if app.state.error_banner.is_some() {
+        let (_, term_height) = crossterm::terminal::size().unwrap_or((0, 0));
+        let banner_h = super::banner_height(app.state.error_banner.as_deref());
+        let banner_top = term_height.saturating_sub(banner_h + 1);
+        let banner_bottom = term_height.saturating_sub(1);
+        if mouse.row >= banner_top && mouse.row < banner_bottom {
+            app.state.error_banner = None;
+            return;
+        }
+    }
+
+    // Build the action first: `mouse_to_action` borrows `app.state`
+    // only to read the screen, and the awaited apply takes `app`
+    // mutably — the two cannot overlap.
+    let action = crate::input::mouse_to_action(
+        app.state.screen,
+        mouse_view_area(app),
+        mouse.column,
+        mouse.row,
+        app.help_open,
+        app.state.downloads.show_seeding,
+    );
+    apply_action(app, action).await;
+}
+
 /// Turns one terminal event into state changes.
 pub(crate) async fn handle_event(app: &mut App, event: Event) {
     // A left-button press is a click. Releases, drags, scrolls, and other
     // buttons carry no selection intent; ignoring them keeps a scroll wheel
     // from firing row selections while the user browses.
     if let Event::Mouse(mouse) = event {
-        // The settings overlay is modal: while it is up, a click must not
-        // reach the screen underneath (the overlay is painted over it).
-        if app.settings_open {
-            return;
-        }
-        // The folder prompt (FR-29/40) is modal the same way: its panel is
-        // painted over the screen, so a click behind it must not select rows.
-        if app.state.folder_prompt.open {
-            return;
-        }
-        if mouse.kind == MouseEventKind::Down(MouseButton::Left) {
-            // Build the action first: `mouse_to_action` borrows `app.state`
-            // only to read the screen, and the awaited apply takes `app`
-            // mutably — the two cannot overlap.
-            let action = crate::input::mouse_to_action(
-                app.state.screen,
-                mouse_view_area(app),
-                mouse.column,
-                mouse.row,
-                app.help_open,
-                app.state.downloads.show_seeding,
-            );
-            apply_action(app, action).await;
-        }
+        handle_mouse_event(app, mouse).await;
+        return;
+    }
+    if let Event::Paste(text) = event {
+        open_or_type_paste(app, &text).await;
         return;
     }
     let Event::Key(key) = event else {
@@ -56,9 +180,9 @@ pub(crate) async fn handle_event(app: &mut App, event: Event) {
         // size on every draw.
         return;
     };
-    // Windows reports both press and release; acting on both would double
-    // every keystroke.
-    if key.kind != crossterm::event::KeyEventKind::Press {
+    // Ignore key release events (Windows reports both press and release);
+    // keep Press and Repeat.
+    if key.kind == crossterm::event::KeyEventKind::Release {
         return;
     }
 
@@ -69,6 +193,8 @@ pub(crate) async fn handle_event(app: &mut App, event: Event) {
             help_open: app.help_open,
             picker_open: app.picker.open,
             picker_custom: app.picker.mode == PickerMode::Custom,
+            episode_picker_open: app.episode_picker.open,
+            batch_picker_open: app.batch_picker.open,
             settings_open: app.settings_open,
             folder_open: app.state.folder_prompt.open,
             search_focus: app.state.search.focus,
@@ -82,7 +208,15 @@ async fn apply_action(app: &mut App, action: Action) {
     match action {
         Action::None => {}
         Action::Quit => app.quitting = true,
-        Action::Dismiss => app.state.screen = Screen::Search,
+        Action::Dismiss => {
+            app.state.screen = Screen::Search;
+            if app.state.search.results.is_empty()
+                && !app.state.search.searching
+                && app.state.search.query.is_empty()
+            {
+                app.start_search(String::new());
+            }
+        }
         Action::ToggleHelp => app.help_open = !app.help_open,
         Action::SwitchScreen => {
             app.state.screen = match app.state.screen {
@@ -113,6 +247,16 @@ async fn apply_action(app: &mut App, action: Action) {
         }
         Action::MoveUp => move_selection(app, -1),
         Action::MoveDown => move_selection(app, 1),
+        Action::PageUp => {
+            let page = super::actions::page_size() as isize;
+            move_selection(app, -page);
+        }
+        Action::PageDown => {
+            let page = super::actions::page_size() as isize;
+            move_selection(app, page);
+        }
+        Action::MoveHome => move_selection_to(app, 0),
+        Action::MoveEnd => move_selection_to(app, usize::MAX),
         Action::Backspace => {
             app.state.search.query.pop();
         }
@@ -146,11 +290,26 @@ async fn apply_action(app: &mut App, action: Action) {
             }
         }
         Action::Submit => {
-            let query = app.state.search.query.clone();
-            app.start_search(query);
-            // Enter hands the keyboard to the results pane: plain keys act
-            // on the selected row from here (d/w/s/?).
-            app.state.search.focus = false;
+            if app.state.search.focus {
+                let query = app.state.search.query.clone();
+                if query.trim().is_empty() && !app.state.search.results.is_empty() {
+                    match app.state.screen {
+                        Screen::Search => start_watch_ephemeral(app).await,
+                        _ => start_watch(app).await,
+                    }
+                } else if try_open_dropped(app, &query).await {
+                    app.state.search.query.clear();
+                    app.state.search.focus = false;
+                } else {
+                    app.start_search(query);
+                    app.state.search.focus = false;
+                }
+            } else {
+                match app.state.screen {
+                    Screen::Search => start_watch_ephemeral(app).await,
+                    _ => start_watch(app).await,
+                }
+            }
         }
         Action::FocusSearchInput => {
             app.state.search.focus = true;
@@ -182,6 +341,9 @@ async fn apply_action(app: &mut App, action: Action) {
         Action::TogglePause => toggle_pause(app).await,
         Action::Retry => retry_selected(app).await,
         Action::Remove => remove_selected(app).await,
+        Action::Sort(col) => {
+            app.state.search.toggle_sort(col);
+        }
         Action::Watch => match app.state.screen {
             // Watch-now (2.3): stream the selected result without
             // downloading it to the library.
@@ -219,23 +381,12 @@ async fn apply_action(app: &mut App, action: Action) {
         }
         Action::PlayerChoose => choose_player(app).await,
         Action::ToggleSource(id) => {
-            // Flip the runtime bit; `insert` reports whether the id was new.
-            if !app.disabled_sources.insert(id) {
+            if app.disabled_sources.contains(&id) {
                 app.disabled_sources.remove(&id);
+            } else {
+                app.disabled_sources.insert(id);
             }
-            // Persist the same choice — the config is the fallback on boot.
-            app.config.disabled_sources = app.disabled_sources.iter().copied().collect();
-            if let Err(err) = app.store.save_config(&app.config) {
-                app.warn(format!("could not save source toggle: {err}"));
-            }
-            // Drop the disabled source's rows from the visible list right
-            // away, then re-run the current query (or the browse) so enabled
-            // sources answer fresh and the just-disabled one is not queried.
-            app.partial
-                .retain(|source, _| !app.disabled_sources.contains(source));
-            app.remerge();
-            let query = app.state.search.query.clone();
-            app.start_search(query);
+            app.apply_source_filter();
         }
         Action::OpenSettings => {
             app.settings_open = !app.settings_open;
@@ -269,5 +420,78 @@ async fn apply_action(app: &mut App, action: Action) {
                 app.settings.edit_buffer.pop();
             }
         }
+        Action::EpisodeUp => app.episode_picker.select_prev(),
+        Action::EpisodeDown => app.episode_picker.select_next(),
+        Action::EpisodePageUp => app.episode_picker.page_up(),
+        Action::EpisodePageDown => app.episode_picker.page_down(),
+        Action::EpisodeChoose(opt_idx) => super::watch::choose_episode(app, opt_idx).await,
+        Action::EpisodeClose => {
+            app.episode_picker.open = false;
+        }
+        Action::BatchUp => app.batch_picker.select_prev(),
+        Action::BatchDown => app.batch_picker.select_next(),
+        Action::BatchPageUp => app.batch_picker.page_up(),
+        Action::BatchPageDown => app.batch_picker.page_down(),
+        Action::BatchToggle(opt_idx) => {
+            if let Some(idx) = opt_idx {
+                app.batch_picker.toggle_index(idx);
+            } else {
+                app.batch_picker.toggle_selected();
+            }
+        }
+        Action::BatchSelectAll => app.batch_picker.select_all(),
+        Action::BatchUnselectAll => app.batch_picker.unselect_all(),
+        Action::BatchInvert => app.batch_picker.invert_selection(),
+        Action::BatchConfirm => super::actions::confirm_batch_download(app).await,
+        Action::BatchClose => {
+            app.batch_picker.open = false;
+        }
+        Action::ClearCompleted => super::actions::clear_completed(app).await,
+        Action::OpenFolder => super::actions::open_selected_item(app),
     }
+}
+
+/// Strip quotes / `file://` that Windows Terminal puts on a dropped path.
+fn normalize_dropped(raw: &str) -> String {
+    let s = raw.trim().trim_matches('"').trim_matches('\'');
+    let s = s.strip_prefix("file://").unwrap_or(s);
+    // Windows: file:///C:/foo → C:/foo
+    if let Some(rest) = s.strip_prefix('/')
+        && rest.len() >= 2
+        && rest.as_bytes()[1] == b':'
+    {
+        return rest.to_string();
+    }
+    s.to_string()
+}
+
+/// True if `raw` was a magnet, infohash, or existing `.torrent` and we started it.
+async fn try_open_dropped(app: &mut App, raw: &str) -> bool {
+    let s = normalize_dropped(raw);
+    if s.is_empty() {
+        return false;
+    }
+    if s.to_ascii_lowercase().starts_with("magnet:?") {
+        enqueue_magnet(app, &s).await;
+        return true;
+    }
+    if let Some(hash) = crate::core::magnet::normalize_info_hash(&s) {
+        let magnet = crate::core::magnet::build_magnet(&hash, &hash);
+        enqueue_magnet(app, &magnet).await;
+        return true;
+    }
+    let path = std::path::Path::new(&s);
+    if s.to_ascii_lowercase().ends_with(".torrent") && path.is_file() {
+        enqueue_torrent(app, path).await;
+        return true;
+    }
+    false
+}
+
+async fn open_or_type_paste(app: &mut App, text: &str) {
+    if try_open_dropped(app, text).await {
+        return;
+    }
+    app.state.search.focus = true;
+    app.state.search.query.push_str(text.trim());
 }

@@ -18,6 +18,7 @@ mod app;
 mod cli;
 mod core;
 mod engine;
+mod ensure_indexer;
 mod fake;
 mod input;
 mod persist;
@@ -151,7 +152,8 @@ async fn run_tui(initial: InitialAction) -> ExitCode {
     // Live theme reload (docs/theming.md §Custom themes): edits to the active
     // theme file under the themes dir swap in at the next render frame.
     theme_watch::spawn_theme_watcher(theme.clone());
-    match app::run(theme, initial).await {
+    ensure_indexer::ensure_local_indexer().await;
+    let code = match app::run(theme, initial).await {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
             // The terminal has already been restored by the guard at this point,
@@ -160,7 +162,9 @@ async fn run_tui(initial: InitialAction) -> ExitCode {
             eprintln!("harbour: {err}");
             ExitCode::FAILURE
         }
-    }
+    };
+    ensure_indexer::stop_local_indexer().await;
+    code
 }
 
 #[cfg(test)]

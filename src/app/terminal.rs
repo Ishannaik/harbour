@@ -5,7 +5,9 @@
 use std::io;
 
 use crossterm::cursor::{Hide, Show};
-use crossterm::event::{DisableMouseCapture, EnableMouseCapture};
+use crossterm::event::{
+    DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
+};
 use crossterm::execute;
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
@@ -24,7 +26,13 @@ impl TerminalGuard {
     /// half-set-up terminal is never leaked to the caller.
     pub(crate) fn enter() -> io::Result<Self> {
         enable_raw_mode()?;
-        if let Err(err) = execute!(io::stdout(), EnterAlternateScreen, Hide, EnableMouseCapture) {
+        if let Err(err) = execute!(
+            io::stdout(),
+            EnterAlternateScreen,
+            Hide,
+            EnableMouseCapture,
+            EnableBracketedPaste
+        ) {
             let _ = disable_raw_mode();
             return Err(err);
         }
@@ -40,7 +48,8 @@ impl Drop for TerminalGuard {
             io::stdout(),
             Show,
             LeaveAlternateScreen,
-            DisableMouseCapture
+            DisableMouseCapture,
+            DisableBracketedPaste
         );
         let _ = disable_raw_mode();
     }

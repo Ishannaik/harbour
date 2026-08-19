@@ -12,6 +12,22 @@ use crate::ui::Screen;
 use super::{App, now_ms};
 
 pub(crate) fn move_selection(app: &mut App, delta: isize) {
+    if app.state.screen == Screen::Search {
+        // If focus was on the search input and user moves Down, blur search and focus results
+        if app.state.search.focus && delta > 0 {
+            if !app.state.search.results.is_empty() {
+                app.state.search.focus = false;
+                app.state.search.selected = 0;
+            }
+            return;
+        }
+        // If focus is on the results list at top and user moves Up, focus back to search input
+        if !app.state.search.focus && delta < 0 && app.state.search.selected == 0 {
+            app.state.search.focus = true;
+            return;
+        }
+    }
+
     let (len, selected) = match app.state.screen {
         // The downloads selection indexes the *visible* tab's rows — the
         // view renders only the active or seeding subset, so a raw items
@@ -26,9 +42,34 @@ pub(crate) fn move_selection(app: &mut App, delta: isize) {
         *selected = 0;
         return;
     }
-    // Wrap at both ends: a list you cannot leave by holding a key feels stuck.
-    let next = (*selected as isize + delta).rem_euclid(len as isize);
+    // Clamp at list boundaries: scrolling stops at top and bottom rather than looping.
+    let cur = *selected as isize;
+    let next = (cur + delta).clamp(0, (len as isize).saturating_sub(1));
     *selected = next as usize;
+}
+
+pub(crate) fn move_selection_to(app: &mut App, target: usize) {
+    if app.state.screen == Screen::Search && app.state.search.focus {
+        app.state.search.focus = false;
+    }
+    let (len, selected) = match app.state.screen {
+        Screen::Downloads => (app.visible_items().len(), &mut app.state.downloads.selected),
+        _ => (
+            app.state.search.results.len(),
+            &mut app.state.search.selected,
+        ),
+    };
+    if len == 0 {
+        *selected = 0;
+        return;
+    }
+    *selected = target.min(len.saturating_sub(1));
+}
+
+/// Approximate number of visible rows in the main results pane.
+pub(crate) fn page_size() -> usize {
+    let (_, term_h) = crossterm::terminal::size().unwrap_or((80, 24));
+    (term_h as usize).saturating_sub(8).max(5)
 }
 
 pub(crate) async fn download_selected(app: &mut App) {
@@ -60,6 +101,19 @@ pub(crate) async fn download_selected(app: &mut App) {
     let id = crate::core::magnet::info_hash_from_magnet(&magnet)
         .unwrap_or_else(|| result.info_hash.clone());
 
+    // Check if torrent contains multiple files (e.g. season pack / batch release)
+    let video_files = app.queue.engine().list_video_files(&id).await;
+    if video_files.len() > 1 {
+        app.batch_picker.open_for(
+            id,
+            result.name.clone(),
+            Some(magnet),
+            app.config.download_dir.clone(),
+            video_files,
+        );
+        return;
+    }
+
     let outcome = app
         .queue
         .add(
@@ -71,6 +125,7 @@ pub(crate) async fn download_selected(app: &mut App) {
                 bytes: None,
                 dir: app.config.download_dir.clone(),
                 size_bytes: result.size_bytes,
+                only_files: None,
             },
             now_ms(),
         )
@@ -94,8 +149,67 @@ pub(crate) async fn download_selected(app: &mut App) {
     app.refresh_downloads();
 }
 
+/// Confirms selection in batch picker and begins downloading chosen files.
+pub(crate) async fn confirm_batch_download(app: &mut App) {
+    if !app.batch_picker.open {
+        return;
+    }
+    let id = app.batch_picker.torrent_id.clone();
+    let name = app.batch_picker.torrent_name.clone();
+    let magnet = app.batch_picker.magnet.clone();
+    let dir = app.batch_picker.dir.clone();
+    let checked = app.batch_picker.checked.clone();
+    let size = app.batch_picker.selected_size_bytes();
+    let total_files = app.batch_picker.files.len();
+    app.batch_picker.open = false;
+
+    if checked.is_empty() {
+        app.warn("no files selected to download");
+        return;
+    }
+
+    let only_files = if checked.len() < total_files {
+        Some(checked)
+    } else {
+        None
+    };
+
+    let outcome = app
+        .queue
+        .add(
+            AddInput {
+                id,
+                name: name.clone(),
+                source: None,
+                magnet,
+                bytes: None,
+                dir,
+                size_bytes: size,
+                only_files,
+            },
+            now_ms(),
+        )
+        .await;
+
+    match outcome {
+        AddOutcome::Duplicate => {
+            app.warn(format!("{name} is already in your downloads"));
+            app.state.screen = Screen::Downloads;
+        }
+        AddOutcome::Started | AddOutcome::Retried => {
+            app.state.error_banner = None;
+            app.state.screen = Screen::Downloads;
+        }
+        AddOutcome::Queued => app.warn(format!(
+            "{name}: queued — starts when a download slot frees"
+        )),
+    }
+    persist(app);
+    app.refresh_downloads();
+}
+
 /// Asks the owning source for a magnet it did not supply at search time.
-async fn resolve_magnet(app: &App, result: &TorrentResult) -> Option<String> {
+pub(crate) async fn resolve_magnet(app: &App, result: &TorrentResult) -> Option<String> {
     // The registry is a single `HttpSource`; a result's `source` is the *site*
     // it came from (the indexer tags rows with it), so match by id when
     // possible and otherwise fall back to the lone source — the indexer.
@@ -155,6 +269,7 @@ pub(crate) async fn retry_selected(app: &mut App) {
                 bytes: item.bytes.clone(),
                 dir: item.dir.clone(),
                 size_bytes: item.total_bytes,
+                only_files: item.only_files.clone(),
             },
             item.added_at_epoch_ms,
         )
@@ -180,6 +295,20 @@ pub(crate) async fn remove_selected(app: &mut App) {
 fn persist(app: &mut App) {
     if let Err(err) = app.store.save_ledger(app.queue.items()) {
         app.warn(format!("could not save your downloads list: {err}"));
+    }
+}
+
+/// Copy per-site dots off a batch Indexer answer (FR-15/18).
+fn paint_indexer_site_dots(app: &mut App, source: crate::core::types::SourceId) {
+    if source != crate::core::types::SourceId::Indexer {
+        return;
+    }
+    for (site, (status, count)) in app.search.reported_source_health() {
+        if status == SourceStatus::Unknown {
+            continue;
+        }
+        app.state.search.source_health.insert(site, status);
+        app.state.search.source_counts.insert(site, count as usize);
     }
 }
 
@@ -210,29 +339,26 @@ pub(crate) fn apply_event(app: &mut App, event: EngineEvent) {
                     SourceStatus::Online
                 },
             );
-            // The indexer answers with a per-site report (FR-15/18): fold its
-            // statuses into the ten sidebar dots. Only sites the indexer
-            // actually ran appear — anything it did not report keeps whatever
-            // dot it had, and a report never overwrites with Unknown.
-            for (site, (status, count)) in app.search.reported_source_health() {
-                if status != SourceStatus::Unknown {
-                    app.state.search.source_health.insert(site, status);
-                    app.state.search.source_counts.insert(site, count as usize);
-                }
-            }
+            // Batch `/search` answers as the Indexer proxy: fold the report
+            // for this query only. Per-site stream lines must not replay
+            // leftover Empty/Offline from the previous search.
+            paint_indexer_site_dots(app, source);
             app.state.search.searching = still_searching(app);
         }
         EngineEvent::SourceResults { source, results } => {
             // A disabled source's late answer is dropped, never merged: the
-            // toggle already re-ran the query, so its batch has no place here.
+            // toggle already filtered it, so its batch has no place here.
             if !app.disabled_sources.contains(&source) {
-                app.partial.insert(source, results);
-                app.remerge();
+                merge_source_results(app, source, results);
             }
         }
         EngineEvent::SourceFailed {
             source, message, ..
         } => {
+            log_to_file(&format!(
+                "[SOURCE FAILED] source={:?} error='{}'",
+                source, message
+            ));
             app.state
                 .search
                 .source_health
@@ -252,7 +378,22 @@ pub(crate) fn apply_event(app: &mut App, event: EngineEvent) {
                 app.warn(format!("every source is unreachable — {message}"));
             }
         }
-        EngineEvent::SearchComplete => app.state.search.searching = false,
+        EngineEvent::SearchComplete => {
+            app.state.search.searching = false;
+            let elapsed_ms = app
+                .state
+                .search
+                .search_started
+                .map(|s| s.elapsed().as_millis() as u64)
+                .unwrap_or(0);
+            app.state.search.latency_ms = Some(elapsed_ms);
+            log_to_file(&format!(
+                "[SEARCH COMPLETE] query='{}' total_results={} elapsed={}ms",
+                app.state.search.query,
+                app.state.search.results.len(),
+                elapsed_ms
+            ));
+        }
         EngineEvent::Metadata { .. } | EngineEvent::Progress { .. } => {}
         EngineEvent::Done { .. } => persist(app),
         EngineEvent::Failed { id, message } => {
@@ -268,6 +409,63 @@ pub(crate) fn apply_event(app: &mut App, event: EngineEvent) {
             ));
             persist(app);
         }
+    }
+}
+
+fn merge_source_results(
+    app: &mut App,
+    source: crate::core::types::SourceId,
+    results: Vec<crate::core::types::TorrentResult>,
+) {
+    if source == crate::core::types::SourceId::Indexer {
+        for r in results {
+            if !app.disabled_sources.contains(&r.source) {
+                app.partial.entry(r.source).or_default().push(r);
+            }
+        }
+    } else {
+        app.partial.insert(source, results);
+    }
+    app.remerge();
+    let query = if app.state.search.browsing {
+        String::new()
+    } else {
+        app.state.search.query.clone()
+    };
+    app.query_cache.insert(
+        query,
+        (
+            std::time::Instant::now(),
+            app.state.search.results.clone(),
+            app.state.search.source_counts.clone(),
+            app.state.search.source_health.clone(),
+        ),
+    );
+    if let Some(started) = app.state.search.search_started {
+        let ms = started.elapsed().as_millis() as u64;
+        app.state.search.latency_ms = Some(ms);
+        log_to_file(&format!(
+            "search query='{}' finished in {}ms with {} results",
+            app.state.search.query,
+            ms,
+            app.state.search.results.len()
+        ));
+    }
+}
+
+pub(crate) fn log_to_file(line: &str) {
+    let log_path = crate::core::paths::state_dir().join("harbour.log");
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(log_path)
+    {
+        use std::io::Write;
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let _ = writeln!(file, "[{ts}] {line}");
     }
 }
 
@@ -294,6 +492,7 @@ pub(crate) async fn enqueue_magnet(app: &mut App, magnet: &str) {
                 bytes: None,
                 dir: app.config.download_dir.clone(),
                 size_bytes: 0,
+                only_files: None,
             },
             now_ms(),
         )
@@ -339,6 +538,7 @@ pub(crate) async fn enqueue_torrent(app: &mut App, path: &std::path::Path) {
                 bytes: Some(bytes),
                 dir: app.config.download_dir.clone(),
                 size_bytes: 0,
+                only_files: None,
             },
             now_ms(),
         )
@@ -346,6 +546,39 @@ pub(crate) async fn enqueue_torrent(app: &mut App, path: &std::path::Path) {
     app.state.screen = Screen::Downloads;
     persist(app);
     app.refresh_downloads();
+}
+
+/// Clears all completed / seeding items from the queue (files remain on disk).
+pub(crate) async fn clear_completed(app: &mut App) {
+    let cleared = app.queue.clear_completed().await;
+    if !cleared.is_empty() {
+        app.refresh_downloads();
+        persist(app);
+    }
+}
+
+/// Opens the selected downloaded item or its directory in the OS file manager.
+pub(crate) fn open_selected_item(app: &mut App) {
+    let Some(item) = app
+        .visible_items()
+        .get(app.state.downloads.selected)
+        .map(|v| &v.item)
+    else {
+        return;
+    };
+    let dir = &item.dir;
+    #[cfg(windows)]
+    {
+        let _ = std::process::Command::new("explorer").arg(dir).spawn();
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let _ = std::process::Command::new("open").arg(dir).spawn();
+    }
+    #[cfg(all(not(windows), not(target_os = "macos")))]
+    {
+        let _ = std::process::Command::new("xdg-open").arg(dir).spawn();
+    }
 }
 
 #[cfg(test)]
@@ -399,6 +632,9 @@ mod tests {
             watch: None,
             picker: PlayerPicker::default(),
             picker_pending: None,
+            episode_picker: crate::ui::EpisodePicker::default(),
+            batch_picker: crate::ui::BatchPicker::default(),
+            query_cache: HashMap::new(),
             quitting: false,
         };
         (app, root)
