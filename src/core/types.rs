@@ -289,7 +289,10 @@ pub trait Source: Send + Sync + 'static {
                         source: id,
                         count: results.len(),
                     });
-                    let _ = events.send(EngineEvent::SourceResults { source: id, results });
+                    let _ = events.send(EngineEvent::SourceResults {
+                        source: id,
+                        results,
+                    });
                 }
                 Err(err) => {
                     if ctx.cancel.is_cancelled() {

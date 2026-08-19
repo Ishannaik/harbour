@@ -371,11 +371,12 @@ impl HttpSource {
                 let Some(id) = SourceId::parse(&chunk.source) else {
                     continue;
                 };
-                let status = status_from_wire(&chunk.status).unwrap_or(if chunk.results.is_empty() {
-                    SourceStatus::Empty
-                } else {
-                    SourceStatus::Online
-                });
+                let status =
+                    status_from_wire(&chunk.status).unwrap_or(if chunk.results.is_empty() {
+                        SourceStatus::Empty
+                    } else {
+                        SourceStatus::Online
+                    });
                 self.record_one(id, status, chunk.count);
                 landed += 1;
                 if !Self::emit(
@@ -1092,7 +1093,9 @@ mod tests {
         let source_task = source.clone();
         let query = "dune".to_string();
         let handle = tokio::spawn(async move {
-            source_task.search_into_events(&query, &search_ctx, tx).await;
+            source_task
+                .search_into_events(&query, &search_ctx, tx)
+                .await;
         });
 
         // Wait for yts to land, then cancel — nyaa is 500ms behind.
@@ -1100,9 +1103,7 @@ mod tests {
         let mut saw_yts = false;
         while tokio::time::Instant::now() < deadline {
             match tokio::time::timeout(Duration::from_millis(50), rx.recv()).await {
-                Ok(Some(EngineEvent::SourceResults { source, .. }))
-                    if source == SourceId::Yts =>
-                {
+                Ok(Some(EngineEvent::SourceResults { source, .. })) if source == SourceId::Yts => {
                     saw_yts = true;
                     break;
                 }
