@@ -23,6 +23,7 @@
 
 #![allow(dead_code)]
 
+use std::collections::HashSet;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -361,6 +362,31 @@ impl Store {
         self.save_ledger(items)?;
         self.disarm_boot_marker()
     }
+
+    // --- cache (FR-80) ------------------------------------------------------
+
+    /// Wipes `cache/search/` plus unused `.torrent` files and watch-now scratch
+    /// dirs whose infohash is not in `keep`. Never touches the download
+    /// directory or the ledger — leftover pieces there are `shift+X` (#77).
+    pub fn clear_cache(&self, keep: &HashSet<String>) -> io::Result<u64> {
+        let mut freed = wipe_tree(&paths::search_cache_root(&self.root))?;
+        freed += purge_unused_torrents(&self.root, keep)?;
+        freed += purge_unused_watch_dirs(&self.root, keep)?;
+        Ok(freed)
+    }
+
+    /// Deletes `<state>/cache/<hash>/` watch-now scratch for one torrent.
+    /// Missing or invalid hashes are success: forget must stay idempotent.
+    pub fn remove_watch_cache(&self, id: &str) -> io::Result<()> {
+        let Some(dir) = paths::watch_cache_dir(&self.root, id) else {
+            return Ok(());
+        };
+        match fs::remove_dir_all(&dir) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(e),
+        }
+    }
 }
 
 /// Writes `bytes` to `path` atomically.
@@ -413,6 +439,107 @@ fn quarantine(path: &Path) -> io::Result<PathBuf> {
     ));
     fs::rename(path, &target)?;
     Ok(target)
+}
+
+/// Recursively deletes `dir` and returns how many bytes it held. Missing is 0.
+fn wipe_tree(dir: &Path) -> io::Result<u64> {
+    if !dir.exists() {
+        return Ok(0);
+    }
+    let bytes = dir_size(dir);
+    fs::remove_dir_all(dir)?;
+    Ok(bytes)
+}
+
+fn dir_size(dir: &Path) -> u64 {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return 0;
+    };
+    entries
+        .flatten()
+        .map(|entry| {
+            let path = entry.path();
+            if path.is_dir() {
+                dir_size(&path)
+            } else {
+                entry.metadata().map(|m| m.len()).unwrap_or(0)
+            }
+        })
+        .sum()
+}
+
+fn purge_unused_torrents(root: &Path, keep: &HashSet<String>) -> io::Result<u64> {
+    let dir = paths::torrent_cache_dir(root);
+    let Ok(entries) = fs::read_dir(&dir) else {
+        return Ok(0);
+    };
+    let mut freed = 0_u64;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("torrent") {
+            continue;
+        }
+        let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        if keep.contains(stem) {
+            continue;
+        }
+        let size = entry.metadata().map(|m| m.len()).unwrap_or(0);
+        match fs::remove_file(&path) {
+            Ok(()) => freed += size,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(freed)
+}
+
+fn purge_unused_watch_dirs(root: &Path, keep: &HashSet<String>) -> io::Result<u64> {
+    let dir = paths::cache_dir(root);
+    let Ok(entries) = fs::read_dir(&dir) else {
+        return Ok(0);
+    };
+    let mut freed = 0_u64;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+            continue;
+        };
+        // Only hash-keyed watch scratch (`cache/<hash>/`), never torrents/search.
+        if paths::watch_cache_dir(root, &name).as_deref() != Some(path.as_path()) {
+            continue;
+        }
+        if keep.contains(&name) {
+            continue;
+        }
+        let size = dir_size(&path);
+        match fs::remove_dir_all(&path) {
+            Ok(()) => freed += size,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(freed)
+}
+
+/// Binary units for the clear-cache banner, matching the downloads view.
+pub(crate) fn format_bytes(bytes: u64) -> String {
+    const UNITS: &[&str] = &["B", "KiB", "MiB", "GiB", "TiB"];
+    let mut value = bytes as f64;
+    let mut unit = 0;
+    while value >= 1024.0 && unit < UNITS.len() - 1 {
+        value /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{bytes} B")
+    } else {
+        format!("{value:.1} {}", UNITS[unit])
+    }
 }
 
 #[cfg(test)]
@@ -685,5 +812,89 @@ mod tests {
             "a failed flush must not clear the crash marker"
         );
         let _ = fs::remove_dir_all(store.root());
+    }
+
+    fn write_file(path: &Path, bytes: &[u8]) {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).expect("parent");
+        }
+        fs::write(path, bytes).expect("write");
+    }
+
+    #[test]
+    fn clear_cache_wipes_search_and_unused_torrents_and_leaves_the_ledger() {
+        // FR-80: search JSON and leftover .torrent files go; anything still
+        // in the ledger stays; the download dir is someone else's job (#77).
+        let store = temp_store("clear-cache");
+        let keep = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let drop = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        let search = paths::search_cache_dir(store.root(), SourceId::CineVault).join("dune.json");
+        let kept_torrent = paths::torrent_cache_file(store.root(), keep).expect("hash");
+        let unused_torrent = paths::torrent_cache_file(store.root(), drop).expect("hash");
+        let watch = paths::watch_cache_dir(store.root(), drop).expect("hash");
+        let download_dir = store.root().join("downloads");
+        write_file(&search, b"{\"q\":\"dune\"}");
+        write_file(&kept_torrent, b"keep-me-torrent");
+        write_file(&unused_torrent, b"unused-torrent-bytes");
+        write_file(&watch.join("piece"), b"watch-scratch");
+        write_file(&download_dir.join("movie.mkv"), b"do-not-delete");
+        store
+            .save_ledger(&[item('a', QueueStatus::Downloading)])
+            .expect("ledger");
+
+        let keep_set = std::collections::HashSet::from([keep.to_string()]);
+        let freed = store.clear_cache(&keep_set).expect("clear");
+
+        assert!(
+            freed > 0,
+            "the banner needs a non-zero byte count when files went"
+        );
+        assert!(
+            !search.exists(),
+            "cache/search/ is wiped, including nested JSON"
+        );
+        assert!(
+            !unused_torrent.exists(),
+            "a .torrent whose hash is not in the ledger is unused"
+        );
+        assert!(
+            kept_torrent.exists(),
+            "a .torrent still in the ledger is a re-seed cache (FR-37/FR-78)"
+        );
+        assert!(
+            !watch.exists(),
+            "orphaned watch-now scratch is cache, not a download"
+        );
+        assert!(
+            download_dir.join("movie.mkv").exists(),
+            "clear cache must never mix with download-dir delete (#77)"
+        );
+        assert_eq!(
+            store.load_ledger().value().len(),
+            1,
+            "the ledger is untouched"
+        );
+    }
+
+    #[test]
+    fn remove_watch_cache_deletes_only_that_hash_dir() {
+        let store = temp_store("watch-cache");
+        let gone = "cccccccccccccccccccccccccccccccccccccccc";
+        let stay = "dddddddddddddddddddddddddddddddddddddddd";
+        let gone_dir = paths::watch_cache_dir(store.root(), gone).expect("hash");
+        let stay_dir = paths::watch_cache_dir(store.root(), stay).expect("hash");
+        write_file(&gone_dir.join("a"), b"scratch");
+        write_file(&stay_dir.join("b"), b"other");
+
+        store.remove_watch_cache(gone).expect("remove");
+
+        assert!(!gone_dir.exists());
+        assert!(stay_dir.join("b").exists());
+        store
+            .remove_watch_cache("not-a-hash")
+            .expect("invalid hashes are a no-op");
+        store
+            .remove_watch_cache(gone)
+            .expect("missing dirs are a no-op");
     }
 }

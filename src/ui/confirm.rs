@@ -1,9 +1,9 @@
-//! Forget / delete-from-device confirm overlay (FR-76).
+//! Forget / delete / clear-cache confirm overlay (FR-76, FR-80).
 //!
-//! `x` and `shift+X` both open this panel before the queue is touched. The
-//! highlighted choice defaults to **No** so Enter without thinking is a no-op;
-//! `y` always proceeds. The pending work is an enum, not a closure, so the
-//! overlay is snapshot-testable and the app loop can match it.
+//! `x`, `shift+X`, and `shift+C` all open this panel before anything is
+//! destroyed. The highlighted choice defaults to **No** so Enter without
+//! thinking is a no-op; `y` always proceeds. The pending work is an enum, not
+//! a closure, so the overlay is snapshot-testable and the app loop can match it.
 
 use std::path::Path;
 
@@ -23,6 +23,8 @@ pub enum ConfirmAction {
     Forget { id: String },
     /// Forget the item and delete its payload files (`shift+X`).
     ForgetAndDelete { id: String },
+    /// Wipe search cache and unused torrent/watch cache (FR-80).
+    ClearCache,
 }
 
 /// Confirm-overlay state, owned by the app loop and drawn by [`draw`].
@@ -32,7 +34,7 @@ pub struct ConfirmPrompt {
     pub open: bool,
     pub title: String,
     pub body: String,
-    /// True for `shift+X` — Yes is painted in the error colour.
+    /// True for `shift+X` / clear-cache — Yes is painted in the error colour.
     pub destructive: bool,
     pub on_confirm: Option<ConfirmAction>,
     /// `false` = No (the default), `true` = Yes.
@@ -63,6 +65,21 @@ impl ConfirmPrompt {
             body: format!("Delete {name} and its files in {}?", dir.display()),
             destructive: true,
             on_confirm: Some(ConfirmAction::ForgetAndDelete { id }),
+            yes_selected: false,
+        }
+    }
+
+    /// Clear-cache confirm. Defaults to No — wiping cache is loud, not a
+    /// one-keystroke accident (FR-80).
+    pub fn clear_cache() -> Self {
+        Self {
+            open: true,
+            title: " clear cache ".into(),
+            body: "Deletes search cache and unused .torrent files. \
+                   Your downloads folder and queue stay."
+                .into(),
+            destructive: true,
+            on_confirm: Some(ConfirmAction::ClearCache),
             yes_selected: false,
         }
     }
@@ -213,6 +230,15 @@ mod tests {
             del.body.contains("/media/dune"),
             "shift+X names the exact directory"
         );
+    }
+
+    #[test]
+    fn clear_cache_confirm_defaults_to_no() {
+        let prompt = ConfirmPrompt::clear_cache();
+        assert!(prompt.open);
+        assert!(!prompt.yes_selected, "FR-80: default highlight is No");
+        assert!(prompt.destructive);
+        assert_eq!(prompt.on_confirm, Some(ConfirmAction::ClearCache));
     }
 
     #[test]
