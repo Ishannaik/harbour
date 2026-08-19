@@ -608,6 +608,14 @@ mod tests {
     use super::*;
 
     #[test]
+    fn zip_is_not_a_watchable_video() {
+        assert!(!is_video(Path::new("game.zip")));
+        assert!(!is_video(Path::new("pack.rar")));
+        assert!(!is_video(Path::new("data.7z")));
+        assert!(is_video(Path::new("movie.mkv")));
+    }
+
+    #[test]
     fn eta_is_none_rather_than_a_fabricated_number() {
         // Unknown size, already complete, and a stalled transfer all mean "we
         // do not know" — the UI renders an em dash for each.
