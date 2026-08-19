@@ -643,15 +643,6 @@ fn draw(
     if app.help_open {
         crate::ui::help::draw(frame, area, theme);
     }
-    if app.picker.open {
-        crate::ui::player::draw(
-            frame,
-            area,
-            theme,
-            &app.picker,
-            app.config.player.as_deref(),
-        );
-    }
     if app.episode_picker.open {
         crate::ui::episode_picker::draw(
             frame,
@@ -673,6 +664,16 @@ fn draw(
             &app.settings,
             theme,
             app.state.mouse_pos,
+        );
+    }
+    // Picker last so it sits on top of settings when the player row opens it.
+    if app.picker.open {
+        crate::ui::player::draw(
+            frame,
+            area,
+            theme,
+            &app.picker,
+            app.config.player.as_deref(),
         );
     }
 }
