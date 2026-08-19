@@ -77,7 +77,7 @@ pub(crate) async fn choose_player(app: &mut App) {
         return;
     };
     if pending.ephemeral {
-        launch_ephemeral_session(app, pending.id, pending.name, &player).await;
+        launch_ephemeral_session(app, pending.id, pending.name, pending.dir, &player).await;
     } else {
         launch_watch(app, pending.id, pending.name, pending.dir, player).await;
     }
@@ -110,6 +110,12 @@ pub(crate) async fn start_watch(app: &mut App) {
     let name = item.name.clone();
     let dir = item.dir.clone();
     let Some(player) = resolve_player(app) else {
+        // No player yet: still refuse archives before opening the picker, so
+        // a zip pack never becomes "pick mpv, then fail" (issue #76).
+        if nothing_watchable(app, &id, &dir).await {
+            app.warn(crate::watch::unplayable_watch_banner(&dir));
+            return;
+        }
         app.picker_pending = Some(PendingWatch {
             id,
             name,
@@ -120,6 +126,13 @@ pub(crate) async fn start_watch(app: &mut App) {
         return;
     };
     launch_watch(app, id, name, dir, player).await;
+}
+
+/// True when the engine lists no video and the download dir has no media file.
+/// Watch must not open a player (or the picker) in that case.
+async fn nothing_watchable(app: &App, id: &str, dir: &Path) -> bool {
+    app.queue.engine().list_video_files(id).await.is_empty()
+        && crate::watch::primary_media(dir).is_none()
 }
 
 /// Launches a watch session for `id`/`name`/`dir` with `player`: swarm
@@ -137,6 +150,13 @@ async fn launch_watch(app: &mut App, id: String, name: String, dir: PathBuf, pla
             episodes: files,
             selected: 0,
         };
+        return;
+    }
+
+    // No engine-listed video: play a file on disk, or refuse. Never call
+    // stream_url here — that is how a zip used to reach mpv (issue #76).
+    if files.is_empty() {
+        watch_file_or_refuse(app, id, name, &dir, &player, false);
         return;
     }
 
@@ -163,6 +183,26 @@ async fn launch_watch(app: &mut App, id: String, name: String, dir: PathBuf, pla
     };
     match crate::watch::WatchSession::start(&file, &player) {
         Ok(session) => enter_watch(app, id, name, session, false),
+        Err(err) => app.warn(format!("watch: cannot start player: {err}")),
+    }
+}
+
+/// File-serving fallback when the swarm has no video to stream. Archives and
+/// other non-media land on a banner rather than a player (issue #76).
+fn watch_file_or_refuse(
+    app: &mut App,
+    id: String,
+    name: String,
+    dir: &Path,
+    player: &str,
+    ephemeral: bool,
+) {
+    let Some(file) = crate::watch::primary_media(dir) else {
+        app.warn(crate::watch::unplayable_watch_banner(dir));
+        return;
+    };
+    match crate::watch::WatchSession::start(&file, player) {
+        Ok(session) => enter_watch(app, id, name, session, ephemeral),
         Err(err) => app.warn(format!("watch: cannot start player: {err}")),
     }
 }
@@ -231,6 +271,10 @@ pub(crate) async fn start_watch_ephemeral(app: &mut App) {
         return;
     }
     let Some(player) = resolve_player(app) else {
+        if nothing_watchable(app, &id, &dir).await {
+            app.warn(crate::watch::unplayable_watch_banner(&dir));
+            return;
+        }
         app.picker_pending = Some(PendingWatch {
             id,
             name: result.name.clone(),
@@ -240,12 +284,18 @@ pub(crate) async fn start_watch_ephemeral(app: &mut App) {
         open_player_picker(app);
         return;
     };
-    launch_ephemeral_session(app, id, result.name.clone(), &player).await;
+    launch_ephemeral_session(app, id, result.name.clone(), dir, &player).await;
 }
 
 /// Launches the remote stream session for a watch-now (2.3): the torrent is
 /// already added to the engine, so only the live stream URL is needed.
-async fn launch_ephemeral_session(app: &mut App, id: String, name: String, player: &str) {
+async fn launch_ephemeral_session(
+    app: &mut App,
+    id: String,
+    name: String,
+    dir: PathBuf,
+    player: &str,
+) {
     let files = app.queue.engine().list_video_files(&id).await;
     if files.len() > 1 {
         app.episode_picker = crate::ui::EpisodePicker {
@@ -257,6 +307,11 @@ async fn launch_ephemeral_session(app: &mut App, id: String, name: String, playe
             episodes: files,
             selected: 0,
         };
+        return;
+    }
+
+    if files.is_empty() {
+        watch_file_or_refuse(app, id, name, &dir, player, true);
         return;
     }
 
@@ -360,5 +415,137 @@ pub(crate) async fn end_watch(app: &mut App) {
     }
     if let Err(err) = app.queue.engine().remove(&id, true).await {
         app.warn(format!("watch: could not clean up the cache: {err}"));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::{HashMap, HashSet};
+    use std::path::PathBuf;
+    use std::sync::{Arc, Mutex};
+
+    use crate::core::error::EngineError;
+    use crate::core::types::{AddRequest, Engine, EngineFuture, EngineSnapshot};
+    use crate::engine::fake::FakeEngine;
+    use crate::persist::{Config, Store};
+    use crate::queue::{AddInput, Queue};
+    use crate::search::SearchEngine;
+    use crate::theme::Theme;
+    use crate::ui::player::PlayerPicker;
+    use crate::ui::settings::SettingsState;
+    use crate::ui::{AppState, Screen};
+
+    /// An engine that would happily hand the player a stream URL even when
+    /// there is no video — the regression that launched mpv on a zip.
+    struct ZipStreamEngine(FakeEngine);
+
+    impl Engine for ZipStreamEngine {
+        fn add<'a>(&'a self, req: AddRequest) -> EngineFuture<'a, Result<(), EngineError>> {
+            self.0.add(req)
+        }
+        fn pause<'a>(&'a self, id: &'a str) -> EngineFuture<'a, Result<(), EngineError>> {
+            self.0.pause(id)
+        }
+        fn resume<'a>(&'a self, id: &'a str) -> EngineFuture<'a, Result<(), EngineError>> {
+            self.0.resume(id)
+        }
+        fn remove<'a>(
+            &'a self,
+            id: &'a str,
+            delete_files: bool,
+        ) -> EngineFuture<'a, Result<(), EngineError>> {
+            self.0.remove(id, delete_files)
+        }
+        fn snapshot(&self) -> Vec<EngineSnapshot> {
+            self.0.snapshot()
+        }
+        fn stream_url<'a>(&'a self, _id: &'a str) -> EngineFuture<'a, Option<String>> {
+            Box::pin(async move { Some("http://127.0.0.1:1/must-not-play-zip".into()) })
+        }
+    }
+
+    fn test_app(engine: Arc<dyn Engine>, label: &str) -> (App, PathBuf) {
+        let root =
+            std::env::temp_dir().join(format!("harbour-watch-test-{label}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("scratch dir");
+        let config = Config {
+            download_dir: root.join("dl"),
+            player: Some("harbour-bug-76-not-a-player".into()),
+            ..Config::default()
+        };
+        let app = App {
+            state: AppState::default(),
+            queue: Queue::new(engine, 0),
+            search: SearchEngine::new(vec![]),
+            store: Store::new(&root),
+            disabled_sources: HashSet::new(),
+            config,
+            partial: HashMap::new(),
+            search_cancel: None,
+            events_tx: tokio::sync::mpsc::unbounded_channel().0,
+            history: Vec::new(),
+            help_open: false,
+            settings_open: false,
+            settings: SettingsState::default(),
+            theme: Arc::new(Mutex::new(Theme::titanium())),
+            watch: None,
+            picker: PlayerPicker::default(),
+            picker_pending: None,
+            episode_picker: crate::ui::EpisodePicker::default(),
+            batch_picker: crate::ui::BatchPicker::default(),
+            query_cache: HashMap::new(),
+            quitting: false,
+        };
+        (app, root)
+    }
+
+    #[tokio::test]
+    async fn watching_a_zip_only_torrent_never_launches_a_player() {
+        let engine = Arc::new(ZipStreamEngine(FakeEngine::new()));
+        let (mut app, root) = test_app(engine, "zip-pack");
+        let dir = root.join("dl").join("zip-pack");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("game.zip"), b"PK\x03\x04").unwrap();
+
+        app.queue
+            .add(
+                AddInput {
+                    id: "ziphash".into(),
+                    name: "GamesHub Pack".into(),
+                    source: None,
+                    magnet: Some("magnet:?xt=urn:btih:ziphash".into()),
+                    bytes: None,
+                    dir,
+                    size_bytes: 4,
+                    only_files: None,
+                },
+                0,
+            )
+            .await;
+        app.state.screen = Screen::Downloads;
+        app.refresh_downloads();
+
+        start_watch(&mut app).await;
+
+        assert!(
+            app.watch.is_none(),
+            "w on a zip pack must never spawn a player"
+        );
+        assert!(
+            app.state.now_playing.is_none(),
+            "w on a zip pack must not enter now-playing"
+        );
+        let banner = app.state.error_banner.as_deref().unwrap_or("");
+        assert!(
+            banner.contains("archive"),
+            "zip packs need an archive banner, got: {banner}"
+        );
+        assert!(
+            !banner.contains("cannot start player"),
+            "the player must not have been invoked, got: {banner}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

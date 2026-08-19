@@ -12,6 +12,7 @@
 //! All I/O here is std-only: no server framework for a two-endpoint
 //! single-file server (lean-dependency rule, AGENTS.md).
 
+use std::collections::BTreeSet;
 use std::fs::File;
 use std::io::{BufReader, Read, Seek, SeekFrom, Write};
 use std::net::{TcpListener, TcpStream};
@@ -26,6 +27,10 @@ use std::thread;
 const MEDIA_EXTS: &[&str] = &[
     "mkv", "mp4", "avi", "mov", "webm", "m4v", "ts", "flv", "wmv", "mpg", "mpeg",
 ];
+
+/// Packed releases (GamesHub and friends). Never a watchable video — mpv on a
+/// zip is issue #76.
+const ARCHIVE_EXTS: &[&str] = &["zip", "rar", "7z"];
 
 /// Read chunk for streaming the file to the player (64 KiB).
 const CHUNK: usize = 64 * 1024;
@@ -44,6 +49,42 @@ pub fn primary_media(dir: &Path) -> Option<PathBuf> {
                     .is_some_and(|e| MEDIA_EXTS.contains(&e.to_ascii_lowercase().as_str()))
         })
         .max_by_key(|p| std::fs::metadata(p).map(|m| m.len()).unwrap_or(0))
+}
+
+/// Unique lowercase extensions of files sitting in `dir` (not nested). Used
+/// to name what we found when there is no video to play.
+fn top_level_extensions(dir: &Path) -> Vec<String> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut ext = BTreeSet::new();
+    for path in entries.filter_map(|e| e.ok().map(|e| e.path())) {
+        if !path.is_file() {
+            continue;
+        }
+        if let Some(e) = path.extension().and_then(|e| e.to_str()) {
+            ext.insert(e.to_ascii_lowercase());
+        }
+    }
+    ext.into_iter().collect()
+}
+
+/// Why this torrent cannot be watched. Callers must surface this as a banner
+/// and never launch a player — zip/rar/7z are not video (issue #76).
+pub fn unplayable_watch_banner(dir: &Path) -> String {
+    let exts = top_level_extensions(dir);
+    if !exts.is_empty() && exts.iter().all(|e| ARCHIVE_EXTS.contains(&e.as_str())) {
+        return "this is an archive — extract it from the download folder (press o to open)".into();
+    }
+    if !exts.is_empty() {
+        let listed = exts
+            .iter()
+            .map(|e| format!(".{e}"))
+            .collect::<Vec<_>>()
+            .join(" / ");
+        return format!("no playable video in this torrent (found {listed})");
+    }
+    "no playable video in this torrent".into()
 }
 
 /// A running watch session: the loopback stream server + the player child.
@@ -464,6 +505,70 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("harbour-watch-empty-{nanos}"));
         std::fs::create_dir_all(&dir).unwrap();
         assert!(primary_media(&dir).is_none());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn primary_media_skips_archive_files() {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("harbour-watch-zip-{nanos}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("game.zip"), vec![0u8; 500]).unwrap();
+        std::fs::write(dir.join("pack.rar"), vec![0u8; 400]).unwrap();
+        std::fs::write(dir.join("data.7z"), vec![0u8; 300]).unwrap();
+        std::fs::write(dir.join("readme.txt"), b"not media").unwrap();
+        assert!(
+            primary_media(&dir).is_none(),
+            "archives must never be picked as watchable media"
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    fn scratch_dir(label: &str) -> std::path::PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("harbour-watch-{label}-{nanos}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn archive_only_dir_tells_the_user_to_extract() {
+        let dir = scratch_dir("archive-banner");
+        std::fs::write(dir.join("game.zip"), b"PK").unwrap();
+        let msg = unplayable_watch_banner(&dir);
+        assert!(
+            msg.contains("archive"),
+            "zip-only torrents must say they are archives, got: {msg}"
+        );
+        assert!(
+            msg.contains("extract"),
+            "the banner must tell the user to extract, got: {msg}"
+        );
+        assert!(
+            msg.contains('o'),
+            "the banner must offer o to open the folder, got: {msg}"
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn unplayable_dir_names_the_extensions_it_found() {
+        let dir = scratch_dir("found-exts");
+        std::fs::write(dir.join("readme.nfo"), b"nfo").unwrap();
+        std::fs::write(dir.join("disc.iso"), b"iso").unwrap();
+        let msg = unplayable_watch_banner(&dir);
+        assert!(
+            msg.contains("no playable video"),
+            "non-video files must say there is nothing to watch, got: {msg}"
+        );
+        assert!(msg.contains(".iso"), "must name .iso, got: {msg}");
+        assert!(msg.contains(".nfo"), "must name .nfo, got: {msg}");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
