@@ -959,7 +959,9 @@ fn result_line(
     let spans = vec![
         Span::styled(name, Style::default().fg(name_fg.to_ratatui())),
         Span::raw(" ".repeat(pad)),
-        Span::styled(size_col, Style::default().fg(colors.muted().to_ratatui())),
+        // FR-23: size is a primary column. muted() on selectedBg is ~1.8:1
+        // and reads as a blank cell (#69); match the name's text() token.
+        Span::styled(size_col, Style::default().fg(colors.text().to_ratatui())),
         Span::styled(seed_col, Style::default().fg(seed_fg.to_ratatui())),
         Span::styled(leech_col, Style::default().fg(leech_fg.to_ratatui())),
         Span::styled(quality_col, Style::default().fg(quality_fg.to_ratatui())),
@@ -1394,5 +1396,54 @@ mod tests {
         let src_hdr_idx = header.rfind("source").expect("source in header");
         let src_row_idx = row.find("[cinevault]").expect("source in row");
         assert_eq!(src_hdr_idx, src_row_idx, "source column alignment");
+    }
+
+    fn two_gib() -> TorrentResult {
+        TorrentResult {
+            size_bytes: 2_147_483_648,
+            ..result("Dune: Part Two")
+        }
+    }
+
+    /// Paint one result row into a TestBackend and return the symbol line.
+    fn paint_result_row(hit: &TorrentResult, width: u16) -> String {
+        let theme = Theme::titanium();
+        let state = SearchState::default();
+        let backend = TestBackend::new(width, 1);
+        let mut terminal = Terminal::new(backend).expect("test backend");
+        terminal
+            .draw(|f| {
+                let line = result_line(hit, false, false, &state, &theme, width as usize);
+                f.render_widget(Paragraph::new(line), f.area());
+            })
+            .expect("draw");
+        let buf = terminal.backend().buffer();
+        (0..width)
+            .map(|x| buf[(x, 0)].symbol().to_string())
+            .collect()
+    }
+
+    #[test]
+    fn result_row_shows_human_size_at_width_100_and_60() {
+        // #69 / FR-23: a known 2 GiB hit must paint `2.0 GiB`, not a blank.
+        let hit = two_gib();
+        for width in [100_u16, 60] {
+            let row = paint_result_row(&hit, width);
+            assert!(
+                row.contains("2.0 GiB"),
+                "FR-23 size at width {width}, got: {row:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn result_size_uses_text_color_not_muted() {
+        // Muted on selectedBg is ~1.8:1 — the size column reads as empty (#69).
+        let theme = Theme::titanium();
+        let state = SearchState::default();
+        let line = result_line(&two_gib(), false, false, &state, &theme, 80);
+        let fg = span_color(&line, "2.0 GiB");
+        assert_eq!(fg, theme.colors.text().to_ratatui(), "size uses text()");
+        assert_ne!(fg, theme.colors.muted().to_ratatui(), "size is not muted()");
     }
 }

@@ -85,6 +85,20 @@ fn search_snapshot_idle_with_results() {
 }
 
 #[test]
+fn search_snapshot_shows_human_size_on_nonzero_row() {
+    // #69 / FR-23: 80-col search view must paint GiB/MiB, not a blank size.
+    let state = search_state("dune");
+    let theme = Theme::titanium();
+    let out = render(|f| {
+        search::draw(f, f.area(), &state, &HashSet::new(), &theme, None);
+    });
+    assert!(
+        out.contains("GiB") || out.contains("MiB"),
+        "FR-23: non-zero size_bytes must render as human units, got:\n{out}"
+    );
+}
+
+#[test]
 fn the_results_pane_announces_how_to_get_back_to_typing() {
     let mut state = search_state("dune");
     state.focus = false; // Enter moved the keyboard to the results pane
