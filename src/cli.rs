@@ -1,6 +1,6 @@
 //! Command-line parsing (`FR-02`…`FR-05`).
 //!
-//! Hand-rolled rather than `clap`: the whole surface is three flags and one
+//! Hand-rolled rather than `clap`: the whole surface is four flags and one
 //! positional argument, and `docs/architecture.md` §2 says to reach for clap
 //! only if it grows. Parsing is a pure function of `argv` so every case is a
 //! unit test rather than a manual run.
@@ -25,6 +25,8 @@ pub enum Command {
     RunWithTorrent(PathBuf),
     Help,
     Version,
+    /// Write a shareable bug report and print its path (`FR-04a`).
+    BugReport,
     /// Bad input: print `message` to stderr and exit non-zero **without**
     /// starting the TUI (`FR-02`).
     Invalid {
@@ -42,6 +44,7 @@ usage
   harbour path/to/file.torrent  open a .torrent file on launch
   harbour --help                print this and exit
   harbour --version             print the version and exit
+  harbour --bugreport           write ~/.harbour/bugreport.txt and print its path
 
 keys
   enter  search (empty query browses the curated top lists)
@@ -51,6 +54,7 @@ keys
   ← →    switch between the downloads and seeding tabs
   p      pause / resume seeding
   ?      show all keybinds
+  L      copy the bugreport path (shift+L)
   q      quit
 
 environment
@@ -79,6 +83,7 @@ pub fn parse(args: &[String]) -> Command {
     match first {
         "--help" | "-h" => return Command::Help,
         "--version" | "-V" | "-v" => return Command::Version,
+        "--bugreport" => return Command::BugReport,
         _ => {}
     }
 
@@ -279,5 +284,19 @@ mod tests {
                 "{bad} must not reach the TUI"
             );
         }
+    }
+
+    #[test]
+    fn bugreport_flag_is_recognised_and_does_not_start_the_tui() {
+        assert_eq!(parse_str(&["--bugreport"]), Command::BugReport);
+        // The type system carries this: BugReport is not a Run variant.
+    }
+
+    #[test]
+    fn help_text_documents_bugreport() {
+        assert!(
+            HELP.contains("--bugreport"),
+            "FR-04a must be discoverable from --help"
+        );
     }
 }

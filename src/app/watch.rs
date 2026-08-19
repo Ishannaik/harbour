@@ -500,6 +500,7 @@ mod tests {
             episode_picker: crate::ui::EpisodePicker::default(),
             batch_picker: crate::ui::BatchPicker::default(),
             query_cache: HashMap::new(),
+            last_search_click: None,
             quitting: false,
         };
         (app, root)
@@ -556,7 +557,10 @@ mod tests {
 
         start_watch(&mut app).await;
 
-        assert!(app.watch.is_none(), "w on a zip pack must never spawn a player");
+        assert!(
+            app.watch.is_none(),
+            "w on a zip pack must never spawn a player"
+        );
         assert!(
             app.state.now_playing.is_none(),
             "w on a zip pack must not enter now-playing"
