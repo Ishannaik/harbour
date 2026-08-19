@@ -1,9 +1,10 @@
-//! Forget / delete / clear-cache confirm overlay (FR-76, FR-80).
+//! Forget / delete / clear-cache / quit confirm overlay (FR-76, FR-80, FR-81).
 //!
-//! `x`, `shift+X`, and `shift+C` all open this panel before anything is
-//! destroyed. The highlighted choice defaults to **No** so Enter without
-//! thinking is a no-op; `y` always proceeds. The pending work is an enum, not
-//! a closure, so the overlay is snapshot-testable and the app loop can match it.
+//! `x`, `shift+X`, `shift+C`, and `q` all open this panel before anything is
+//! destroyed or the process leaves. The highlighted choice defaults to **No**
+//! so Enter without thinking is a no-op; `y` always proceeds. The pending work
+//! is an enum, not a closure, so the overlay is snapshot-testable and the app
+//! loop can match it.
 
 use std::path::Path;
 
@@ -25,6 +26,8 @@ pub enum ConfirmAction {
     ForgetAndDelete { id: String },
     /// Wipe search cache and unused torrent/watch cache (FR-80).
     ClearCache,
+    /// Leave the TUI after the existing graceful shutdown (FR-81).
+    Quit,
 }
 
 /// Confirm-overlay state, owned by the app loop and drawn by [`draw`].
@@ -80,6 +83,19 @@ impl ConfirmPrompt {
                 .into(),
             destructive: true,
             on_confirm: Some(ConfirmAction::ClearCache),
+            yes_selected: false,
+        }
+    }
+
+    /// Quit confirm. Defaults to No — `q` is easy to hit; leaving is loud
+    /// enough to ask (FR-81). Ctrl-C still skips this overlay.
+    pub fn quit() -> Self {
+        Self {
+            open: true,
+            title: " quit ".into(),
+            body: "Quit harbour? The queue is saved and downloads stop.".into(),
+            destructive: false,
+            on_confirm: Some(ConfirmAction::Quit),
             yes_selected: false,
         }
     }
@@ -239,6 +255,19 @@ mod tests {
         assert!(!prompt.yes_selected, "FR-80: default highlight is No");
         assert!(prompt.destructive);
         assert_eq!(prompt.on_confirm, Some(ConfirmAction::ClearCache));
+    }
+
+    #[test]
+    fn quit_confirm_defaults_to_no() {
+        let prompt = ConfirmPrompt::quit();
+        assert!(prompt.open);
+        assert!(!prompt.yes_selected, "FR-81: default highlight is No");
+        assert!(!prompt.destructive);
+        assert_eq!(prompt.on_confirm, Some(ConfirmAction::Quit));
+        let out = render(&prompt);
+        assert!(out.contains("quit"), "title:\n{out}");
+        assert!(out.contains("No"), "No choice:\n{out}");
+        assert!(out.contains("Yes"), "Yes choice:\n{out}");
     }
 
     #[test]
