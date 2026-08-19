@@ -301,11 +301,11 @@ pub(crate) async fn apply_confirm(app: &mut App, accept: bool) {
     let Some(action) = pending else {
         return;
     };
-    let (id, delete_files) = match action {
-        ConfirmAction::Forget { id } => (id, false),
-        ConfirmAction::ForgetAndDelete { id } => (id, true),
-    };
-    remove_item(app, &id, delete_files).await;
+    match action {
+        ConfirmAction::Forget { id } => remove_item(app, &id, false).await,
+        ConfirmAction::ForgetAndDelete { id } => remove_item(app, &id, true).await,
+        ConfirmAction::ClearCache => run_clear_cache(app),
+    }
 }
 
 async fn remove_item(app: &mut App, id: &str, delete_files: bool) {
@@ -322,9 +322,46 @@ async fn remove_item(app: &mut App, id: &str, delete_files: bool) {
     }
     if let Err(err) = app.queue.remove(id, delete_files).await {
         app.warn(err.to_string());
+        return;
+    }
+    // Watch-now scratch for this hash is cache, not the download dir.
+    if let Err(err) = app.store.remove_watch_cache(id) {
+        app.warn(format!(
+            "could not clear leftover cache for this torrent: {err}"
+        ));
     }
     persist(app);
     app.refresh_downloads();
+}
+
+/// Opens the clear-cache confirm (settings row or shift+C). Defaults to No.
+pub(crate) fn open_clear_cache_confirm(app: &mut App) {
+    app.confirm = ConfirmPrompt::clear_cache();
+}
+
+/// Search JSON + unused .torrent files + leftover watch scratch.
+/// Download-dir files and the ledger stay. Active watch-now scratch is kept
+/// so a ledger-free stream is not deleted out from under the player.
+fn run_clear_cache(app: &mut App) {
+    let mut keep: std::collections::HashSet<String> = app
+        .queue
+        .items()
+        .iter()
+        .map(|item| item.id.clone())
+        .collect();
+    if let Some(np) = &app.state.now_playing {
+        keep.insert(np.id.clone());
+    }
+    // Drop memory hits first: the disk search cache is about to go, and a
+    // later torrent/watch wipe failure must not keep serving stale results.
+    app.query_cache.clear();
+    match app.store.clear_cache(&keep) {
+        Ok(freed) => app.warn(format!(
+            "cache cleared — {} freed",
+            crate::persist::format_bytes(freed)
+        )),
+        Err(err) => app.warn(format!("could not clear cache: {err}")),
+    }
 }
 
 /// Writes the ledger, surfacing a failure without stopping anything.
@@ -734,6 +771,118 @@ mod tests {
         assert!(
             engine.contains(&hash),
             "the engine keys the torrent identically"
+        );
+    }
+
+    #[tokio::test]
+    async fn forgetting_a_partial_download_stops_writing_and_drops_watch_scratch() {
+        let engine = Arc::new(FakeEngine::new());
+        let (mut app, root) = test_app(engine.clone(), "forget-watch-scratch");
+        let id = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee".to_string();
+        let dl = root.join("dl");
+        std::fs::create_dir_all(&dl).expect("dl");
+        std::fs::write(dl.join("video.mkv"), b"keep").expect("file");
+        let watch = crate::core::paths::watch_cache_dir(&root, &id).expect("hash");
+        std::fs::create_dir_all(&watch).expect("watch");
+        std::fs::write(watch.join("scratch"), b"tmp").expect("scratch");
+
+        app.queue
+            .add(
+                AddInput {
+                    id: id.clone(),
+                    name: "Partial".into(),
+                    source: Some(SourceId::CineVault),
+                    magnet: Some(format!("magnet:?xt=urn:btih:{id}")),
+                    bytes: None,
+                    dir: dl.clone(),
+                    size_bytes: 1000,
+                    only_files: None,
+                },
+                1,
+            )
+            .await;
+        engine.set_progress(&id, 0.10, 3.0);
+        app.refresh_downloads();
+        app.state.screen = Screen::Downloads;
+        app.state.downloads.selected = 0;
+
+        open_remove_confirm(&mut app, false);
+        apply_confirm(&mut app, true).await;
+
+        assert!(app.queue.get(&id).is_none(), "the ledger row is gone");
+        assert!(!engine.is_writing(&id), "the engine stopped writing");
+        assert!(
+            dl.join("video.mkv").exists(),
+            "download-dir files stay (#77)"
+        );
+        assert!(!watch.exists(), "watch-now scratch for this hash is cache");
+    }
+
+    #[tokio::test]
+    async fn clear_cache_confirm_defaults_to_no_and_yes_reports_bytes_freed() {
+        let engine = Arc::new(FakeEngine::new());
+        let (mut app, root) = test_app(engine, "clear-cache-banner");
+        let keep = "ffffffffffffffffffffffffffffffffffffffff";
+        let drop = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let search = crate::core::paths::search_cache_dir(&root, SourceId::CineVault).join("q.json");
+        let unused = crate::core::paths::torrent_cache_file(&root, drop).expect("hash");
+        std::fs::create_dir_all(search.parent().expect("parent")).expect("dir");
+        std::fs::write(&search, b"cached-search").expect("search");
+        std::fs::create_dir_all(unused.parent().expect("parent")).expect("dir");
+        std::fs::write(&unused, b"unused-torrent").expect("torrent");
+        app.store
+            .save_ledger(&[crate::core::types::QueueItem::new(
+                keep.into(),
+                "Keep".into(),
+                Some(SourceId::CineVault),
+                None,
+                root.join("dl"),
+                1,
+            )])
+            .expect("ledger");
+
+        open_clear_cache_confirm(&mut app);
+        assert!(app.confirm.open);
+        assert!(!app.confirm.yes_selected, "loud confirm defaults to No");
+
+        apply_confirm(&mut app, true).await;
+
+        assert!(!app.confirm.open);
+        let banner = app.state.error_banner.as_deref().unwrap_or("");
+        assert!(
+            banner.contains("freed"),
+            "the banner reports bytes freed, got: {banner}"
+        );
+        assert!(!search.exists());
+        assert!(!unused.exists());
+        assert_eq!(
+            app.store.load_ledger().value().len(),
+            1,
+            "the ledger is untouched"
+        );
+    }
+
+    #[tokio::test]
+    async fn clear_cache_keeps_an_active_ephemeral_watch_dir() {
+        let engine = Arc::new(FakeEngine::new());
+        let (mut app, root) = test_app(engine, "clear-cache-keep-watch");
+        let id = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        let watch = crate::core::paths::watch_cache_dir(&root, id).expect("hash");
+        std::fs::create_dir_all(&watch).expect("watch");
+        std::fs::write(watch.join("piece"), b"live").expect("piece");
+        app.state.now_playing = Some(crate::ui::NowPlaying {
+            id: id.into(),
+            name: "Live".into(),
+            stream_url: "http://127.0.0.1/x".into(),
+            ephemeral: true,
+        });
+
+        open_clear_cache_confirm(&mut app);
+        apply_confirm(&mut app, true).await;
+
+        assert!(
+            watch.join("piece").exists(),
+            "active watch-now scratch must survive clear-cache"
         );
     }
 

@@ -125,9 +125,22 @@ pub fn torrent_cache_file(root: &Path, info_hash: &str) -> Option<PathBuf> {
     Some(torrent_cache_dir(root).join(format!("{hash}.torrent")))
 }
 
+/// Search-cache root (`cache/search/`). Wipe this on clear-cache; per-source
+/// files live one level down (`FR-52` / `FR-80`).
+pub fn search_cache_root(root: &Path) -> PathBuf {
+    cache_dir(root).join("search")
+}
+
 /// Per-source search cache directory.
 pub fn search_cache_dir(root: &Path, source: SourceId) -> PathBuf {
-    cache_dir(root).join("search").join(source.as_str())
+    search_cache_root(root).join(source.as_str())
+}
+
+/// Ephemeral watch-now files (`cache/<hash>/`). Hash-keyed so a torrent name
+/// cannot traverse out of the cache directory (`NFR-11`).
+pub fn watch_cache_dir(root: &Path, info_hash: &str) -> Option<PathBuf> {
+    let hash = crate::core::magnet::normalize_info_hash(info_hash)?;
+    Some(cache_dir(root).join(hash))
 }
 
 /// Per-source host-health marker, backing the negative TTL
@@ -303,6 +316,7 @@ mod tests {
             torrent_cache_dir(&root),
             root.join("cache").join("torrents")
         );
+        assert_eq!(search_cache_root(&root), root.join("cache").join("search"));
         assert_eq!(
             search_cache_dir(&root, SourceId::VaultMovies),
             root.join("cache").join("search").join("vault-movies")
@@ -331,6 +345,11 @@ mod tests {
             torrent_cache_file(&root, &format!("{hash}/../..")).is_none(),
             "a traversal suffix must not pass the hash check"
         );
+        assert_eq!(
+            watch_cache_dir(&root, hash).as_deref(),
+            Some(root.join("cache").join(hash).as_path())
+        );
+        assert!(watch_cache_dir(&root, "../../etc/passwd").is_none());
     }
 
     #[test]
