@@ -337,6 +337,7 @@ pub fn map_with_focus(key: KeyEvent, screen: Screen, flags: FocusFlags) -> Actio
             KeyCode::Char('D') => Action::DownloadToFolder,
             KeyCode::Char('o') => Action::ChangeDefaultFolder,
             KeyCode::Char('w') | KeyCode::Enter => Action::Watch,
+            KeyCode::Char('P') => Action::OpenPlayerPicker,
             KeyCode::Char('s') => Action::OpenSettings,
             KeyCode::Char('?') => Action::ToggleHelp,
             KeyCode::Char('q') => Action::Quit,
@@ -575,7 +576,7 @@ mod tests {
         // Input pane: EVERY printable key types — including `?`, capitals,
         // and letters that act elsewhere. No modifier is ever needed to type
         // "Dune" or "warcraft".
-        for c in "dunepqrsx?DWS".chars() {
+        for c in "dunepqrsx?DWSP".chars() {
             assert_eq!(
                 map(
                     key(KeyCode::Char(c)),
@@ -598,6 +599,7 @@ mod tests {
         let r = |code| map_with_focus(key(code), Screen::Search, FocusFlags::default());
         assert_eq!(r(KeyCode::Char('d')), Action::Download);
         assert_eq!(r(KeyCode::Char('w')), Action::Watch);
+        assert_eq!(r(KeyCode::Char('P')), Action::OpenPlayerPicker);
         assert_eq!(r(KeyCode::Char('s')), Action::OpenSettings);
         assert_eq!(r(KeyCode::Char('?')), Action::ToggleHelp);
         assert_eq!(r(KeyCode::Char('q')), Action::Quit);
@@ -1179,7 +1181,7 @@ mod tests {
         #[rustfmt::skip]
         let keys = [
             "enter", "↑ ↓", "← →", "d", "shift+D", "o", "tab",
-            "s", "p", "r", "x", "esc", "?", "q",
+            "s", "p", "shift+P", "r", "x", "esc", "?", "q",
         ];
         for key in keys {
             assert!(
