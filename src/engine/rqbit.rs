@@ -561,6 +561,14 @@ impl Engine for RqbitEngine {
             .ratelimits
             .set_upload_bps(mib_to_bps(upload_mib));
     }
+
+    fn shutdown<'a>(&'a self) -> EngineFuture<'a, ()> {
+        Box::pin(async move {
+            // session.stop already sleeps 1s; bound it so a hung stop cannot
+            // trap the quit path (architecture §4: never wait on sockets).
+            let _ = tokio::time::timeout(Duration::from_secs(2), RqbitEngine::shutdown(self)).await;
+        })
+    }
 }
 
 /// MiB/s to librqbit's bytes-per-second limiter input. librqbit uses

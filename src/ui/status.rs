@@ -260,18 +260,38 @@ pub fn draw(
             ranges[0].2 as usize
         };
 
+        // `q quit` is reserved so truncation of the context cannot eat it.
+        // Now-playing binds `q` to end watch, so it is omitted there.
+        let quit_hint = if screen == Screen::NowPlaying {
+            ""
+        } else {
+            "q quit"
+        };
+        let quit_w = if quit_hint.is_empty() {
+            0
+        } else {
+            quit_hint.chars().count() + 1
+        };
+
         let left_prefix_w = label.chars().count() + sep.chars().count();
-        let max_context_w = buttons_start.saturating_sub(left_prefix_w + 1);
+        let max_context_w = buttons_start.saturating_sub(left_prefix_w + 1 + quit_w);
         let context = truncate_to(&raw_context, max_context_w);
-        let left_used = left_prefix_w + context.chars().count();
+        let left_used = left_prefix_w + context.chars().count() + quit_w;
         let fill_left = buttons_start.saturating_sub(left_used);
 
         let mut spans = vec![
             Span::styled(label, Style::default().fg(colors.accent().to_ratatui())),
             Span::styled(sep, Style::default().fg(colors.border().to_ratatui())),
             Span::styled(context, Style::default().fg(colors.muted().to_ratatui())),
-            Span::raw(" ".repeat(fill_left)),
         ];
+        if !quit_hint.is_empty() {
+            spans.push(Span::raw(" "));
+            spans.push(Span::styled(
+                quit_hint,
+                Style::default().fg(colors.muted().to_ratatui()),
+            ));
+        }
+        spans.push(Span::raw(" ".repeat(fill_left)));
 
         for (i, (tab, text, start_x, end_x)) in ranges.into_iter().enumerate() {
             if i > 0 {
@@ -530,6 +550,10 @@ mod tests {
             .collect();
         assert!(symbols.contains("dune"), "query context shown");
         assert!(!symbols.contains("80x24"), "no resize hint at the minimum");
+        assert!(
+            symbols.contains("q quit"),
+            "status footer names the quit binding, got: {symbols}"
+        );
     }
 
     #[test]

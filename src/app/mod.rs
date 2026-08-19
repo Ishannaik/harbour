@@ -568,12 +568,26 @@ pub async fn run(
         }
     }
 
-    // Flush before standing the crash breaker down: a crash between the two
-    // would otherwise leave a clean marker over stale state.
-    if let Err(err) = app.store.flush_and_disarm(app.queue.items()) {
-        eprintln!("harbour: could not save state on exit: {err}");
-    }
+    graceful_quit(&app).await;
     Ok(())
+}
+
+/// FR-08 / issue #81: flush the ledger, stop the engine, then clear the crash
+/// marker. Terminal restore is the [`TerminalGuard`] drop after this returns.
+/// A failed flush leaves the marker armed — clearing first would stand the
+/// breaker down over stale state.
+async fn graceful_quit(app: &App) {
+    let flushed = match app.store.save_ledger(app.queue.items()) {
+        Ok(()) => true,
+        Err(err) => {
+            eprintln!("harbour: could not save state on exit: {err}");
+            false
+        }
+    };
+    app.queue.engine().shutdown().await;
+    if flushed && let Err(err) = app.store.disarm_boot_marker() {
+        eprintln!("harbour: could not clear the crash marker: {err}");
+    }
 }
 
 /// One synchronized frame. Extracted so the theme lock never lives inside
@@ -818,6 +832,78 @@ mod app_tests {
             stranger.exists(),
             "non-torrent entries in the cache dir are never touched"
         );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    fn test_app(engine: Arc<FakeEngine>, label: &str) -> (App, PathBuf) {
+        let root =
+            std::env::temp_dir().join(format!("harbour-app-test-{label}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("scratch dir");
+        let app = App {
+            state: AppState::default(),
+            queue: Queue::new(engine, 0),
+            search: SearchEngine::new(Vec::new()),
+            store: Store::new(&root),
+            config: Config::default(),
+            disabled_sources: HashSet::new(),
+            partial: HashMap::new(),
+            search_cancel: None,
+            events_tx: mpsc::unbounded_channel().0,
+            history: Vec::new(),
+            help_open: false,
+            settings_open: false,
+            settings: SettingsState::default(),
+            theme: Arc::new(Mutex::new(Theme::titanium())),
+            watch: None,
+            picker: PlayerPicker::default(),
+            picker_pending: None,
+            episode_picker: crate::ui::EpisodePicker::default(),
+            batch_picker: crate::ui::BatchPicker::default(),
+            query_cache: HashMap::new(),
+            quitting: false,
+        };
+        (app, root)
+    }
+
+    #[tokio::test]
+    async fn quit_flushes_the_ledger_stops_the_engine_and_clears_the_crash_marker() {
+        let engine = Arc::new(FakeEngine::new());
+        let (mut app, root) = test_app(engine.clone(), "quit");
+        app.store.arm_boot_marker().expect("arm crash marker");
+
+        let magnet = format!("magnet:?xt=urn:btih:{}", "a".repeat(40));
+        let outcome = app
+            .queue
+            .add(
+                crate::queue::AddInput {
+                    id: "a".repeat(40),
+                    name: "movie".into(),
+                    source: Some(crate::core::types::SourceId::Yts),
+                    magnet: Some(magnet),
+                    bytes: None,
+                    dir: root.join("dl"),
+                    size_bytes: 1000,
+                    only_files: None,
+                },
+                1_786_000_000,
+            )
+            .await;
+        assert_eq!(outcome, crate::queue::AddOutcome::Started);
+
+        graceful_quit(&app).await;
+
+        assert!(
+            engine.shutdown_called(),
+            "quit must stop the engine session"
+        );
+        assert!(
+            !app.store.boot_was_interrupted(),
+            "a clean quit stands the crash breaker down"
+        );
+        let items = app.store.load_ledger().value();
+        assert_eq!(items.len(), 1, "ledger flushed before exit");
+        assert_eq!(items[0].name, "movie");
         let _ = std::fs::remove_dir_all(&root);
     }
 }

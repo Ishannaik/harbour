@@ -374,6 +374,24 @@ pub(crate) fn draw_splash(
             }
         }
     }
+
+    // After the panel so a tall logo cannot clip it (issue #81).
+    let area = frame.area();
+    let footer_area = Rect::new(
+        area.x,
+        area.y + area.height.saturating_sub(1),
+        area.width,
+        1,
+    );
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            "q quit",
+            Style::default().fg(colors.muted().to_ratatui()),
+        )))
+        .alignment(Alignment::Center)
+        .style(Style::default().bg(bg)),
+        footer_area,
+    );
 }
 
 /// Fade-in progress for a staggered element: 0 before `at`, 1 after
@@ -383,5 +401,34 @@ fn fade_t(elapsed: Duration, at: Duration, dur: Duration) -> f64 {
         0.0
     } else {
         ((elapsed - at).as_secs_f64() / dur.as_secs_f64()).clamp(0.0, 1.0)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    #[test]
+    fn splash_footer_names_the_quit_binding() {
+        let theme = Theme::titanium();
+        let mut splash = SplashState::new(&theme);
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).expect("test backend");
+        terminal
+            .draw(|frame| draw_splash(frame, &theme, &mut splash, Instant::now()))
+            .expect("draw");
+        let symbols: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(
+            symbols.contains("q quit"),
+            "splash footer names the quit binding, got: {symbols}"
+        );
     }
 }
