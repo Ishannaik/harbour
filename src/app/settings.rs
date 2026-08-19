@@ -29,6 +29,7 @@ pub(crate) fn settings_activate(app: &mut App) {
                 settings_toggle_source(app, id);
             }
         }
+        RowKind::Action => super::actions::open_clear_cache_confirm(app),
     }
 }
 

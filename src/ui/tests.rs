@@ -378,7 +378,7 @@ fn help_snapshot_modal() {
         help::draw(f, f.area(), &theme);
     });
     assert!(out.contains(" keys ") || out.contains("keybinds"));
-    assert!(out.contains("quit"));
+    assert!(out.contains("enter"));
     assert!(out.contains("watch"), "w binding listed");
 }
 

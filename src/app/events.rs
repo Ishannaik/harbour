@@ -12,7 +12,7 @@ use crate::ui::player::PickerMode;
 
 use super::actions::{
     apply_confirm, download_selected, enqueue_magnet, enqueue_torrent, move_selection,
-    move_selection_to, open_remove_confirm, retry_selected, toggle_pause,
+    move_selection_to, open_clear_cache_confirm, open_remove_confirm, retry_selected, toggle_pause,
 };
 use super::settings::{
     cancel_folder_prompt, commit_folder_prompt, open_folder_prompt, settings_activate,
@@ -401,6 +401,7 @@ async fn apply_action(app: &mut App, action: Action) {
         Action::Retry => retry_selected(app).await,
         Action::Remove => open_remove_confirm(app, false),
         Action::RemoveAndDelete => open_remove_confirm(app, true),
+        Action::ClearCache => open_clear_cache_confirm(app),
         Action::ConfirmChoose => {
             let yes = app.confirm.yes_selected;
             apply_confirm(app, yes).await;
