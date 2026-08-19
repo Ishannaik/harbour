@@ -109,14 +109,12 @@ impl RqbitEngine {
         let deadline = tokio::time::Instant::now() + METADATA_GRACE;
         let file_id = loop {
             let found = handle.with_metadata(|meta| {
-                let mut videos: Vec<_> = meta
-                    .file_infos
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, f)| is_video(&f.relative_filename))
-                    .collect();
-                videos.sort_by(|(_, a), (_, b)| a.relative_filename.cmp(&b.relative_filename));
-                videos.first().map(|(i, _)| *i)
+                largest_video_index(
+                    meta.file_infos
+                        .iter()
+                        .enumerate()
+                        .map(|(i, f)| (i, f.len, f.relative_filename.as_path())),
+                )
             });
             match found {
                 Ok(Some(i)) => break i,
@@ -149,6 +147,8 @@ impl RqbitEngine {
                         size_bytes: f.len,
                     })
                     .collect();
+                // Name-sort is for the episode picker list; stream_url_for
+                // picks the largest file separately (issue #72).
                 videos.sort_by(|a, b| a.name.cmp(&b.name));
                 videos
             });
@@ -173,6 +173,19 @@ impl RqbitEngine {
 const METADATA_GRACE: std::time::Duration = std::time::Duration::from_secs(8);
 /// Poll cadence while waiting.
 const METADATA_RETRY: std::time::Duration = std::time::Duration::from_millis(200);
+
+/// Index of the largest video in `(file_id, size, path)` — not the
+/// alphabetical first. Season packs often ship `sample.mkv` which would
+/// otherwise win on name and send the player a trailer (issue #72).
+fn largest_video_index<'a>(
+    files: impl IntoIterator<Item = (usize, u64, &'a Path)>,
+) -> Option<usize> {
+    files
+        .into_iter()
+        .filter(|(_, _, path)| is_video(path))
+        .max_by_key(|(_, len, _)| *len)
+        .map(|(idx, _, _)| idx)
+}
 
 /// Video extensions a torrent file must carry to be stream-watchable.
 fn is_video(path: &std::path::Path) -> bool {
@@ -621,6 +634,22 @@ mod tests {
         assert!(!is_video(Path::new("pack.rar")));
         assert!(!is_video(Path::new("data.7z")));
         assert!(is_video(Path::new("movie.mkv")));
+    }
+
+    #[test]
+    fn stream_url_picks_the_largest_video_not_the_alphabetical_first() {
+        // `aaa.mkv` sorts first by name; the episode is larger. A name-sort
+        // would pick the sample-sized file and send the player a trailer.
+        let files = [
+            (0, 1_024, Path::new("aaa.mkv")),
+            (1, 4_000_000_000, Path::new("show.s01e01.mkv")),
+            (2, 100, Path::new("zzz.nfo")),
+        ];
+        assert_eq!(
+            largest_video_index(files),
+            Some(1),
+            "the episode must win over the alphabetically-first file"
+        );
     }
 
     #[test]

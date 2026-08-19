@@ -365,9 +365,9 @@ pub(crate) async fn choose_episode(app: &mut App, opt_idx: Option<usize>) {
 /// player on a baffling "unable to open MRL". Probing turns that into our
 /// own banner with the real reason, and a live swarm answers in seconds.
 ///
-/// The probe is a `Range: bytes=0-0` request: a successful answer is also
-/// what lets the now-playing view honestly state "seeking supported" (FR-59)
-/// — the endpoint proved it honors Range, which is what player seeking is.
+/// The probe is a `Range: bytes=0-0` request (FR-104): only a real `206`
+/// proves seeking will work. A bare `200`, a transport error, or six
+/// exhausted attempts is `Err` — never `Ok(())` after failure (issue #72).
 async fn probe_stream(url: &str) -> Result<(), String> {
     let client = match reqwest::Client::builder()
         .connect_timeout(std::time::Duration::from_millis(500))
@@ -378,16 +378,23 @@ async fn probe_stream(url: &str) -> Result<(), String> {
         Err(e) => return Err(format!("cannot build probe client: {e}")),
     };
 
+    let mut last = "no response".to_string();
     for _ in 0..6 {
-        if let Ok(resp) = client.get(url).header("Range", "bytes=0-1024").send().await {
-            let status = resp.status();
-            if status.is_success() || status == reqwest::StatusCode::PARTIAL_CONTENT {
-                return Ok(());
+        match client.get(url).header("Range", "bytes=0-0").send().await {
+            Ok(resp) => {
+                let status = resp.status();
+                if status == reqwest::StatusCode::PARTIAL_CONTENT {
+                    return Ok(());
+                }
+                last = format!("HTTP {status} (need 206 Partial Content)");
             }
+            Err(e) => last = e.to_string(),
         }
         tokio::time::sleep(std::time::Duration::from_millis(300)).await;
     }
-    Ok(())
+    Err(format!(
+        "not enough data yet — opening Range never returned 206 ({last})"
+    ))
 }
 
 /// Ends the session and returns to the downloads screen (FR-59: player exit
@@ -412,9 +419,12 @@ pub(crate) async fn end_watch(app: &mut App) {
         return;
     };
     if !ephemeral {
+        // Sequential pieces that already landed stay on disk. Ending watch
+        // never deletes a real download (issue #72).
         return;
     }
-    // The dedupe guard: a queue item with this infohash owns its files.
+    // The dedupe guard: a queue item with this infohash owns its files —
+    // even if this session was watch-now of the same magnet.
     if app.queue.get(&id).is_some() {
         return;
     }
@@ -431,7 +441,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use crate::core::error::EngineError;
-    use crate::core::types::{AddRequest, Engine, EngineFuture, EngineSnapshot};
+    use crate::core::types::{AddRequest, Engine, EngineFuture, EngineSnapshot, TorrentFileView};
     use crate::engine::fake::FakeEngine;
     use crate::persist::{Config, Store};
     use crate::queue::{AddInput, Queue};
@@ -529,6 +539,17 @@ mod tests {
         app.state.screen = Screen::Downloads;
     }
 
+    fn mark_watchable(engine: &FakeEngine) {
+        engine.set_video_files(
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            vec![TorrentFileView {
+                id: 0,
+                name: "movie.mkv".into(),
+                size_bytes: 1,
+            }],
+        );
+    }
+
     #[tokio::test]
     async fn watching_a_zip_only_torrent_never_launches_a_player() {
         let engine = Arc::new(ZipStreamEngine(FakeEngine::new()));
@@ -588,8 +609,10 @@ mod tests {
 
     #[tokio::test]
     async fn first_watch_with_unset_player_opens_the_picker() {
-        let (mut app, root) = test_app(Arc::new(FakeEngine::new()), "first-w");
+        let engine = Arc::new(FakeEngine::new());
+        let (mut app, root) = test_app(engine.clone(), "first-w");
         enqueue_one(&mut app, &root).await;
+        mark_watchable(&engine);
         assert!(app.config.player.is_none());
 
         start_watch(&mut app).await;
@@ -604,8 +627,10 @@ mod tests {
 
     #[tokio::test]
     async fn second_watch_after_a_choice_does_not_open_the_picker() {
-        let (mut app, root) = test_app(Arc::new(FakeEngine::new()), "second-w");
+        let engine = Arc::new(FakeEngine::new());
+        let (mut app, root) = test_app(engine.clone(), "second-w");
         enqueue_one(&mut app, &root).await;
+        mark_watchable(&engine);
         start_watch(&mut app).await;
         assert!(app.picker.open);
 
@@ -625,13 +650,179 @@ mod tests {
 
     #[tokio::test]
     async fn configured_player_skips_the_picker() {
-        let (mut app, root) = test_app(Arc::new(FakeEngine::new()), "configured");
+        let engine = Arc::new(FakeEngine::new());
+        let (mut app, root) = test_app(engine.clone(), "configured");
         enqueue_one(&mut app, &root).await;
+        mark_watchable(&engine);
         app.config.player = Some("mpv".into());
 
         start_watch(&mut app).await;
 
         assert!(!app.picker.open);
         assert!(app.picker_pending.is_none());
+    }
+
+    /// Serves one HTTP status for every accepted connection, then closes.
+    async fn serve_status(status_line: &'static str, extra_headers: &'static str) -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind probe stub");
+        let port = listener.local_addr().expect("addr").port();
+        tokio::spawn(async move {
+            loop {
+                answer_once(&listener, status_line, extra_headers).await;
+            }
+        });
+        format!("http://127.0.0.1:{port}/stream")
+    }
+
+    async fn answer_once(
+        listener: &tokio::net::TcpListener,
+        status_line: &str,
+        extra_headers: &str,
+    ) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let Ok((mut stream, _)) = listener.accept().await else {
+            return;
+        };
+        let mut buf = [0u8; 1024];
+        let _ = stream.read(&mut buf).await;
+        let resp = format!(
+            "HTTP/1.1 {status_line}\r\n\
+             Content-Length: 1\r\n\
+             Connection: close\r\n\
+             {extra_headers}\r\nx"
+        );
+        let _ = stream.write_all(resp.as_bytes()).await;
+    }
+
+    #[tokio::test]
+    async fn probe_stream_returns_err_after_failed_range_probes() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let port = listener.local_addr().expect("addr").port();
+        drop(listener);
+        let url = format!("http://127.0.0.1:{port}/stream");
+        let err = probe_stream(&url)
+            .await
+            .expect_err("six failed Range probes must be Err, never Ok(())");
+        assert!(
+            !err.is_empty(),
+            "the caller needs a reason to put on the banner"
+        );
+    }
+
+    #[tokio::test]
+    async fn probe_stream_treats_a_bare_200_as_failure() {
+        let url = serve_status("200 OK", "").await;
+        probe_stream(&url)
+            .await
+            .expect_err("200 on a Range request means seeking will not work");
+    }
+
+    #[tokio::test]
+    async fn probe_stream_accepts_206_partial_content() {
+        let url = serve_status("206 Partial Content", "Content-Range: bytes 0-0/1\r\n").await;
+        probe_stream(&url)
+            .await
+            .expect("a real Range 206 is the readiness gate");
+    }
+
+    struct RecordingEngine {
+        inner: FakeEngine,
+        removes: Arc<Mutex<Vec<(String, bool)>>>,
+    }
+
+    impl Engine for RecordingEngine {
+        fn add<'a>(&'a self, req: AddRequest) -> EngineFuture<'a, Result<(), EngineError>> {
+            self.inner.add(req)
+        }
+        fn pause<'a>(&'a self, id: &'a str) -> EngineFuture<'a, Result<(), EngineError>> {
+            self.inner.pause(id)
+        }
+        fn resume<'a>(&'a self, id: &'a str) -> EngineFuture<'a, Result<(), EngineError>> {
+            self.inner.resume(id)
+        }
+        fn remove<'a>(
+            &'a self,
+            id: &'a str,
+            delete_files: bool,
+        ) -> EngineFuture<'a, Result<(), EngineError>> {
+            self.removes
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .push((id.to_string(), delete_files));
+            self.inner.remove(id, delete_files)
+        }
+        fn snapshot(&self) -> Vec<EngineSnapshot> {
+            self.inner.snapshot()
+        }
+    }
+
+    #[tokio::test]
+    async fn ending_a_real_download_watch_does_not_delete_pieces() {
+        let removes = Arc::new(Mutex::new(Vec::new()));
+        let engine = Arc::new(RecordingEngine {
+            inner: FakeEngine::new(),
+            removes: Arc::clone(&removes),
+        });
+        let (mut app, root) = test_app(engine, "keep-pieces");
+        enqueue_one(&mut app, &root).await;
+        let piece = root.join("dl").join("sequential.piece");
+        std::fs::create_dir_all(piece.parent().unwrap()).unwrap();
+        std::fs::write(&piece, b"landed").unwrap();
+
+        app.state.now_playing = Some(crate::ui::NowPlaying {
+            id: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
+            name: "Movie".into(),
+            stream_url: "http://127.0.0.1:1/stream".into(),
+            ephemeral: false,
+        });
+        end_watch(&mut app).await;
+
+        assert!(
+            piece.exists(),
+            "stopping watch must leave sequential pieces of a real download"
+        );
+        let recorded = removes.lock().unwrap_or_else(|p| p.into_inner());
+        assert!(
+            recorded.is_empty(),
+            "engine.remove must not run for a queue item, got {recorded:?}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn ending_watch_now_of_a_queued_infohash_does_not_delete_pieces() {
+        let removes = Arc::new(Mutex::new(Vec::new()));
+        let engine = Arc::new(RecordingEngine {
+            inner: FakeEngine::new(),
+            removes: Arc::clone(&removes),
+        });
+        let (mut app, root) = test_app(engine, "ephemeral-queued");
+        enqueue_one(&mut app, &root).await;
+        let piece = root.join("dl").join("sequential.piece");
+        std::fs::create_dir_all(piece.parent().unwrap()).unwrap();
+        std::fs::write(&piece, b"landed").unwrap();
+
+        app.state.now_playing = Some(crate::ui::NowPlaying {
+            id: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
+            name: "Movie".into(),
+            stream_url: "http://127.0.0.1:1/stream".into(),
+            ephemeral: true,
+        });
+        end_watch(&mut app).await;
+
+        assert!(
+            piece.exists(),
+            "a real download of the same infohash owns the files"
+        );
+        let recorded = removes.lock().unwrap_or_else(|p| p.into_inner());
+        assert!(
+            recorded.is_empty(),
+            "must not delete through the ephemeral path when the queue owns the hash"
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

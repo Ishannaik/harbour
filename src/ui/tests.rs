@@ -420,7 +420,7 @@ fn now_playing_snapshot() {
         ephemeral: false,
     };
     let out = render(|f| {
-        now_playing::draw(f, f.area(), &np, &theme);
+        now_playing::draw(f, f.area(), &np, None, &theme);
     });
     assert!(out.contains("now playing"));
     assert!(out.contains("Frieren"));
