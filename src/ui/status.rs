@@ -156,7 +156,7 @@ pub const STATUS_BUTTONS: &[StatusButtonDef] = &[
 pub const BUTTON_GAP: u16 = 1;
 pub const TOTAL_BUTTONS_WIDTH: u16 = 13 + 1 + 15 + 1 + 14 + 1 + 10; // 55
 
-/// Computes the column ranges (start_x, end_x) for the status buttons given the total status bar width.
+/// Column ranges `(start_x, end_x)` for status buttons at `total_width`.
 pub fn status_button_ranges(total_width: u16) -> Vec<(StatusTab, &'static str, u16, u16)> {
     if total_width < TOTAL_BUTTONS_WIDTH + 4 {
         return Vec::new();

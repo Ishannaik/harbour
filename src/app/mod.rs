@@ -139,7 +139,7 @@ struct App {
 }
 
 impl App {
-    /// Checks the query cache; returns true if fresh results were applied and no network search is needed.
+    /// True if the query cache had a fresh hit and results were applied.
     fn try_apply_cached_search(&mut self, query: &str) -> bool {
         let cache_ttl = std::time::Duration::from_secs(900);
         let Some((ts, cached_results, counts, health)) = self.query_cache.get(query) else {
