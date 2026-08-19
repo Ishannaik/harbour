@@ -12,7 +12,9 @@ use std::collections::HashSet;
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 
-use crate::core::types::{SourceId, SourceStatus, TorrentResult};
+use crate::core::types::{
+    EngineStats, ItemView, QueueItem, QueueStatus, SourceId, SourceStatus, TorrentResult,
+};
 use crate::fake;
 use crate::theme::Theme;
 use crate::ui::{
@@ -209,6 +211,29 @@ fn search_snapshot_unreported_health_is_em_dash() {
 }
 
 #[test]
+fn search_snapshot_checking_source_not_connecting() {
+    let mut state = SearchState {
+        searching: true,
+        ..SearchState::default()
+    };
+    for id in SourceId::ALL {
+        state.source_health.insert(id, SourceStatus::Checking);
+    }
+    let theme = Theme::titanium();
+    let out = render(|f| {
+        search::draw(f, f.area(), &state, &HashSet::new(), &theme, None);
+    });
+    assert!(
+        out.contains("checking source"),
+        "sidebar/source tracker must name a source check, got:\n{out}"
+    );
+    assert!(
+        !out.contains("connecting"),
+        "connecting is BitTorrent, not source health, got:\n{out}"
+    );
+}
+
+#[test]
 fn search_snapshot_empty_state() {
     let theme = Theme::titanium();
     let out = render(|f| {
@@ -241,6 +266,69 @@ fn downloads_snapshot_active_tab() {
     assert!(out.contains("Shogun"), "paused item visible on active tab");
     assert!(out.contains("recently downloaded"));
     assert!(out.contains("Dune: Part Two"), "history row");
+}
+
+#[test]
+fn downloads_snapshot_metadata_and_peers_copy() {
+    let mut meta_item = QueueItem::new(
+        "a".repeat(40),
+        "Waiting for torrent file".into(),
+        None,
+        None,
+        std::path::PathBuf::from("~/harbour/downloads"),
+        0,
+    );
+    meta_item.status = QueueStatus::Downloading;
+    let meta = ItemView::new(
+        meta_item,
+        Some(EngineStats {
+            total_bytes: 0,
+            peers: None,
+            ..EngineStats::default()
+        }),
+    );
+
+    let mut swarm_item = QueueItem::new(
+        "b".repeat(40),
+        "Waiting for swarm".into(),
+        None,
+        None,
+        std::path::PathBuf::from("~/harbour/downloads"),
+        0,
+    );
+    swarm_item.status = QueueStatus::Downloading;
+    swarm_item.total_bytes = 1000;
+    let swarm = ItemView::new(
+        swarm_item,
+        Some(EngineStats {
+            total_bytes: 1000,
+            peers: Some(0),
+            ..EngineStats::default()
+        }),
+    );
+
+    let state = DownloadsState {
+        items: vec![meta, swarm],
+        history: Vec::new(),
+        selected: 0,
+        show_seeding: false,
+    };
+    let theme = Theme::titanium();
+    let out = render(|f| {
+        downloads::draw(f, f.area(), &state, &theme, None);
+    });
+    assert!(
+        out.contains("fetching metadata"),
+        "size 0 row names metadata fetch, got:\n{out}"
+    );
+    assert!(
+        out.contains("looking for peers"),
+        "zero-peer row names swarm join, got:\n{out}"
+    );
+    assert!(
+        !out.contains("connecting"),
+        "connecting is never user-facing, got:\n{out}"
+    );
 }
 
 #[test]
