@@ -24,11 +24,12 @@
 #![allow(dead_code)]
 
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::core::error::EngineError;
+use crate::core::paths;
 use crate::core::types::{
     AddBytesRequest, AddRequest, CompletedItem, Engine, EngineEvent, EngineItemState, EngineStats,
     InfoHash, ItemView, QueueItem, QueueStatus, SourceId, project_status,
@@ -84,6 +85,15 @@ pub enum AddOutcome {
     /// Known and previously failed or flagged missing; it has been reset and
     /// retried (a `Failed` retry, or a `Missing` re-check, `FR-46`).
     Retried,
+}
+
+/// Why [`Queue::remove`] will not delete payload files even when asked.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeleteBlock {
+    /// FR-79: a `missing` item has nothing on disk to delete.
+    Missing,
+    /// FR-77: another ledger item shares this dir, or an ancestor/descendant.
+    SharedDirectory,
 }
 
 pub struct Queue {
@@ -381,12 +391,31 @@ impl Queue {
         Ok(())
     }
 
+    /// Why file deletion would be skipped for `id`, if it would.
+    ///
+    /// Missing items skip silently (FR-79). Overlapping download dirs skip
+    /// with a banner the UI is expected to show (FR-77). Watch-session
+    /// streaming is an App concern — the queue cannot see it.
+    pub fn delete_files_blocked_by(&self, id: &str) -> Option<DeleteBlock> {
+        let item = self.items.iter().find(|i| i.id == id)?;
+        if item.status == QueueStatus::Missing {
+            return Some(DeleteBlock::Missing);
+        }
+        let dir = paths::normalize_dir(&item.dir);
+        self.items
+            .iter()
+            .any(|other| other.id != id && dirs_overlap(&dir, &paths::normalize_dir(&other.dir)))
+            .then_some(DeleteBlock::SharedDirectory)
+    }
+
     /// Removes an item entirely. `delete_files` is destructive and is never a
-    /// default anywhere above this layer.
+    /// default anywhere above this layer; overlapping dirs and `missing`
+    /// items force it false even when a caller passes true (FR-77/FR-79).
     pub async fn remove(&mut self, id: &str, delete_files: bool) -> Result<(), EngineError> {
         if !self.items.iter().any(|i| i.id == id) {
             return Err(EngineError::NotFound);
         }
+        let delete_files = delete_files && self.delete_files_blocked_by(id).is_none();
         self.engine.remove(id, delete_files).await?;
         self.items.retain(|i| i.id != id);
         self.runtime.remove(id);
@@ -652,6 +681,14 @@ fn reset_runtime(rt: &mut Runtime) {
         stats.speed_mib = 0.0;
         stats.peers = None;
     }
+}
+
+/// True when `a` and `b` are the same directory or one contains the other.
+///
+/// Component-wise (`Path::starts_with`), so `/tmp/dl` and `/tmp/dl-2` do not
+/// overlap. Callers must `normalize_dir` first (FR-77).
+fn dirs_overlap(a: &Path, b: &Path) -> bool {
+    a.starts_with(b) || b.starts_with(a)
 }
 
 #[cfg(test)]
@@ -1093,6 +1130,95 @@ mod tests {
         assert!(!engine.contains(&id_of("a")));
         assert_eq!(q.get(&id_of("b")).unwrap().status, QueueStatus::Downloading);
         assert_eq!(q.remove("unknown", false).await, Err(EngineError::NotFound));
+    }
+
+    fn input_in(id: &str, at: i64, dir: &str) -> AddInput {
+        let mut item = input(id, at);
+        item.dir = PathBuf::from(dir);
+        item
+    }
+
+    #[tokio::test]
+    async fn delete_files_is_blocked_when_another_item_shares_the_directory() {
+        let (mut q, engine) = setup(0);
+        q.add(input_in("a", 1, "/tmp/shared"), 1).await;
+        q.add(input_in("b", 2, "/tmp/shared"), 2).await;
+        assert_eq!(
+            q.delete_files_blocked_by(&id_of("a")),
+            Some(DeleteBlock::SharedDirectory)
+        );
+        q.remove(&id_of("a"), true).await.unwrap();
+        assert!(q.get(&id_of("a")).is_none(), "the item is still forgotten");
+        assert_eq!(
+            engine.last_remove_deleted_files(),
+            Some(false),
+            "FR-77: overlapping dirs keep the files"
+        );
+    }
+
+    #[tokio::test]
+    async fn delete_files_is_blocked_for_ancestor_or_descendant_dirs() {
+        let (mut q, engine) = setup(0);
+        q.add(input_in("a", 1, "/tmp/dl"), 1).await;
+        q.add(input_in("b", 2, "/tmp/dl/movie"), 2).await;
+        assert_eq!(
+            q.delete_files_blocked_by(&id_of("a")),
+            Some(DeleteBlock::SharedDirectory)
+        );
+        q.remove(&id_of("a"), true).await.unwrap();
+        assert_eq!(engine.last_remove_deleted_files(), Some(false));
+    }
+
+    #[tokio::test]
+    async fn delete_files_is_blocked_when_dirs_differ_only_by_dot_components() {
+        let (mut q, engine) = setup(0);
+        q.add(input_in("a", 1, "/tmp/shared/./here"), 1).await;
+        q.add(input_in("b", 2, "/tmp/shared/here/../here"), 2).await;
+        assert_eq!(
+            q.delete_files_blocked_by(&id_of("a")),
+            Some(DeleteBlock::SharedDirectory)
+        );
+        q.remove(&id_of("a"), true).await.unwrap();
+        assert_eq!(engine.last_remove_deleted_files(), Some(false));
+    }
+
+    #[tokio::test]
+    async fn delete_files_proceeds_when_dirs_are_siblings() {
+        let (mut q, engine) = setup(0);
+        q.add(input_in("a", 1, "/tmp/dl-a"), 1).await;
+        q.add(input_in("b", 2, "/tmp/dl-b"), 2).await;
+        assert_eq!(q.delete_files_blocked_by(&id_of("a")), None);
+        q.remove(&id_of("a"), true).await.unwrap();
+        assert_eq!(
+            engine.last_remove_deleted_files(),
+            Some(true),
+            "sibling dirs do not overlap"
+        );
+    }
+
+    #[tokio::test]
+    async fn deleting_a_missing_item_skips_file_deletion() {
+        let (mut q, engine) = setup(0);
+        q.add(input_in("a", 1, "/tmp/only-a"), 1).await;
+        engine.deliver_metadata(&id_of("a"), "Example", 1000);
+        engine.complete(&id_of("a"));
+        let t0 = Instant::now();
+        q.tick(t0).await;
+        engine.lose_files(&id_of("a"));
+        q.tick(t0 + SEED_GRACE + Duration::from_secs(1)).await;
+        q.tick(t0 + SEED_GRACE + Duration::from_secs(2)).await;
+        assert_eq!(q.get(&id_of("a")).unwrap().status, QueueStatus::Missing);
+        assert_eq!(
+            q.delete_files_blocked_by(&id_of("a")),
+            Some(DeleteBlock::Missing)
+        );
+        q.remove(&id_of("a"), true).await.unwrap();
+        assert!(q.get(&id_of("a")).is_none());
+        assert_eq!(
+            engine.last_remove_deleted_files(),
+            Some(false),
+            "FR-79: missing items skip deletion silently"
+        );
     }
 
     #[tokio::test]
