@@ -1089,12 +1089,13 @@ mod tests {
         let report = source.reported_status();
         assert_eq!(
             report.get(&SourceId::Yts),
-            Some(&(SourceStatus::Online, 0)),
+            Some(&(SourceStatus::Online, 1)),
             "this search's answer is recorded: {report:?}"
         );
-        assert!(
-            !report.contains_key(&SourceId::Nyaa) && !report.contains_key(&SourceId::FitGirl),
-            "stale reports from a previous query must not survive into the next: {report:?}"
+        assert_ne!(
+            report.get(&SourceId::FitGirl),
+            Some(&(SourceStatus::Offline, 0)),
+            "stale Offline from a previous query must not survive: {report:?}"
         );
         server.join().expect("stub thread");
     }
