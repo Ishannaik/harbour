@@ -146,6 +146,28 @@ async fn nothing_watchable(app: &App, id: &str, dir: &Path) -> bool {
         && crate::watch::primary_media(dir).is_none()
 }
 
+/// Sidecar `.srt`/`.ass` next to the video being watched, from the torrent
+/// file list or the download dir. Never inspects MKV tracks (issue #80).
+async fn sidecar_path(app: &App, id: &str, dir: &Path, video_rel: Option<&str>) -> Option<PathBuf> {
+    let names: Vec<String> = app
+        .queue
+        .engine()
+        .list_subtitle_files(id)
+        .await
+        .into_iter()
+        .map(|f| f.name)
+        .collect();
+    crate::watch::resolve_sidecar(dir, video_rel, &names)
+}
+
+/// Download dir for `id`, or the watch-now cache dir when there is no queue item.
+fn watch_dir(app: &App, id: &str) -> PathBuf {
+    app.queue
+        .get(id)
+        .map(|item| item.dir.clone())
+        .unwrap_or_else(|| app.store.root().join("cache").join(id))
+}
+
 /// Launches a watch session for `id`/`name`/`dir` with `player`: swarm
 /// streaming first, then the file-serving fallback. Shared by `start_watch`
 /// and the player picker's pending launch.
@@ -167,9 +189,12 @@ async fn launch_watch(app: &mut App, id: String, name: String, dir: PathBuf, pla
     // No engine-listed video: play a file on disk, or refuse. Never call
     // stream_url here — that is how a zip used to reach mpv (issue #76).
     if files.is_empty() {
-        watch_file_or_refuse(app, id, name, &dir, &player, false);
+        watch_file_or_refuse(app, id, name, &dir, &player, false).await;
         return;
     }
+
+    let video_rel = files.first().map(|f| f.name.clone());
+    let sub = sidecar_path(app, &id, &dir, video_rel.as_deref()).await;
 
     // Path 1: stream from the swarm while it downloads. librqbit blocks on
     // missing pieces and prioritizes the requested ones — seek works.
@@ -178,7 +203,7 @@ async fn launch_watch(app: &mut App, id: String, name: String, dir: PathBuf, pla
             app.warn(format!("watch: '{name}' is not streaming — {reason}"));
             return;
         }
-        match crate::watch::WatchSession::launch_remote(&player, &url) {
+        match crate::watch::WatchSession::launch_remote(&player, &url, sub.as_deref()) {
             Ok(session) => enter_watch(app, id, name, session, false),
             Err(err) => app.warn(format!("watch: cannot start player: {err}")),
         }
@@ -192,7 +217,7 @@ async fn launch_watch(app: &mut App, id: String, name: String, dir: PathBuf, pla
         ));
         return;
     };
-    match crate::watch::WatchSession::start(&file, &player) {
+    match crate::watch::WatchSession::start(&file, &player, sub.as_deref()) {
         Ok(session) => enter_watch(app, id, name, session, false),
         Err(err) => app.warn(format!("watch: cannot start player: {err}")),
     }
@@ -200,7 +225,7 @@ async fn launch_watch(app: &mut App, id: String, name: String, dir: PathBuf, pla
 
 /// File-serving fallback when the swarm has no video to stream. Archives and
 /// other non-media land on a banner rather than a player (issue #76).
-fn watch_file_or_refuse(
+async fn watch_file_or_refuse(
     app: &mut App,
     id: String,
     name: String,
@@ -212,7 +237,13 @@ fn watch_file_or_refuse(
         app.warn(crate::watch::unplayable_watch_banner(dir));
         return;
     };
-    match crate::watch::WatchSession::start(&file, player) {
+    let rel = file
+        .strip_prefix(dir)
+        .ok()
+        .and_then(|p| p.to_str())
+        .map(str::to_string);
+    let sub = sidecar_path(app, &id, dir, rel.as_deref()).await;
+    match crate::watch::WatchSession::start(&file, player, sub.as_deref()) {
         Ok(session) => enter_watch(app, id, name, session, ephemeral),
         Err(err) => app.warn(format!("watch: cannot start player: {err}")),
     }
@@ -239,6 +270,12 @@ fn enter_watch(
         name,
         stream_url: session.url.clone(),
         ephemeral,
+        subtitle: session
+            .subtitle
+            .as_ref()
+            .and_then(|p| p.file_name())
+            .and_then(|n| n.to_str())
+            .map(str::to_string),
     });
     app.watch = Some(session);
     app.state.screen = Screen::NowPlaying;
@@ -316,9 +353,12 @@ async fn launch_ephemeral_session(
     }
 
     if files.is_empty() {
-        watch_file_or_refuse(app, id, name, &dir, player, true);
+        watch_file_or_refuse(app, id, name, &dir, player, true).await;
         return;
     }
+
+    let video_rel = files.first().map(|f| f.name.clone());
+    let sub = sidecar_path(app, &id, &dir, video_rel.as_deref()).await;
 
     let Some(url) = app.queue.engine().stream_url(&id).await else {
         app.warn(format!("watch: the swarm cannot stream '{name}' yet"));
@@ -328,7 +368,7 @@ async fn launch_ephemeral_session(
         app.warn(format!("watch: '{name}' is not streaming — {reason}"));
         return;
     }
-    match crate::watch::WatchSession::launch_remote(player, &url) {
+    match crate::watch::WatchSession::launch_remote(player, &url, sub.as_deref()) {
         Ok(session) => enter_watch(app, id, name, session, true),
         Err(err) => app.warn(format!("watch: cannot start player: {err}")),
     }
@@ -354,7 +394,9 @@ pub(crate) async fn choose_episode(app: &mut App, opt_idx: Option<usize>) {
         app.warn(format!("watch: '{name}' is not streaming — {reason}"));
         return;
     }
-    match crate::watch::WatchSession::launch_remote(&player, &url) {
+    let dir = watch_dir(app, &id);
+    let sub = sidecar_path(app, &id, &dir, Some(&ep.name)).await;
+    match crate::watch::WatchSession::launch_remote(&player, &url, sub.as_deref()) {
         Ok(session) => enter_watch(app, id, name, session, ephemeral),
         Err(err) => app.warn(format!("watch: cannot start player: {err}")),
     }
@@ -522,7 +564,7 @@ mod tests {
         std::fs::create_dir_all(&dir).expect("download dir");
         // A watchable file so #76's archive/empty-dir guard does not fire
         // before the picker (#73) can open.
-        std::fs::write(dir.join("movie.mkv"), b"fake").expect("watchable file");
+        std::fs::write(dir.join("movie.mkv"), vec![0u8; 32]).expect("watchable file");
         app.queue
             .add(
                 AddInput {
@@ -534,7 +576,7 @@ mod tests {
                     ),
                     bytes: None,
                     dir,
-                    size_bytes: 1,
+                    size_bytes: 32,
                     only_files: None,
                 },
                 0,
@@ -784,6 +826,7 @@ mod tests {
             name: "Movie".into(),
             stream_url: "http://127.0.0.1:1/stream".into(),
             ephemeral: false,
+            subtitle: None,
         });
         end_watch(&mut app).await;
 
@@ -817,6 +860,7 @@ mod tests {
             name: "Movie".into(),
             stream_url: "http://127.0.0.1:1/stream".into(),
             ephemeral: true,
+            subtitle: None,
         });
         end_watch(&mut app).await;
 

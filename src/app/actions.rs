@@ -875,6 +875,7 @@ mod tests {
             name: "Live".into(),
             stream_url: "http://127.0.0.1/x".into(),
             ephemeral: true,
+            subtitle: None,
         });
 
         open_clear_cache_confirm(&mut app);
@@ -1085,6 +1086,7 @@ mod tests {
             name: "Dune".into(),
             stream_url: "http://127.0.0.1:9/stream".into(),
             ephemeral: false,
+            subtitle: None,
         });
 
         open_remove_confirm(&mut app, true);

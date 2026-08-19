@@ -220,6 +220,10 @@ pub struct NowPlaying {
     /// the engine (no queue item, no ledger) and its cache dir is deleted
     /// when the session ends — the stream-and-delete contract.
     pub ephemeral: bool,
+    /// Filename of a sidecar `.srt`/`.ass` passed to the player, if the torrent
+    /// had one next to the video. `None` is shown as `subs: (none in torrent)`
+    /// — harbour does not read MKV language flags.
+    pub subtitle: Option<String>,
 }
 
 pub mod batch_picker;

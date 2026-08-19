@@ -28,6 +28,14 @@ const TITLE: &str = " harbour — now playing ";
 /// Bottom hint.
 const HINT: &str = "q / esc back to the TUI";
 
+/// Footer for sidecar subs. Never claims a language we cannot read from MKV.
+fn subs_footer(state: &NowPlaying) -> String {
+    match state.subtitle.as_deref() {
+        Some(name) => format!("subs: {name}"),
+        None => "subs: (none in torrent)".into(),
+    }
+}
+
 /// Renders the now-playing screen: item name, the loopback stream URL the
 /// player opened, and the playback state harbour knows (FR-59/FR-105) — the
 /// stream is live, seeking works, download progress/speed are measured,
@@ -108,6 +116,9 @@ pub fn draw(
             Style::default().fg(muted),
         )),
         Line::default(),
+        // Sidecar only: we never parse MKV tracks, so "none" means none in the
+        // torrent's file list, not "Japanese missing".
+        Line::from(Span::styled(subs_footer(state), Style::default().fg(muted))),
         Line::from(Span::styled(HINT.to_string(), Style::default().fg(muted))),
         Line::default(),
     ]);
@@ -130,6 +141,7 @@ mod tests {
             name: "Frieren - 01 [1080p]".into(),
             stream_url: "http://127.0.0.1:4567/stream".into(),
             ephemeral: false,
+            subtitle: None,
         }
     }
 
@@ -162,6 +174,10 @@ mod tests {
             !text.contains("buffer"),
             "must never fabricate a buffer percentage"
         );
+        assert!(
+            text.contains("subs: (none in torrent)"),
+            "no sidecar is said plainly, never a language we did not read"
+        );
     }
 
     #[test]
@@ -188,6 +204,22 @@ mod tests {
         let text = render_text(&state(), Some(&view), &Theme::titanium());
         assert!(text.contains("40%"), "measured progress, not a fake buffer");
         assert!(text.contains("2.1 MiB/s"), "measured speed from ItemView");
+    }
+
+    #[test]
+    fn now_playing_footer_names_the_sidecar_file() {
+        let theme = Theme::titanium();
+        let mut state = state();
+        state.subtitle = Some("Frieren.en.srt".into());
+        let text = render_text(&state, None, &theme);
+        assert!(
+            text.contains("subs: Frieren.en.srt"),
+            "sidecar filename shown, got: {text}"
+        );
+        assert!(
+            !text.contains("(none in torrent)"),
+            "a present sidecar must not show the none-in-torrent fallback"
+        );
     }
 
     #[test]

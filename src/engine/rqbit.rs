@@ -160,6 +160,41 @@ impl RqbitEngine {
         }
     }
 
+    async fn list_subtitle_files_for(&self, id: &str) -> Vec<TorrentFileView> {
+        let Some(handle) = self.handles().get(id).cloned() else {
+            return Vec::new();
+        };
+        let deadline = tokio::time::Instant::now() + METADATA_GRACE;
+        loop {
+            let found = handle.with_metadata(|meta| {
+                let video_parents: Vec<Option<&Path>> = meta
+                    .file_infos
+                    .iter()
+                    .filter(|f| is_video(&f.relative_filename))
+                    .map(|f| f.relative_filename.parent())
+                    .collect();
+                let mut subs: Vec<TorrentFileView> = meta
+                    .file_infos
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, f)| is_sidecar_next_to_video(&f.relative_filename, &video_parents))
+                    .map(|(i, f)| TorrentFileView {
+                        id: i,
+                        name: f.relative_filename.to_string_lossy().into_owned(),
+                        size_bytes: f.len,
+                    })
+                    .collect();
+                subs.sort_by(|a, b| a.name.cmp(&b.name));
+                subs
+            });
+            match found {
+                Ok(files) => return files,
+                Err(_) if tokio::time::Instant::now() >= deadline => return Vec::new(),
+                Err(_) => tokio::time::sleep(METADATA_RETRY).await,
+            }
+        }
+    }
+
     async fn stream_file_url_for(&self, id: &str, file_id: usize) -> Option<String> {
         let server = self.stream_server().await?;
         Some(format!(
@@ -195,6 +230,19 @@ fn is_video(path: &std::path::Path) -> bool {
     path.extension()
         .and_then(|e| e.to_str())
         .is_some_and(|e| VIDEO.contains(&e.to_ascii_lowercase().as_str()))
+}
+
+/// Sidecar subtitle sitting next to a video. Nested `subs/` folders do not
+/// count — those are not "next to" the video (issue #80).
+fn is_subtitle(path: &std::path::Path) -> bool {
+    const SUB: &[&str] = &["srt", "ass"];
+    path.extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| SUB.contains(&e.to_ascii_lowercase().as_str()))
+}
+
+fn is_sidecar_next_to_video(path: &Path, video_parents: &[Option<&Path>]) -> bool {
+    is_subtitle(path) && video_parents.contains(&path.parent())
 }
 
 /// The infohash a `.torrent` payload will be keyed under (`FR-02`/`FR-39`).
@@ -559,6 +607,13 @@ impl Engine for RqbitEngine {
         Box::pin(async move { self.list_video_files_for(id).await })
     }
 
+    fn list_subtitle_files<'a>(
+        &'a self,
+        id: &'a str,
+    ) -> EngineFuture<'a, Vec<crate::core::types::TorrentFileView>> {
+        Box::pin(async move { self.list_subtitle_files_for(id).await })
+    }
+
     fn stream_file_url<'a>(
         &'a self,
         id: &'a str,
@@ -652,6 +707,22 @@ mod tests {
             largest_video_index(files),
             Some(1),
             "the episode must win over the alphabetically-first file"
+        );
+    }
+
+    #[test]
+    fn sidecar_subs_must_share_the_video_folder() {
+        assert!(is_subtitle(Path::new("Show/ep.srt")));
+        assert!(is_subtitle(Path::new("Show/ep.ass")));
+        assert!(!is_subtitle(Path::new("Show/ep.mkv")));
+        let video_parents = [Path::new("Show/ep.mkv").parent()];
+        assert!(is_sidecar_next_to_video(
+            Path::new("Show/ep.srt"),
+            &video_parents
+        ));
+        assert!(
+            !is_sidecar_next_to_video(Path::new("Show/subs/ep.srt"), &video_parents),
+            "a file in subs/ is not next to the video"
         );
     }
 
