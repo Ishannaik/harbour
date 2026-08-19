@@ -49,6 +49,8 @@ pub enum SourceId {
     /// sidebar/settings iterate it.
     #[serde(rename = "indexer")]
     Indexer,
+    #[serde(rename = "demo")]
+    Demo,
     #[serde(rename = "gameshub")]
     GamesHub,
     #[serde(rename = "cinevault")]
@@ -96,6 +98,7 @@ impl SourceId {
     pub fn as_str(self) -> &'static str {
         match self {
             SourceId::Indexer => "indexer",
+            SourceId::Demo => "demo",
             SourceId::GamesHub => "gameshub",
             SourceId::CineVault => "cinevault",
             SourceId::VaultMovies => "vault-movies",
@@ -115,6 +118,12 @@ impl SourceId {
     /// an older build; an unknown id degrades to `None` rather than failing the
     /// whole file (`plan-engine.md` §4.2).
     pub fn parse(s: &str) -> Option<SourceId> {
+        if s == "indexer" {
+            return Some(SourceId::Indexer);
+        }
+        if s == "demo" {
+            return Some(SourceId::Demo);
+        }
         SourceId::ALL.into_iter().find(|id| id.as_str() == s)
     }
 }
