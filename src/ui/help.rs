@@ -48,6 +48,11 @@ pub const BINDINGS: &[(&str, &str)] = &[
         "shift+X",
         "downloads: forget the selected item and delete its files",
     ),
+    ("c", "downloads: clear finished items (keeps files)"),
+    (
+        "shift+C",
+        "clear search cache and unused .torrent files (confirms first)",
+    ),
     (
         "shift+P",
         "anywhere: player picker — choose mpv/VLC/Windows Media Player",
