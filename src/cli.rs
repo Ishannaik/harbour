@@ -57,6 +57,9 @@ environment
   HARBOUR_MAX_DOWNLOADS   max concurrent downloads (0 or unset = unlimited)
   HARBOUR_SOURCE_TIMEOUT  per-source deadline in seconds (default 10)
   HARBOUR_STATE_DIR       relocate config, ledger and cache (testing/portable)
+  HARBOUR_SENTRY          0/off disables friend crash reports (Sentry)
+  HARBOUR_SENTRY_DSN      override the baked Sentry DSN
+  HARBOUR_SENTRY_ENV      Sentry environment tag (default friends)
 
 tip: quote magnet links — they contain & characters your shell will eat.
 ";
@@ -181,6 +184,9 @@ mod tests {
             crate::core::paths::ENV_MAX_DOWNLOADS,
             crate::core::paths::ENV_SOURCE_TIMEOUT,
             crate::core::paths::ENV_STATE_DIR,
+            crate::core::paths::ENV_SENTRY,
+            crate::core::paths::ENV_SENTRY_DSN,
+            crate::core::paths::ENV_SENTRY_ENV,
         ] {
             assert!(HELP.contains(var), "{var} is undocumented in --help");
         }
