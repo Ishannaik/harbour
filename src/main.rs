@@ -24,6 +24,7 @@ mod input;
 mod persist;
 mod queue;
 mod search;
+mod sentry_report;
 mod sources;
 mod theme;
 mod theme_watch;
@@ -105,11 +106,16 @@ fn write_crash_log(root: &Path, message: &str, location: Option<&str>) -> io::Re
 }
 
 async fn run_tui(initial: InitialAction) -> ExitCode {
+    // Sentry first so its panic integration wraps the previous hook; we
+    // then wrap Sentry so the terminal is restored *before* the event
+    // flushes (FR-09, FR-09a). Friends get the report without env vars.
+    let _sentry = sentry_report::init();
+    let after_sentry = std::panic::take_hook();
     // A TUI panic must not leave the user's shell in raw mode with no
     // cursor. The TerminalGuard also restores on unwind, but the hook runs
     // first so the panic message itself is readable and the shell is
     // declared intact — a crash is a bug report, not a broken terminal.
-    std::panic::set_hook(Box::new(|info| {
+    std::panic::set_hook(Box::new(move |info| {
         let _ = crossterm::execute!(
             std::io::stdout(),
             crossterm::cursor::Show,
@@ -132,6 +138,7 @@ async fn run_tui(initial: InitialAction) -> ExitCode {
             Ok(path) => eprintln!("crash log written to {}", path.display()),
             Err(err) => eprintln!("could not write crash log: {err}"),
         }
+        after_sentry(info);
     }));
 
     // Color capability is detected once at startup, before the alt-screen
@@ -151,6 +158,7 @@ async fn run_tui(initial: InitialAction) -> ExitCode {
         Err(err) => {
             // The terminal has already been restored by the guard at this point,
             // so this reaches a usable shell rather than a wrecked alt-screen.
+            sentry_report::capture_fatal(&err.to_string());
             eprintln!("harbour: {err}");
             ExitCode::FAILURE
         }
