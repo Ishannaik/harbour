@@ -1,5 +1,4 @@
-# One-shot Apple Silicon + Intel universal binary for friends.
-# Not part of the quality gate. Trigger with: gh workflow run mac-bin.yml
+# Ready-made Mac binary for friends. Trigger: gh workflow run mac-bin.yml
 name: mac-bin
 on:
   workflow_dispatch:
@@ -12,18 +11,13 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - uses: actions-rust-lang/setup-rust-toolchain@v1
-        with:
-          targets: aarch64-apple-darwin,x86_64-apple-darwin
-      - name: universal release binary
+      - name: release binary
         run: |
-          cargo build --release --target aarch64-apple-darwin
-          cargo build --release --target x86_64-apple-darwin
+          cargo build --release
           mkdir -p dist
-          lipo -create -output dist/harbour \
-            target/aarch64-apple-darwin/release/harbour \
-            target/x86_64-apple-darwin/release/harbour
+          cp target/release/harbour dist/harbour
           chmod +x dist/harbour
-          lipo -info dist/harbour
+          file dist/harbour
       - uses: actions/upload-artifact@v4
         with:
           name: harbour-macos
