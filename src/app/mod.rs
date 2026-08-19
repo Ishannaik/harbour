@@ -640,7 +640,8 @@ fn draw(
         }
         Screen::NowPlaying => {
             if let Some(np) = &app.state.now_playing {
-                crate::ui::now_playing::draw(frame, rows[0], np, theme);
+                let view = app.queue.views().into_iter().find(|v| v.item.id == np.id);
+                crate::ui::now_playing::draw(frame, rows[0], np, view.as_ref(), theme);
             }
         }
         _ => crate::ui::search::draw(
@@ -861,6 +862,7 @@ mod app_tests {
             episode_picker: crate::ui::EpisodePicker::default(),
             batch_picker: crate::ui::BatchPicker::default(),
             query_cache: HashMap::new(),
+            last_search_click: None,
             quitting: false,
         };
         (app, root)

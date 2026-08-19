@@ -15,7 +15,7 @@ use std::sync::Mutex;
 use crate::core::error::EngineError;
 use crate::core::types::{
     AddBytesRequest, AddRequest, Engine, EngineFuture, EngineItemState, EngineSnapshot,
-    EngineStats, InfoHash,
+    EngineStats, InfoHash, TorrentFileView,
 };
 
 #[derive(Debug, Clone)]
@@ -69,6 +69,8 @@ pub struct FakeEngine {
     speed_limits: Mutex<(Option<u64>, Option<u64>)>,
     /// Set when [`Engine::shutdown`] runs — the quit path asserts this.
     shutdown_called: Mutex<bool>,
+    /// Video files `list_video_files` should report, keyed by torrent id.
+    videos: Mutex<HashMap<InfoHash, Vec<TorrentFileView>>>,
 }
 
 impl FakeEngine {
@@ -294,6 +296,17 @@ impl Engine for FakeEngine {
                 .unwrap_or_else(|p| p.into_inner()) = true;
         })
     }
+
+    fn list_video_files<'a>(&'a self, id: &'a str) -> EngineFuture<'a, Vec<TorrentFileView>> {
+        let files = self
+            .videos
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(id)
+            .cloned()
+            .unwrap_or_default();
+        Box::pin(async move { files })
+    }
 }
 
 impl FakeEngine {
@@ -308,6 +321,15 @@ impl FakeEngine {
             .shutdown_called
             .lock()
             .unwrap_or_else(|p| p.into_inner())
+    }
+
+    /// Makes `id` look watchable to the UI without a file on disk or a stream
+    /// URL — enough for the player-picker path, not enough to spawn a player.
+    pub fn set_video_files(&self, id: &str, files: Vec<TorrentFileView>) {
+        self.videos
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(id.to_string(), files);
     }
 }
 
