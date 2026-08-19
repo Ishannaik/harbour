@@ -268,6 +268,10 @@ requiring private announces; GPU/ASCII-image rendering.
   deletes download-directory files or ledger rows. Forgetting an in-progress item (`x`)
   removes the ledger row and stops the engine torrent so it does not keep writing;
   download-dir leftovers are a separate delete-files action.
+- **FR-81** `q` opens the same confirm overlay (default No). Confirming runs graceful
+  shutdown: the ledger is flushed, engines stop, bootguard is cleared. `ctrl+c` still
+  quits immediately from every overlay (terminal convention). Now-playing `q` remains
+  EndWatch (FR-59). A second `q` on the quit overlay confirms Yes.
 
 ### 4.7 Watch mode — phase 6 (FR-57 … FR-61, FR-104, FR-105)
 
@@ -310,9 +314,10 @@ requiring private announces; GPU/ASCII-image rendering.
 - **FR-65** Build joy: `just check` / `just lines` / `just audit` mirror the CI pipeline
   locally; `.cargo/config.toml` caps build jobs at 8 so heavy builds never peg a dev
   machine; heavy verification runs in CI, not on dev machines.
-- **FR-66** `main` is branch-protected: PR required, ≥1 approval, the `quality` CI check
-  green, linear history, no force pushes or deletions. (Enabled via GitHub settings/API —
-  an owner action; this FR records that it must stay on.)
+- **FR-66** `main` is branch-protected: PR required, ≥1 approval for collaborators, the
+  `quality` CI check green, linear history, no force pushes or deletions. Admins may
+  merge without an approving review (`enforce_admins` off). (Enabled via GitHub
+  settings/API — an owner action; this FR records that it must stay on.)
 - **FR-67** Size and complexity norms: functions ≤30 LOC excellent / 31–50 acceptable /
   51–80 review / >80 refactor; cyclomatic ≤10 target, 11–15 warn, >15 refactor;
   cognitive ≤10; nesting ≤3; params ≤4 (5+ review); files ≤500 preferred, 500–700
@@ -347,7 +352,8 @@ requiring private announces; GPU/ASCII-image rendering.
   (sidebar: groups + source-health dots; gradient search bar with shimmer while results
   stream; results with size/seeders colored; staggered source tags) → downloads (active
   animated bars + speed/peers/ETA; recently downloaded; Seeding tab) → now-playing
-  (phase 6). Navigation: `?` toggles the keybind help overlay; `q` quits.
+  (phase 6). Navigation: `?` toggles the keybind help overlay; `q` opens a quit
+  confirm (FR-81).
 - **UR-02** Render cadence: 30fps base with coalesced render requests and adaptive
   backpressure from the previous frame's cost — a frame only renders when the previous one
   finished (verified by frame-timing test: no render starts while a previous render runs).
@@ -370,7 +376,8 @@ requiring private announces; GPU/ASCII-image rendering.
 - **UR-10** Keybinds (normative): Enter=search, `d`=download to default folder,
   `shift+d`=download to folder, `o`=change output folder, `p`=pause/stop seed,
   `x`=forget selected download (files stay), `shift+X`=forget and delete files
-  (both confirm, FR-76), `?`=help, `q`=quit, `w`=watch (phase 6). Screen
+  (both confirm, FR-76), `?`=help, `q`=quit (confirms first, FR-81), `w`=watch
+  (phase 6). Screen
   navigation: `Tab` cycles search ⇄ downloads; `←`/`→` switch the downloads
   tabs (Downloads/Seeding); `esc` closes the help overlay. `?` shows exactly these.
 - **UR-11** Every async operation shows state: streaming search shows shimmer + per-source

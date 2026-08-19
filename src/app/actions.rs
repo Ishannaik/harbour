@@ -305,6 +305,7 @@ pub(crate) async fn apply_confirm(app: &mut App, accept: bool) {
         ConfirmAction::Forget { id } => remove_item(app, &id, false).await,
         ConfirmAction::ForgetAndDelete { id } => remove_item(app, &id, true).await,
         ConfirmAction::ClearCache => run_clear_cache(app),
+        ConfirmAction::Quit => app.quitting = true,
     }
 }
 
@@ -337,6 +338,21 @@ async fn remove_item(app: &mut App, id: &str, delete_files: bool) {
 /// Opens the clear-cache confirm (settings row or shift+C). Defaults to No.
 pub(crate) fn open_clear_cache_confirm(app: &mut App) {
     app.confirm = ConfirmPrompt::clear_cache();
+}
+
+/// Opens the quit confirm (`q`, FR-81). Defaults to No.
+pub(crate) fn open_quit_confirm(app: &mut App) {
+    app.confirm = ConfirmPrompt::quit();
+}
+
+/// First `q` opens the overlay; a second `q` while it is already the quit
+/// confirm really leaves. `q` on a forget/cache overlay replaces it.
+pub(crate) async fn request_quit(app: &mut App) {
+    if app.confirm.open && matches!(app.confirm.on_confirm, Some(ConfirmAction::Quit)) {
+        apply_confirm(app, true).await;
+        return;
+    }
+    open_quit_confirm(app);
 }
 
 /// Search JSON + unused .torrent files + leftover watch scratch.
@@ -860,6 +876,35 @@ mod tests {
             1,
             "the ledger is untouched"
         );
+    }
+
+    #[tokio::test]
+    async fn q_opens_quit_confirm_and_no_is_a_noop() {
+        let engine = Arc::new(FakeEngine::new());
+        let (mut app, _root) = test_app(engine, "quit-confirm-open");
+        request_quit(&mut app).await;
+        assert!(app.confirm.open);
+        assert!(!app.confirm.yes_selected, "FR-81: default highlight is No");
+        assert!(!app.quitting, "q alone must not leave");
+        apply_confirm(&mut app, false).await;
+        assert!(!app.confirm.open);
+        assert!(!app.quitting);
+    }
+
+    #[tokio::test]
+    async fn confirming_quit_or_a_second_q_leaves() {
+        let engine = Arc::new(FakeEngine::new());
+        let (mut app, _root) = test_app(engine, "quit-confirm-yes");
+        request_quit(&mut app).await;
+        apply_confirm(&mut app, true).await;
+        assert!(app.quitting);
+
+        let engine = Arc::new(FakeEngine::new());
+        let (mut app, _root) = test_app(engine, "quit-confirm-qq");
+        request_quit(&mut app).await;
+        request_quit(&mut app).await;
+        assert!(app.quitting, "qq confirms Yes");
+        assert!(!app.confirm.open);
     }
 
     #[tokio::test]

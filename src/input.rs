@@ -16,7 +16,10 @@ use crate::ui::search::{SEARCH_BAR_H, SIDEBAR_WIDTH, sidebar_source_at};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Action {
     None,
+    /// `q` — open the quit confirm (FR-81). A second `q` on that overlay confirms.
     Quit,
+    /// Ctrl-C — leave immediately, no overlay. Terminal convention.
+    ForceQuit,
     /// Leave the splash for the search screen.
     Dismiss,
     ToggleHelp,
@@ -144,8 +147,8 @@ pub enum Action {
     CopyBugReport,
 }
 
-/// Ctrl-C always quits, everywhere — a terminal convention users rely on more
-/// than any binding we invent.
+/// Ctrl-C always quits immediately, everywhere — a terminal convention users
+/// rely on more than any binding we invent (FR-81). `q` confirms first.
 fn is_hard_quit(key: &KeyEvent) -> bool {
     key.modifiers.contains(KeyModifiers::CONTROL)
         && matches!(key.code, KeyCode::Char('c') | KeyCode::Char('C'))
@@ -230,7 +233,7 @@ pub fn map_with_focus(key: KeyEvent, screen: Screen, flags: FocusFlags) -> Actio
         search_focus,
     } = flags;
     if is_hard_quit(&key) {
-        return Action::Quit;
+        return Action::ForceQuit;
     }
 
     if help_open {
@@ -605,12 +608,12 @@ mod tests {
         for screen in [Screen::Splash, Screen::Search, Screen::Downloads] {
             assert_eq!(
                 map(ctrl('c'), screen, false, false, false, false),
-                Action::Quit,
+                Action::ForceQuit,
                 "{screen:?}"
             );
             assert_eq!(
                 map(ctrl('c'), screen, true, false, false, false),
-                Action::Quit,
+                Action::ForceQuit,
                 "{screen:?} + help"
             );
         }
@@ -988,10 +991,10 @@ mod tests {
             ),
             Action::EndWatch
         );
-        // Ctrl+C still quits from the watch screen.
+        // Ctrl+C still quits immediately from the watch screen.
         assert_eq!(
             map(ctrl('c'), Screen::NowPlaying, false, false, false, false),
-            Action::Quit
+            Action::ForceQuit
         );
         // q must not quit from now-playing — it ends the session.
         assert_ne!(
