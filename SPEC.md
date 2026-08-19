@@ -143,7 +143,8 @@ requiring private announces; GPU/ASCII-image rendering.
   `size_bytes` renders as human units (B/KiB/MiB/GiB/TiB, one decimal for ≥1 KiB).
 - **FR-24** Seeders and leechers are colored: seeders ≥ 100 green (success), 1–99 yellow
   (warning), 0 dim; leechers follow the same scale with the muted token. Colors come from
-  the active theme, not hardcoded.
+  the active theme, not hardcoded. Sources that do not report health (`reports_health`
+  false) show an em dash for the count, never a guessed band such as `50+` or `10+`.
 - **FR-25** Results merge into a **single list, deduplicated by `info_hash`**, keeping the
   copy reporting more seeders, sorted by seeders descending and then by date. Rows appear as
   their source answers and the list re-sorts as late results land. Deduplication happens in
