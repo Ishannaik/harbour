@@ -32,6 +32,9 @@ This archive is the client. Search talks to an indexer you run locally ([LEGAL.m
 Shots below use the Creative Commons demo catalog (Blender Foundation: Sintel, Big Buck Bunny, Tears of Steel). See [LEGAL.md](LEGAL.md).
 
 <p align="center">
+  <img src="docs/images/demo.gif" alt="Demo: type sintel, search the CC catalog, Sintel downloading" width="900">
+</p>
+<p align="center">
   <img src="docs/images/search.png" alt="Search: Sintel and other CC-BY Blender titles" width="900">
 </p>
 <p align="center">
