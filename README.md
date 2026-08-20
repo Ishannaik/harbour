@@ -10,25 +10,37 @@
 
 ### BitTorrent from your terminal.
 
-**Mac friend (Terminal):**
+**Install** — Linux, macOS (Intel + Apple Silicon), and Windows binaries:
+
+[**GitHub Releases**](https://github.com/Ishannaik/harbour/releases) · tag `v*` ships a versioned release · Actions → **release** → Run workflow publishes **nightly**
 
 ```bash
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-source "$HOME/.cargo/env"
-brew install mpv
+# Linux
+tar -xzf harbour-linux-x86_64.tar.gz && ./harbour
+
+# macOS Apple Silicon
+tar -xzf harbour-macos-aarch64.tar.gz && ./harbour
+
+# macOS Intel
+tar -xzf harbour-macos-x86_64.tar.gz && ./harbour
 ```
 
-Unzip `harbour` and `harbour-indexer` next to each other, then:
+Windows: unzip `harbour-windows-x86_64.zip` and run `harbour.exe`.
 
-```bash
-cd harbour-indexer && cargo build --release
-mkdir -p ~/.harbour/bin
-cp target/release/harbour-indexer ~/.harbour/bin/
-cd ../harbour && cargo build --release
-./target/release/harbour
-```
+This archive is the client. Search talks to an indexer you run locally ([LEGAL.md](LEGAL.md)). Install `mpv` to watch.
 
-The indexer GitHub repo is private. Send them a zip of both folders.
+Shots below use the Creative Commons demo catalog (Blender Foundation: Sintel, Big Buck Bunny, Tears of Steel). See [LEGAL.md](LEGAL.md).
+
+<p align="center">
+  <img src="docs/images/search.png" alt="Search: Sintel and other CC-BY Blender titles" width="900">
+</p>
+<p align="center">
+  <img src="docs/images/downloads.png" alt="Downloads: Sintel in progress, Big Buck Bunny finished" width="900">
+</p>
+<p align="center">
+  <img src="docs/images/settings.png" alt="Settings: mpv, titanium theme, local indexer, demo catalog" width="900">
+</p>
+
 
 A high-performance, asynchronous BitTorrent TUI client built in Rust with Ratatui & librqbit.
 
