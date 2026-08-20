@@ -1,0 +1,95 @@
+# Public binaries on GitHub Releases.
+# Tag v* (e.g. v0.1.0) publishes a release. Actions → release → Run workflow
+# overwrites the nightly prerelease.
+name: release
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+permissions:
+  contents: write
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            name: linux-x64
+            archive: harbour-linux-x86_64.tar.gz
+            exe: harbour
+          - os: windows-latest
+            name: windows-x64
+            archive: harbour-windows-x86_64.zip
+            exe: harbour.exe
+          - os: macos-latest
+            name: macos-arm64
+            archive: harbour-macos-aarch64.tar.gz
+            exe: harbour
+          - os: macos-13
+            name: macos-x64
+            archive: harbour-macos-x86_64.tar.gz
+            exe: harbour
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - name: Linux OpenSSL
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y pkg-config libssl-dev
+      - name: Build
+        run: cargo build --release --locked
+      - name: Package (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          mkdir -p dist
+          cp "target/release/${{ matrix.exe }}" dist/harbour
+          chmod +x dist/harbour
+          strip dist/harbour || true
+          cp LICENSE dist/
+          test -f LEGAL.md && cp LEGAL.md dist/
+          tar -C dist -czf "${{ matrix.archive }}" .
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item target\release\harbour.exe dist\harbour.exe
+          Copy-Item LICENSE dist\
+          if (Test-Path LEGAL.md) { Copy-Item LEGAL.md dist\ }
+          Compress-Archive -Path dist\* -DestinationPath ${{ matrix.archive }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}
+          path: ${{ matrix.archive }}
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'nightly' }}
+          name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'Nightly' }}
+          prerelease: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+          generate_release_notes: true
+          files: artifacts/*
+          body: |
+            BitTorrent TUI client. Linux, macOS (Intel + Apple Silicon), Windows.
+
+            Unpack and run `harbour` / `harbour.exe`. Search talks to a local indexer
+            you run; this archive is the client only. See LEGAL.md.

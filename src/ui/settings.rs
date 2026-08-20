@@ -167,6 +167,7 @@ pub fn row_label(index: usize) -> Option<&'static str> {
 fn source_label(id: SourceId) -> &'static str {
     match id {
         SourceId::Indexer => "Indexer (Addon Engine)",
+        SourceId::Demo => "Demo (CC Blender)",
         SourceId::GamesHub => "GamesHub Repacks (Games)",
         SourceId::CineVault => "CineVault (Movies)",
         SourceId::VaultMovies => "The Pirate Bay (Movies)",
