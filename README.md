@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="docs/images/logo.png" alt="Harbour" width="160">
+
 ```text
     __                 __                     
    / /_  ____ ______  / /_  ____  __  _______ 
@@ -9,6 +11,17 @@
 ```
 
 ### BitTorrent from your terminal.
+
+**Why people use it** — search, watch, and download in one terminal window. Click a result, pick VLC, and the file starts playing while it still downloads. No browser tabs. The client has no catalogs baked in; you run a local indexer or drop in your own files ([LEGAL.md](LEGAL.md)).
+
+| You get | Why it matters |
+| --- | --- |
+| **Watch now** | Streams to VLC or mpv on localhost while the swarm fills in. |
+| **Search that fans out** | Several sources at once; turn a source off with a click. |
+| **A real queue** | Pause, seed, retry, open the folder (double-click). |
+| **Mouse + keys** | Click names, press 1–9, or type. `?` is a four-step start guide. |
+| **Survives a crash** | Safe Mode on dirty shutdown; the ledger is not silently overwritten. |
+| **You own the index** | Protocol-neutral client. Catalogs are yours. |
 
 **Install** — Linux, macOS (Intel + Apple Silicon), and Windows binaries:
 
@@ -27,12 +40,33 @@ tar -xzf harbour-macos-x86_64.tar.gz && ./harbour
 
 Windows: unzip `harbour-windows-x86_64.zip` and run `harbour.exe`.
 
-This archive is the client. Search talks to an indexer you run locally ([LEGAL.md](LEGAL.md)). Install `mpv` to watch.
+This archive is the client. Search talks to an indexer you run locally ([LEGAL.md](LEGAL.md)).
+
+**Watching video:** install [VLC](https://www.videolan.org/) (easiest) or `mpv`. The first time you press Enter / `w` on a result, Harbour asks which player to use — **click the name**. Change it later with **Shift+P**, or Settings (first row). Full walkthrough: [docs/GUIDE.md](docs/GUIDE.md).
+
+### First five minutes
+
+1. Run Harbour. Press **Enter** past the splash.
+2. Type a name (try `sintel`) and press **Enter**.
+3. Click a result, or press **Enter** / **w** to watch.
+4. Click **VLC** (or mpv) in the player box. That choice is saved.
+5. Press **d** to download instead. **Tab** is the downloads list. **?** is help.
 
 Shots below use the Creative Commons demo catalog (Blender Foundation: Sintel, Big Buck Bunny, Tears of Steel). See [LEGAL.md](LEGAL.md).
 
 <p align="center">
   <img src="docs/images/demo.gif" alt="Demo: type sintel, search the CC catalog, Sintel downloading" width="900">
+</p>
+<p align="center">
+  <img src="docs/images/watch.gif" alt="Watch: pick VLC, then stream Sintel" width="900">
+</p>
+<p align="center">
+  <img src="docs/images/player.gif" alt="Player picker: click VLC or mpv" width="440">
+  <img src="docs/images/downloads.gif" alt="Downloads: Sintel progress bar filling" width="440">
+</p>
+<p align="center">
+  <img src="docs/images/help.gif" alt="Help overlay: how to start in four steps" width="440">
+  <img src="docs/images/sources.gif" alt="Sources: Demo catalog on and off" width="440">
 </p>
 <p align="center">
   <img src="docs/images/search.png" alt="Search: Sintel and other CC-BY Blender titles" width="900">
@@ -41,7 +75,7 @@ Shots below use the Creative Commons demo catalog (Blender Foundation: Sintel, B
   <img src="docs/images/downloads.png" alt="Downloads: Sintel in progress, Big Buck Bunny finished" width="900">
 </p>
 <p align="center">
-  <img src="docs/images/settings.png" alt="Settings: mpv, titanium theme, local indexer, demo catalog" width="900">
+  <img src="docs/images/settings.png" alt="Settings: VLC, titanium theme, local indexer, demo catalog" width="900">
 </p>
 
 
@@ -74,32 +108,16 @@ implementing the open HTTP `Source` interface (see the [Custom Indexer Guide](do
 
 ## Features
 
-### ⚡ 30fps DEC 2026 Synchronized Rendering
-- **Zero-Flicker Terminal Graphics:** Emits terminal DEC 2026 synchronized update sequences (`\x1b[?2026h` / `\x1b[?2026l`) to ensure complete frame coherence without tearing.
-- **Differential Screen Updates:** Only modified cells are redrawn via Ratatui diffing, minimizing CPU and terminal bandwidth.
-- **Adaptive Cadence & Smooth Easing:** 30fps animation loop with adaptive frame backpressure and bounded easing interpolation for progress bars and download rates.
+**Use Harbour if you want a torrent client that lives in the terminal and still feels obvious.** Type a name, click a row, watch or download. That is the product.
 
-### 🧩 Stremio-Style Addon Architecture
-- **Complete Protocol Neutrality:** Harbour core contains zero scrapers, trackers, or catalog parsers.
-- **Decoupled Indexing:** Connects over a lightweight JSON/HTTP REST contract (`GET /search`, `GET /magnet`, `GET /health`) to a user-hosted indexer.
-- **Fault-Isolated Parallel Search:** Search requests fan out across multiple upstream sources asynchronously. If a single source degrades or times out, healthy sources stream results uninterrupted.
-
-### 🚀 Embedded `librqbit` Engine
-- **Native Tokio Async Core:** Pure Rust BitTorrent implementation with metadata capture, DHT routing, and public tracker announcements.
-- **Local Metadata Caching:** Captured `.torrent` binaries are atomically cached on disk (`~/.harbour/cache/torrents/<hash>.torrent`), enabling instant re-checks and re-seeding without swarm overhead.
-- **Precise Queueing & Seed Ratios:** Configurable active download concurrency limits (`HARBOUR_MAX_DOWNLOADS`), oldest-first auto-promotion, and automated seeding ratio cutoffs.
-
-### 🛡️ Bootguard Crash Recovery
-- **Crash-Resilient State Machine:** Atomic ledger persistence (`downloads.json`) with staged writes and automated rollback.
-- **Safe Mode Startup:** A bootguard canary marker detects unexpected process terminations; on recovery, Harbour enters Safe Mode, loading all previous items in a paused state to protect on-disk data.
-- **Quarantine Safeguard:** Malformed state files are isolated to `.corrupt` archives with zero data loss or silent overwrites.
-
-### 🎬 Interactive Search, Curated Top Lists & Watch-Now
-- **Two-Pane Modal Search:** Fast search bar with animated shimmer feedback during active queries; empty queries instantly load curated top-tier lists.
-- **Watch-Now Streaming:** Embedded HTTP Range-served streaming daemon paired with external media playback (`mpv` / `VLC`) for immediate video streaming while downloading.
-- **Interactive Settings & Player Picker:** Real-time in-TUI configuration editor for bandwidth limits, listening ports, SOCKS5 proxies, and media players.
-
----
+- **Watch while it downloads.** Harbour serves the file on `127.0.0.1` and opens **VLC** or **mpv**. First time: click the player name (or press 1–9). Saved after that. **Shift+P** to change.
+- **Search from sources you control.** Results come from a local indexer, plus a Creative Commons demo catalog (Blender Foundation). Click a source on the left to turn it off.
+- **Downloads and seeding in one list.** Progress bars, pause/resume, retry, remove. Double-click a row to open the folder in Explorer.
+- **Mouse is a first-class control.** Click results, click VLC, click sources. Keys still work for people who never lift their hands.
+- **Settings in the TUI.** Player, theme, download folder, seed-by-default, indexer URL — no hunting a config file for the first run.
+- **Built to not eat your queue.** Atomic `downloads.json`, Safe Mode after a crash, bad state files quarantined instead of overwritten.
+- **Rust + librqbit.** DHT, trackers, metadata cache, rate limits, seed-ratio cutoff. Smooth 30fps TUI so bars do not tear.
+- **Not a pirate site.** The binary is a client. It does not ship scrapers or an index. See [LEGAL.md](LEGAL.md).
 
 ## Architecture
 
