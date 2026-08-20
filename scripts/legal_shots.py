@@ -102,6 +102,7 @@ def shell(title: str) -> Term:
     t.box(0, 0, COLS, ROWS, title)
     t.put(2, 2, "library", MUTED)
     t.put(2, 3, "● Demo", SUCCESS)
+    t.put(14, 3, " on", SUCCESS)
     t.put(4, 4, "CC Blender", MUTED)
     t.put(2, 6, "catalogs", MUTED)
     t.put(2, 7, "○ user files", MUTED)
@@ -169,7 +170,7 @@ def downloads_frame(pct: int) -> Term:
     t.put(4, 10, "recently downloaded", MUTED)
     t.put(4, 11, "Big Buck Bunny (2008) 1080p  CC-BY 3.0", TEXT)
     t.put(4, 12, "demo · finished · 2.1 GiB", MUTED)
-    t.put(2, ROWS - 2, "q quit · o open · p pause · x remove · w watch · s seeding", MUTED)
+    t.put(2, ROWS - 2, "dbl-click folder · o open · w watch · p pause · q quit", MUTED)
     return t
 
 
@@ -181,7 +182,7 @@ def settings() -> Term:
     t = Term()
     t.box(0, 0, COLS, ROWS, "harbour — settings")
     rows = [
-        ("player", "mpv", True),
+        ("player", "VLC", True),
         ("theme", "titanium", False),
         ("download dir", "~/Downloads/harbour", False),
         ("seed by default", "on", False),
@@ -198,31 +199,105 @@ def settings() -> Term:
         color = ACCENT if sel else (SUCCESS if value == "on" else TEXT)
         t.put(42, y, value, color, bg)
         y += 2
-    t.put(4, ROWS - 2, "up/down move · enter edit/toggle · esc back · q quit", MUTED)
+    t.put(4, ROWS - 2, "first row: video player · enter pick · esc back", MUTED)
     t.put(4, 18, "Harbour is a BitTorrent client. Catalogs are files you add.", MUTED)
     t.put(4, 19, "Demo titles are Creative Commons (Blender Foundation).", MUTED)
     return t
 
 
-def demo_gif() -> None:
-    frames: list[Image.Image] = []
-    delays: list[int] = []
-    for i in range(len("sintel") + 1):
-        q = "sintel"[:i]
-        frames.append(search_frame(q, False).image())
-        delays.append(180 if i else 500)
-    for spin in "⠋⠙⠹⠸⠼⠴⠦⠧":
-        frames.append(search_frame("sintel", False, spin).image())
-        delays.append(80)
-    frames.append(search_frame("sintel", True).image())
-    delays.append(900)
-    for pct in (8, 18, 28, 42):
-        frames.append(downloads_frame(pct).image())
-        delays.append(250)
-    frames.append(settings().image())
-    delays.append(900)
-    path = OUT / "demo.gif"
-    pal = [im.convert("P", palette=Image.Palette.ADAPTIVE, colors=48) for im in frames]
+def dim_under(t: Term) -> None:
+    for y in range(ROWS):
+        for x in range(COLS):
+            r, g, b = t.bg[y][x]
+            t.bg[y][x] = (max(10, r // 3), max(10, g // 3), max(12, b // 3))
+            fr, fg, fb = t.fg[y][x]
+            t.fg[y][x] = (fr // 2, fg // 2, fb // 2)
+
+
+def overlay(t: Term, title: str, lines: list[tuple[str, tuple]], hint: str) -> Term:
+    dim_under(t)
+    w, h = 72, min(18, 5 + len(lines))
+    x, y = (COLS - w) // 2, (ROWS - h) // 2
+    t.fill(x, y, w, h, BAR)
+    t.box(x, y, w, h, title)
+    yy = y + 2
+    for text, color in lines:
+        t.put(x + 2, yy, text[: w - 4], color, BAR)
+        yy += 1
+    t.put(x + 2, y + h - 2, hint[: w - 4], MUTED, BAR)
+    return t
+
+
+def player_picker(selected: int = 0) -> Term:
+    t = search_frame("sintel", True)
+    opts = [
+        ("1  ●  VLC", SUCCESS),
+        ("2  ·  mpv", TEXT),
+        ("3  ·  Windows Media Player", TEXT),
+    ]
+    lines: list[tuple[str, tuple]] = [
+        ("This is your video app (VLC is the easy one). Click it.", MUTED),
+        ("", TEXT),
+    ]
+    for i, (label, color) in enumerate(opts):
+        prefix = "▸ " if i == selected else "  "
+        fg = ACCENT if i == selected else color
+        lines.append((prefix + label, fg))
+    lines.append(("", TEXT))
+    lines.append(("path:", MUTED))
+    return overlay(
+        t,
+        "choose a video player",
+        lines,
+        "click a name · 1-9 pick · c type a path · r refresh · esc",
+    )
+
+
+def now_playing(pct: int) -> Term:
+    t = Term()
+    t.box(0, 0, COLS, ROWS, "harbour — now playing")
+    t.put(4, 3, "Sintel (2010) 1080p  CC-BY 3.0  Blender Foundation", HOT)
+    t.put(4, 5, "● stream  http://127.0.0.1:18765/sintel.mp4", SUCCESS)
+    t.put(4, 6, "player  VLC", TEXT)
+    t.put(4, 7, "sidecar  sintel.en.srt", MUTED)
+    filled = max(1, int(70 * pct / 100))
+    t.put(4, 10, "█" * filled + "░" * (70 - filled), SUCCESS)
+    t.put(4, 11, f"{pct}%   {pct * 12}s / 14:48   4.2 MiB/s   18 peers", TEXT)
+    t.put(4, 14, "opens in VLC — harbour keeps the torrent feeding the stream", MUTED)
+    t.put(2, ROWS - 2, "q / esc back to the TUI", MUTED)
+    return t
+
+
+def help_frame() -> Term:
+    t = search_frame("sintel", True)
+    lines = [
+        ("how to start", MUTED),
+        ("1  Type a name, then press Enter to search", TEXT),
+        ("2  Click a result, or press Enter / w to watch", TEXT),
+        ("3  First watch: click VLC or mpv (saved next time)", TEXT),
+        ("4  d download · Tab downloads · double-click = folder", TEXT),
+        ("", TEXT),
+        ("keys", MUTED),
+        ("enter     search / watch          d     download", TEXT),
+        ("shift+P   pick video player       o     open folder", TEXT),
+        ("?         this help                q     quit", TEXT),
+    ]
+    return overlay(t, "help", lines, "any key closes")
+
+
+def sources_frame(demo_on: bool) -> Term:
+    t = search_frame("sintel", True)
+    t.put(2, 3, "● Demo" if demo_on else "· Demo", SUCCESS if demo_on else MUTED)
+    t.put(14, 3, " on" if demo_on else "off", SUCCESS if demo_on else MUTED)
+    t.put(2, 7, "○ user files", MUTED)
+    t.put(14, 7, " on", SUCCESS)
+    t.put(24, ROWS - 2, "space source · click source on/off · enter watch", MUTED)
+    return t
+
+
+def save_gif(name: str, frames: list[Image.Image], delays: list[int]) -> None:
+    path = OUT / name
+    pal = [im.convert("P", palette=Image.Palette.ADAPTIVE, colors=40) for im in frames]
     pal[0].save(
         path,
         save_all=True,
@@ -234,12 +309,92 @@ def demo_gif() -> None:
     print(path, path.stat().st_size)
 
 
+def demo_gif() -> None:
+    frames: list[Image.Image] = []
+    delays: list[int] = []
+    for i in range(len("sintel") + 1):
+        q = "sintel"[:i]
+        frames.append(search_frame(q, False).image())
+        delays.append(160 if i else 400)
+    for spin in "⠋⠙⠹⠸⠼⠴":
+        frames.append(search_frame("sintel", False, spin).image())
+        delays.append(80)
+    frames.append(search_frame("sintel", True).image())
+    delays.append(800)
+    for pct in (8, 22, 42):
+        frames.append(downloads_frame(pct).image())
+        delays.append(280)
+    save_gif("demo.gif", frames, delays)
+
+
+def watch_gif() -> None:
+    frames = [
+        search_frame("sintel", True).image(),
+        player_picker(0).image(),
+        player_picker(0).image(),
+        now_playing(12).image(),
+        now_playing(28).image(),
+        now_playing(46).image(),
+        now_playing(62).image(),
+    ]
+    delays = [500, 700, 500, 350, 350, 350, 800]
+    save_gif("watch.gif", frames, delays)
+
+
+def player_gif() -> None:
+    frames = [
+        search_frame("sintel", True).image(),
+        player_picker(0).image(),
+        player_picker(1).image(),
+        player_picker(0).image(),
+        settings().image(),
+    ]
+    delays = [400, 600, 500, 700, 900]
+    save_gif("player.gif", frames, delays)
+
+
+def sources_gif() -> None:
+    frames = [
+        sources_frame(True).image(),
+        sources_frame(False).image(),
+        sources_frame(False).image(),
+        sources_frame(True).image(),
+    ]
+    delays = [700, 700, 500, 800]
+    save_gif("sources.gif", frames, delays)
+
+
+def downloads_gif() -> None:
+    frames = [downloads_frame(p).image() for p in (6, 18, 32, 48, 64, 82, 100)]
+    delays = [220] * 6 + [700]
+    save_gif("downloads.gif", frames, delays)
+
+
+def help_gif() -> None:
+    frames = [
+        search_frame("sintel", True).image(),
+        help_frame().image(),
+        help_frame().image(),
+        search_frame("sintel", True).image(),
+    ]
+    delays = [400, 900, 700, 500]
+    save_gif("help.gif", frames, delays)
+
+
 def main() -> None:
     OUT.mkdir(parents=True, exist_ok=True)
     search().render(OUT / "search.png")
     downloads().render(OUT / "downloads.png")
     settings().render(OUT / "settings.png")
+    player_picker().render(OUT / "player.png")
+    now_playing(46).render(OUT / "watch.png")
+    help_frame().render(OUT / "help.png")
     demo_gif()
+    watch_gif()
+    player_gif()
+    sources_gif()
+    downloads_gif()
+    help_gif()
 
 
 if __name__ == "__main__":
