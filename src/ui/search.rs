@@ -1050,6 +1050,7 @@ fn chip_label(id: SourceId) -> &'static str {
     // the row already says which category it is.
     match id {
         SourceId::Indexer => "indexer",
+        SourceId::Demo => "demo",
         SourceId::GamesHub => "gameshub",
         SourceId::CineVault => "cinevault",
         SourceId::VaultMovies | SourceId::VaultTv => "vault-index",
