@@ -276,14 +276,14 @@ mod tests {
         }
     }
 
-    static CineVault_DEF: SourceDef = SourceDef {
+    static CINEVAULT_DEF: SourceDef = SourceDef {
         id: SourceId::CineVault,
         label: "CineVault",
         groups: &[SourceGroup::Movies],
         homepage: "https://cinevault.mx",
         reports_health: true,
     };
-    static VaultIndex_DEF: SourceDef = SourceDef {
+    static VAULTINDEX_DEF: SourceDef = SourceDef {
         id: SourceId::VaultMovies,
         label: "VaultIndex",
         groups: &[SourceGroup::Movies],
@@ -321,14 +321,14 @@ mod tests {
     #[tokio::test]
     async fn one_failing_source_never_stops_the_others() {
         let good = Arc::new(ScriptedSource {
-            def: &CineVault_DEF,
+            def: &CINEVAULT_DEF,
             rows: vec![result("aaa", 10, SourceId::CineVault, 1)],
             error: None,
             delay: Duration::ZERO,
             calls: Arc::new(AtomicU32::new(0)),
         });
         let bad = Arc::new(ScriptedSource {
-            def: &VaultIndex_DEF,
+            def: &VAULTINDEX_DEF,
             rows: Vec::new(),
             error: Some(SourceError::Blocked("cf".into())),
             delay: Duration::ZERO,
@@ -359,14 +359,14 @@ mod tests {
     #[tokio::test]
     async fn a_disabled_source_is_never_queried() {
         let cinevault = Arc::new(ScriptedSource {
-            def: &CineVault_DEF,
+            def: &CINEVAULT_DEF,
             rows: vec![result("aaa", 10, SourceId::CineVault, 1)],
             error: None,
             delay: Duration::ZERO,
             calls: Arc::new(AtomicU32::new(0)),
         });
-        let vault-index = Arc::new(ScriptedSource {
-            def: &VaultIndex_DEF,
+        let vault_index = Arc::new(ScriptedSource {
+            def: &VAULTINDEX_DEF,
             rows: vec![result("bbb", 5, SourceId::VaultMovies, 1)],
             error: None,
             delay: Duration::ZERO,
@@ -404,7 +404,7 @@ mod tests {
         // Without this the sidebar cannot distinguish "still working" from
         // "dead", which is the whole reason SourceStatus::Checking exists.
         let slow = Arc::new(ScriptedSource {
-            def: &CineVault_DEF,
+            def: &CINEVAULT_DEF,
             rows: Vec::new(),
             error: None,
             delay: Duration::from_millis(200),
@@ -428,7 +428,7 @@ mod tests {
     #[tokio::test]
     async fn a_cancelled_search_emits_nothing() {
         let slow = Arc::new(ScriptedSource {
-            def: &CineVault_DEF,
+            def: &CINEVAULT_DEF,
             rows: vec![result("aaa", 1, SourceId::CineVault, 1)],
             error: None,
             delay: Duration::from_millis(300),

@@ -840,7 +840,8 @@ mod tests {
         let (mut app, root) = test_app(engine, "clear-cache-banner");
         let keep = "ffffffffffffffffffffffffffffffffffffffff";
         let drop = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-        let search = crate::core::paths::search_cache_dir(&root, SourceId::CineVault).join("q.json");
+        let search =
+            crate::core::paths::search_cache_dir(&root, SourceId::CineVault).join("q.json");
         let unused = crate::core::paths::torrent_cache_file(&root, drop).expect("hash");
         std::fs::create_dir_all(search.parent().expect("parent")).expect("dir");
         std::fs::write(&search, b"cached-search").expect("search");

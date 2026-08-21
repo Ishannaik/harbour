@@ -944,8 +944,14 @@ mod tests {
             .await
             .expect("search");
         let report = source.reported_status();
-        assert_eq!(report.get(&SourceId::CineVault), Some(&(SourceStatus::Online, 3)));
-        assert_eq!(report.get(&SourceId::TsukiBase), Some(&(SourceStatus::Empty, 0)));
+        assert_eq!(
+            report.get(&SourceId::CineVault),
+            Some(&(SourceStatus::Online, 3))
+        );
+        assert_eq!(
+            report.get(&SourceId::TsukiBase),
+            Some(&(SourceStatus::Empty, 0))
+        );
         assert_eq!(
             report.get(&SourceId::GamesHub),
             Some(&(SourceStatus::Offline, 0))
@@ -990,8 +996,8 @@ mod tests {
     async fn an_answer_without_sources_keeps_the_previous_report() {
         // Defensive: an old indexer (or a stub) omits the array; the store must
         // keep whatever the last report said instead of being wiped.
-        let with =
-            r#"{"results":[],"sources":[{"id":"cinevault","status":"online","count":3}]}"#.to_string();
+        let with = r#"{"results":[],"sources":[{"id":"cinevault","status":"online","count":3}]}"#
+            .to_string();
         let without = r#"{"results":[]}"#.to_string();
         let (base, handle) = spawn_indexer(vec![(200, with), (200, without)]);
         let source = HttpSource::new(base);

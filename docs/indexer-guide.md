@@ -148,13 +148,13 @@ app.get('/search', async (req, res) => {
       size_bytes: parseInt(i.size) || 0,
       seeders: parseInt(i.seeders) || 0,
       leechers: parseInt(i.leechers) || 0,
-      ***REMOVED***
+      source: 'vault-index',
       magnet: `magnet:?xt=urn:btih:${i.info_hash}&dn=${encodeURIComponent(i.name)}`
     }));
 
   res.json({
     results,
-    sources: [***REMOVED***]
+    sources: [{ id: 'vault-index', status: 'online', count: results.length }]
   });
 });
 

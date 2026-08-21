@@ -27,7 +27,7 @@ sources, and phases below are normative — do not invent alternatives.
 | id | label | groups | kind |
 | --- | --- | --- | --- |
 | gameshub | GamesHub | Games | HTML scrape |
-| cinevault | CineVault | Movies | JSON API (cinevault.mx/.am/.rs fallback hosts) |
+| cinevault | CineVault | Movies | JSON API (mirror-a/b/c hosts fallback hosts) |
 | vault-movies | VaultIndex | Movies | JSON API (mirror-api.org) |
 | reel-movies | ReelIndex | Movies | HTML scrape |
 | showport | ShowPort | TV | RSS |
