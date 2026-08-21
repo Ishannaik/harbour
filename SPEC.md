@@ -295,6 +295,15 @@ requiring private announces; GPU/ASCII-image rendering.
 - **FR-105** Now-playing shows measured download progress and speed from the live
   `ItemView`. It never fabricates a buffer percentage. A slow-stream warning is
   allowed only from measured speed versus the file's bitrate.
+- **FR-106** Browser is a first-class player target alongside mpv/VLC: the settings'
+  player choice accepts `browser`, which opens the same loopback stream endpoint URL
+  (`http://127.0.0.1:<port>/…`) in the system's default browser instead of spawning a
+  native player. The browser's native `<video>` element is the renderer; harbour ships
+  no web UI beyond the stream itself. The same FR-104 `206` gate applies before the
+  browser is opened. Codec coverage is whatever the browser supports (mp4/webm/H.264
+  yes; HEVC/AVI generally no) — an unsupported codec is a playback failure in the
+  browser, not a harbour error. External subtitle sidecars are not rendered by the
+  browser path; now-playing still tracks the item while it streams.
 
 ### 4.8 Code quality (FR-62 … FR-68)
 
