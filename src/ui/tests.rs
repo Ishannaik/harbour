@@ -204,8 +204,8 @@ fn search_snapshot_unreported_health_is_em_dash() {
     let out = render(|f| {
         search::draw(f, f.area(), &state, &HashSet::new(), &theme, None);
     });
-    assert!(out.contains("[gameshub]"), "GamesHub row visible:\n{out}");
-    assert!(out.contains("[subs]"), "FanSubs row visible:\n{out}");
+    assert!(out.contains("[ghub]"), "GamesHub row visible:\n{out}");
+    assert!(out.contains("[fsub]"), "FanSubs row visible:\n{out}");
     assert!(!out.contains("50+"), "GamesHub must not invent 50+:\n{out}");
     assert!(!out.contains("10+"), "must not invent 10+:\n{out}");
     assert!(

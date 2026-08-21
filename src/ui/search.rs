@@ -1051,16 +1051,16 @@ fn chip_label(id: SourceId) -> &'static str {
     match id {
         SourceId::Indexer => "indexer",
         SourceId::Demo => "demo",
-        SourceId::GamesHub => "gameshub",
-        SourceId::CineVault => "cinevault",
-        SourceId::VaultMovies | SourceId::VaultTv => "vault-index",
-        SourceId::ReelSource | SourceId::ReelTv => "reel-index",
+        SourceId::GamesHub => "ghub",
+        SourceId::CineVault => "cvlt",
+        SourceId::VaultMovies | SourceId::VaultTv => "vlt",
+        SourceId::ReelSource | SourceId::ReelTv => "reel",
         SourceId::TorrentHub => "bttr",
-        SourceId::ShowPort => "showport",
-        SourceId::TsukiBase => "tsukibase",
-        SourceId::FanSubs => "subs",
+        SourceId::ShowPort => "sport",
+        SourceId::TsukiBase => "tsuki",
+        SourceId::FanSubs => "fsub",
         SourceId::AnimeMirror => "tosho",
-        SourceId::FeedLine => "feedline",
+        SourceId::FeedLine => "feed",
     }
 }
 
@@ -1403,7 +1403,7 @@ mod tests {
         );
         let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
         let q = text.find("[1080p]").expect("quality chip rendered");
-        let c = text.find("[cinevault]").expect("source chip rendered");
+        let c = text.find("[cvlt]").expect("source chip rendered");
         assert!(q < c, "quality chip precedes the source chip: {text}");
     }
 
@@ -1415,7 +1415,10 @@ mod tests {
         let line = result_line(&result("Dune"), false, false, &state, &theme, 60);
         let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(!text.contains("[1080p]"), "no quality chip: {text}");
-        assert!(text.contains("[cinevault]"), "source chip still rendered: {text}");
+        assert!(
+            text.contains("[cvlt]"),
+            "source chip still rendered: {text}"
+        );
     }
 
     #[test]
@@ -1493,7 +1496,7 @@ mod tests {
         assert_eq!(qual_hdr_idx, qual_row_idx, "quality column alignment");
 
         let src_hdr_idx = header.rfind("source").expect("source in header");
-        let src_row_idx = row.find("[cinevault]").expect("source in row");
+        let src_row_idx = row.find("[cvlt]").expect("source in row");
         assert_eq!(src_hdr_idx, src_row_idx, "source column alignment");
     }
 

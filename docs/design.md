@@ -95,7 +95,7 @@ with a ~40ms stagger. `?` help overlays as a centered modal.
 │ │ gameshub  ● │ │ 1 Elden Ring: Shadow of the Erdtree    │ │
 │ └────────────┘ │    48.2 GB   ⬆ 12403  ⬇ 82   [gameshub] │ │
 │ ┌ Movies ────┐ │ 2 Interstellar (2014) 1080p REMUX      │ │
-│ │ cinevault      ● │ │    22.1 GB   ⬆ 8912   ⬇ 41 [cinevault] [vlt] │ │
+│ │ cinevault      ● │ │    22.1 GB   ⬆ 8912   ⬇ 41 [cinevault] [vault-index] │ │
 │ │ vault-index      ○ │ │ 3 Dune Part Two 4K DV                  │ │
 │ │ ReelIndex    ● │ │    65.8 GB   ⬆ 5204   ⬇ 63  [reel-m]  │ │
 │ └────────────┘ │ 4 …                                    │ │
