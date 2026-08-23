@@ -38,7 +38,7 @@ tar -xzf harbour-macos-aarch64.tar.gz && ./harbour
 tar -xzf harbour-macos-x86_64.tar.gz && ./harbour
 ```
 
-Windows: unzip `harbour-windows-x86_64.zip` and run `harbour.exe`.
+Windows: unzip `harbour-windows-x86_64.zip` and run `harbour.exe`. Optional repo-root helpers: `start-harbour.bat` / `start-harbour.ps1`.
 
 This archive is the client. Search talks to an indexer you run locally ([LEGAL.md](LEGAL.md)).
 
