@@ -517,35 +517,7 @@ pub fn mouse_to_action_click(
     match screen {
         Screen::Search => search_mouse_action(view_area, col, row, double_click),
         Screen::Downloads => {
-            // Mirrors `ui::downloads::draw`'s layout: a 1-cell panel
-            // border, then a 2-row tab band (label row + underline row)
-            // at the top of the inner area, then the body, with the hint
-            // line on the last inner row. A click anywhere on the tab
-            // band flips the seeding tab.
-            //
-            // Row height depends on the active tab: the Downloads tab
-            // renders two rows per item (name + progress bar), the Seeding
-            // tab one (seed_row). `show_seeding` picks the divisor.
-            let inner = view_area.inner(Margin::new(1, 1));
-            if col < inner.x || col >= inner.right() {
-                Action::None
-            } else {
-                let items_top = inner.y + 2;
-                let rows_per_item: u16 = if show_seeding { 1 } else { 2 };
-                match row {
-                    r if r < inner.y => Action::None,
-                    r if r < items_top => Action::ClickSeedingTab,
-                    r if r >= inner.bottom().saturating_sub(1) => Action::None,
-                    r => {
-                        let idx = ((r - items_top) / rows_per_item) as usize;
-                        if double_click {
-                            Action::OpenFolder
-                        } else {
-                            Action::ClickRow(idx)
-                        }
-                    }
-                }
-            }
+            downloads_mouse_action(view_area, col, row, show_seeding, double_click)
         }
         // The splash is an intro, not a state: anything moves past it,
         // clicks included.
@@ -577,6 +549,36 @@ fn status_bar_click_action(col: u16, width: u16, screen: Screen) -> Option<Actio
         crate::ui::status::StatusTab::Help => Action::ToggleHelp,
     };
     Some(action)
+}
+
+fn downloads_mouse_action(
+    view_area: Rect,
+    col: u16,
+    row: u16,
+    show_seeding: bool,
+    double_click: bool,
+) -> Action {
+    // Mirrors `ui::downloads::draw`: 1-cell border, 2-row tab band, then items.
+    // Downloads tab is two rows per item; Seeding is one.
+    let inner = view_area.inner(Margin::new(1, 1));
+    if col < inner.x || col >= inner.right() {
+        return Action::None;
+    }
+    let items_top = inner.y + 2;
+    let rows_per_item: u16 = if show_seeding { 1 } else { 2 };
+    match row {
+        r if r < inner.y => Action::None,
+        r if r < items_top => Action::ClickSeedingTab,
+        r if r >= inner.bottom().saturating_sub(1) => Action::None,
+        r => {
+            let idx = ((r - items_top) / rows_per_item) as usize;
+            if double_click {
+                Action::OpenFolder
+            } else {
+                Action::ClickRow(idx)
+            }
+        }
+    }
 }
 
 fn search_mouse_action(view_area: Rect, col: u16, row: u16, double_click: bool) -> Action {
