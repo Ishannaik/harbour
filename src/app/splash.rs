@@ -385,7 +385,7 @@ pub(crate) fn draw_splash(
     );
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
-            "q quit",
+            "enter start  ·  ? help  ·  shift+P player  ·  q quit",
             Style::default().fg(colors.muted().to_ratatui()),
         )))
         .alignment(Alignment::Center)

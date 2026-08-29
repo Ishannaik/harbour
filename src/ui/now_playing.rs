@@ -36,6 +36,56 @@ fn subs_footer(state: &NowPlaying) -> String {
     }
 }
 
+/// One status line: percent, DL, UL, peers, ETA. Em dash when peers/ETA unknown.
+fn metrics_line(view: &ItemView) -> String {
+    let peers = view
+        .peers()
+        .map(|n| n.to_string())
+        .unwrap_or_else(|| "—".into());
+    let eta = view
+        .eta()
+        .map(|d| fmt_eta(d.as_secs()))
+        .unwrap_or_else(|| "—".into());
+    format!(
+        "{:.0}% · ↓ {:.1} MiB/s · ↑ {:.1} MiB/s · peers {peers} · eta {eta}",
+        view.progress() * 100.0,
+        view.speed_mib(),
+        view.upload_speed_mib(),
+    )
+}
+
+fn bytes_line(view: &ItemView) -> String {
+    format!(
+        "{} / {}",
+        human_bytes(view.downloaded_bytes()),
+        human_bytes(view.total_bytes())
+    )
+}
+
+fn fmt_eta(secs: u64) -> String {
+    let (h, m, s) = (secs / 3600, (secs % 3600) / 60, secs % 60);
+    if h > 0 {
+        format!("{h:02}:{m:02}:{s:02}")
+    } else {
+        format!("{m:02}:{s:02}")
+    }
+}
+
+fn human_bytes(bytes: u64) -> String {
+    const UNITS: &[&str] = &["B", "KiB", "MiB", "GiB", "TiB"];
+    let mut value = bytes as f64;
+    let mut unit = 0;
+    while value >= 1024.0 && unit < UNITS.len() - 1 {
+        value /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{bytes} B")
+    } else {
+        format!("{value:.1} {}", UNITS[unit])
+    }
+}
+
 /// Renders the now-playing screen: item name, the loopback stream URL the
 /// player opened, and the playback state harbour knows (FR-59/FR-105) — the
 /// stream is live, seeking works, download progress/speed are measured,
@@ -96,13 +146,13 @@ pub fn draw(
         )),
     ];
     if let Some(view) = stats {
-        // FR-105: measured bytes-so-far and speed, never a fake buffer bar.
+        // FR-105: measured bytes, speeds, peers, ETA — never a fake buffer bar.
         lines.push(Line::from(Span::styled(
-            format!(
-                "{:.0}% · {:.1} MiB/s",
-                view.progress() * 100.0,
-                view.speed_mib()
-            ),
+            metrics_line(view),
+            Style::default().fg(muted),
+        )));
+        lines.push(Line::from(Span::styled(
+            bytes_line(view),
             Style::default().fg(muted),
         )));
     }
@@ -198,12 +248,19 @@ mod tests {
                 downloaded_bytes: 400,
                 total_bytes: 1000,
                 speed_mib: 2.1,
+                upload_speed_mib: 0.4,
+                peers: Some(12),
+                eta: Some(std::time::Duration::from_secs(252)),
                 ..EngineStats::default()
             }),
         );
         let text = render_text(&state(), Some(&view), &Theme::titanium());
         assert!(text.contains("40%"), "measured progress, not a fake buffer");
-        assert!(text.contains("2.1 MiB/s"), "measured speed from ItemView");
+        assert!(text.contains("↓ 2.1 MiB/s"), "download speed labeled");
+        assert!(text.contains("↑ 0.4 MiB/s"), "upload speed labeled");
+        assert!(text.contains("peers 12"), "peer count from ItemView");
+        assert!(text.contains("eta 04:12"), "ETA from ItemView");
+        assert!(text.contains("400 B"), "bytes downloaded");
     }
 
     #[test]

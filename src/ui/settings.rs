@@ -30,12 +30,12 @@ use crate::theme::{Theme, ThemeColors};
 /// Panel title — same framing as the downloads view and the splash.
 const TITLE: &str = " harbour — settings ";
 /// Bottom hint — the actions that matter on this screen.
-const HINT: &str = "↑/↓ move · enter edit/toggle · esc back · q quit";
+const HINT: &str = "first row: video player · enter pick · click a row · esc back";
 /// Block cursor glyph at the end of an inline edit — the input's focus
 /// marker, mirroring the search bar's.
 const CURSOR: &str = "▌";
 /// Total settings rows before the per-source toggles.
-const APP_ROWS: usize = 18;
+const APP_ROWS: usize = 19;
 /// Fixed label column width — the value column gets the rest of the panel.
 const LABEL_W: usize = 34;
 /// Panel width: label column + a value column long enough for a download
@@ -103,10 +103,10 @@ pub fn row_count() -> usize {
 pub fn row_kind(index: usize) -> Option<RowKind> {
     match index {
         0 => Some(RowKind::Player),
-        2 | 4 | 5 | 6 | 7 | 8 | 10 | 11 | 14 | 16 => Some(RowKind::Text),
+        2 | 5 | 6 | 7 | 8 | 9 | 11 | 12 | 15 | 17 => Some(RowKind::Text),
         1 => Some(RowKind::Theme),
-        3 | 9 | 12 | 13 | 15 => Some(RowKind::Toggle),
-        17 => Some(RowKind::Action),
+        3 | 4 | 10 | 13 | 14 | 16 => Some(RowKind::Toggle),
+        18 => Some(RowKind::Action),
         _ => {
             let source = index.checked_sub(APP_ROWS)?;
             SourceId::ALL.get(source).map(|_| RowKind::Source)
@@ -119,15 +119,15 @@ pub fn text_field(index: usize) -> Option<TextField> {
     match index {
         0 => Some(TextField::Player),
         2 => Some(TextField::DownloadDir),
-        4 => Some(TextField::Trackers),
-        5 => Some(TextField::DownloadLimit),
-        6 => Some(TextField::UploadLimit),
-        7 => Some(TextField::AltDownloadLimit),
-        8 => Some(TextField::AltUploadLimit),
-        10 => Some(TextField::MaxActiveDownloads),
-        11 => Some(TextField::ListenPort),
-        14 => Some(TextField::SocksProxy),
-        16 => Some(TextField::SeedRatio),
+        5 => Some(TextField::Trackers),
+        6 => Some(TextField::DownloadLimit),
+        7 => Some(TextField::UploadLimit),
+        8 => Some(TextField::AltDownloadLimit),
+        9 => Some(TextField::AltUploadLimit),
+        11 => Some(TextField::MaxActiveDownloads),
+        12 => Some(TextField::ListenPort),
+        15 => Some(TextField::SocksProxy),
+        17 => Some(TextField::SeedRatio),
         _ => None,
     }
 }
@@ -141,24 +141,25 @@ pub fn source_at(index: usize) -> Option<SourceId> {
 /// sidebar's matrix so the same source reads the same in both places.
 pub fn row_label(index: usize) -> Option<&'static str> {
     match index {
-        0 => Some("Default Video Player"),
+        0 => Some("Video Player (click / enter)"),
         1 => Some("Color Theme"),
         2 => Some("Download Folder"),
         3 => Some("Seed by Default"),
-        4 => Some("Custom Trackers"),
-        5 => Some("Download Speed Limit (MiB/s)"),
-        6 => Some("Upload Speed Limit (MiB/s)"),
-        7 => Some("Alt Download Limit (MiB/s)"),
-        8 => Some("Alt Upload Limit (MiB/s)"),
-        9 => Some("Use Alternative Rates"),
-        10 => Some("Max Active Downloads (0 = unlimited)"),
-        11 => Some("Listening Port (empty = auto)"),
-        12 => Some("UPnP Port Forwarding"),
-        13 => Some("Enable DHT"),
-        14 => Some("SOCKS5 Proxy URL"),
-        15 => Some("Stop Seeding at Ratio"),
-        16 => Some("Target Seed Ratio"),
-        17 => Some("Clear cache"),
+        4 => Some("Ask save path on d"),
+        5 => Some("Custom Trackers"),
+        6 => Some("Download Speed Limit (MiB/s)"),
+        7 => Some("Upload Speed Limit (MiB/s)"),
+        8 => Some("Alt Download Limit (MiB/s)"),
+        9 => Some("Alt Upload Limit (MiB/s)"),
+        10 => Some("Use Alternative Rates"),
+        11 => Some("Max Active Downloads (0 = unlimited)"),
+        12 => Some("Listening Port (empty = auto)"),
+        13 => Some("UPnP Port Forwarding"),
+        14 => Some("Enable DHT"),
+        15 => Some("SOCKS5 Proxy URL"),
+        16 => Some("Stop Seeding at Ratio"),
+        17 => Some("Target Seed Ratio"),
+        18 => Some("Clear cache"),
         _ => source_at(index).map(source_label),
     }
 }
@@ -380,11 +381,12 @@ fn row_value(
         None => match index {
             1 => config.theme.clone(),
             3 => bool_glyph(config.seed_by_default),
-            9 => bool_glyph(config.use_alt_rates),
-            12 => bool_glyph(config.enable_upnp),
-            13 => bool_glyph(config.enable_dht),
-            15 => bool_glyph(config.stop_seed_at_ratio),
-            17 => "enter — confirm first".to_string(),
+            4 => bool_glyph(config.ask_save_path),
+            10 => bool_glyph(config.use_alt_rates),
+            13 => bool_glyph(config.enable_upnp),
+            14 => bool_glyph(config.enable_dht),
+            16 => bool_glyph(config.stop_seed_at_ratio),
+            18 => "enter — confirm first".to_string(),
             _ => match source_at(index) {
                 Some(id) => source_glyph(!disabled.contains(&id)),
                 None => String::new(),
@@ -440,37 +442,37 @@ mod tests {
 
     #[test]
     fn row_layout_matches_the_settings_contract() {
-        assert_eq!(row_count(), 18 + SourceId::ALL.len());
+        assert_eq!(row_count(), 19 + SourceId::ALL.len());
         assert_eq!(row_kind(0), Some(RowKind::Player));
         assert_eq!(text_field(0), Some(TextField::Player));
         assert_eq!(row_kind(1), Some(RowKind::Theme));
         assert_eq!(row_kind(2), Some(RowKind::Text));
         assert_eq!(text_field(2), Some(TextField::DownloadDir));
         assert_eq!(row_kind(3), Some(RowKind::Toggle));
-        assert_eq!(row_kind(4), Some(RowKind::Text));
-        assert_eq!(text_field(4), Some(TextField::Trackers));
-        // The qBittorrent-parity rows.
+        assert_eq!(row_kind(4), Some(RowKind::Toggle));
+        assert_eq!(row_label(4), Some("Ask save path on d"));
         assert_eq!(row_kind(5), Some(RowKind::Text));
-        assert_eq!(text_field(5), Some(TextField::DownloadLimit));
-        assert_eq!(text_field(6), Some(TextField::UploadLimit));
-        assert_eq!(text_field(7), Some(TextField::AltDownloadLimit));
-        assert_eq!(text_field(8), Some(TextField::AltUploadLimit));
-        assert_eq!(row_kind(9), Some(RowKind::Toggle));
-        assert_eq!(text_field(10), Some(TextField::MaxActiveDownloads));
-        assert_eq!(text_field(11), Some(TextField::ListenPort));
-        assert_eq!(row_kind(12), Some(RowKind::Toggle));
+        assert_eq!(text_field(5), Some(TextField::Trackers));
+        assert_eq!(row_kind(6), Some(RowKind::Text));
+        assert_eq!(text_field(6), Some(TextField::DownloadLimit));
+        assert_eq!(text_field(7), Some(TextField::UploadLimit));
+        assert_eq!(text_field(8), Some(TextField::AltDownloadLimit));
+        assert_eq!(text_field(9), Some(TextField::AltUploadLimit));
+        assert_eq!(row_kind(10), Some(RowKind::Toggle));
+        assert_eq!(text_field(11), Some(TextField::MaxActiveDownloads));
+        assert_eq!(text_field(12), Some(TextField::ListenPort));
         assert_eq!(row_kind(13), Some(RowKind::Toggle));
-        assert_eq!(text_field(14), Some(TextField::SocksProxy));
-        assert_eq!(row_kind(15), Some(RowKind::Toggle));
-        assert_eq!(text_field(16), Some(TextField::SeedRatio));
-        assert_eq!(row_kind(17), Some(RowKind::Action));
-        assert_eq!(row_label(17), Some("Clear cache"));
-        // Sources follow the app rows.
-        assert_eq!(row_kind(18), Some(RowKind::Source));
+        assert_eq!(row_kind(14), Some(RowKind::Toggle));
+        assert_eq!(text_field(15), Some(TextField::SocksProxy));
+        assert_eq!(row_kind(16), Some(RowKind::Toggle));
+        assert_eq!(text_field(17), Some(TextField::SeedRatio));
+        assert_eq!(row_kind(18), Some(RowKind::Action));
+        assert_eq!(row_label(18), Some("Clear cache"));
+        assert_eq!(row_kind(19), Some(RowKind::Source));
         assert_eq!(row_kind(row_count() - 1), Some(RowKind::Source));
         assert_eq!(row_kind(row_count()), None);
         assert_eq!(text_field(1), None);
-        assert_eq!(source_at(17), None);
+        assert_eq!(source_at(18), None);
         assert_eq!(source_at(row_count()), None);
     }
 
@@ -480,7 +482,7 @@ mod tests {
         // movies, ReelIndex movies, TorrentHub, ShowPort, VaultIndex tv, ReelIndex tv, TsukiBase,
         // FanSubs — which is exactly SourceId::ALL, the registry's
         // canonical sidebar order.
-        let got: Vec<SourceId> = (18..row_count()).filter_map(source_at).collect();
+        let got: Vec<SourceId> = (APP_ROWS..row_count()).filter_map(source_at).collect();
         assert_eq!(got, SourceId::ALL);
         assert_eq!(got[0], SourceId::GamesHub);
         assert_eq!(got[8], SourceId::FanSubs);
@@ -488,7 +490,7 @@ mod tests {
 
     #[test]
     fn source_labels_match_the_search_sidebar() {
-        let labels: Vec<&str> = (18..row_count()).filter_map(row_label).collect();
+        let labels: Vec<&str> = (APP_ROWS..row_count()).filter_map(row_label).collect();
         assert_eq!(
             labels,
             [
@@ -537,16 +539,17 @@ mod tests {
             .collect();
         for expected in [
             "harbour — settings",
-            "Default Video Player",
+            "Video Player (click / enter)",
             "Color Theme",
             "Download Folder",
             "Seed by Default",
+            "Ask save path on d",
             "Custom Trackers",
             "Clear cache",
             "GamesHub",
             "titanium",
             "auto",
-            "↑/↓ move · enter edit/toggle · esc back · q quit",
+            "first row: video player",
         ] {
             assert!(symbols.contains(expected), "missing {expected:?}");
         }

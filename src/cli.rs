@@ -48,8 +48,8 @@ usage
 
 keys
   enter  search (empty query browses the curated top lists)
-  d      download to the default folder
-  D      download to a folder you pick
+  d      download: ask folder then files (settings can swap keys)
+  D      download straight to the default folder
   o      change the default download folder
   ← →    switch between the downloads and seeding tabs
   p      pause / resume seeding

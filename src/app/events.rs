@@ -11,9 +11,9 @@ use crate::ui::Screen;
 use crate::ui::player::PickerMode;
 
 use super::actions::{
-    apply_confirm, download_selected, enqueue_magnet, enqueue_torrent, move_selection,
-    move_selection_to, open_clear_cache_confirm, open_remove_confirm, request_quit, retry_selected,
-    toggle_pause,
+    apply_confirm, download_asks_for_folder, download_selected, enqueue_magnet, enqueue_torrent,
+    move_selection, move_selection_to, open_clear_cache_confirm, open_remove_confirm, request_quit,
+    retry_selected, toggle_pause,
 };
 use super::settings::{
     cancel_folder_prompt, commit_folder_prompt, open_folder_prompt, settings_activate,
@@ -82,8 +82,28 @@ async fn handle_mouse_event(app: &mut App, mouse: crossterm::event::MouseEvent) 
     }
 
     if app.picker.open {
-        // The picker is on top of settings when opened from the player row;
-        // clicks belong to it (keys already do), not the overlay underneath.
+        // Click a player name to use it. Click outside to close. Scroll
+        // walks the list. The overlay underneath (settings) must not steal this.
+        let (term_w, term_h) = crossterm::terminal::size().unwrap_or((80, 24));
+        let area = ratatui::layout::Rect::new(0, 0, term_w, term_h);
+        if mouse.kind == MouseEventKind::ScrollDown {
+            apply_action(app, Action::PlayerDown).await;
+            return;
+        }
+        if mouse.kind == MouseEventKind::ScrollUp {
+            apply_action(app, Action::PlayerUp).await;
+            return;
+        }
+        if mouse.kind == MouseEventKind::Down(MouseButton::Left) {
+            if let Some(i) =
+                crate::ui::player::option_at(&app.picker, area, mouse.column, mouse.row)
+            {
+                apply_action(app, Action::PlayerPick(i)).await;
+            } else if !crate::ui::player::click_in_panel(&app.picker, area, mouse.column, mouse.row)
+            {
+                apply_action(app, Action::Escape).await;
+            }
+        }
         return;
     }
     if app.confirm.open && !app.help_open {
@@ -173,10 +193,10 @@ async fn handle_mouse_event(app: &mut App, mouse: crossterm::event::MouseEvent) 
         app.help_open,
         app.state.downloads.show_seeding,
     );
-    let double = search_result_double_click(app, &single);
+    let double = list_row_double_click(app, &single);
     if double {
-        // Select the clicked row before Download so a double-click on row
-        // N enqueues N, not whatever the keyboard cursor was on.
+        // Select the clicked row first: search double-click downloads that
+        // row, downloads double-click opens that folder.
         apply_action(app, single).await;
     }
     let action = crate::input::mouse_to_action_click(
@@ -192,21 +212,26 @@ async fn handle_mouse_event(app: &mut App, mouse: crossterm::event::MouseEvent) 
 }
 
 /// Crossterm never reports a double-click kind; two left-downs on the same
-/// in-range search result within this window count as download (#71).
-const SEARCH_DOUBLE_CLICK: Duration = Duration::from_millis(500);
+/// in-range list row within this window count as the "open" gesture.
+const LIST_DOUBLE_CLICK: Duration = Duration::from_millis(500);
 
-fn search_result_double_click(app: &mut App, action: &Action) -> bool {
+fn list_row_double_click(app: &mut App, action: &Action) -> bool {
     let Action::ClickRow(idx) = *action else {
         app.last_search_click = None;
         return false;
     };
-    if app.state.screen != Screen::Search || idx >= app.state.search.results.len() {
+    let in_range = match app.state.screen {
+        Screen::Search => idx < app.state.search.results.len(),
+        Screen::Downloads => idx < app.visible_items().len(),
+        _ => false,
+    };
+    if !in_range {
         app.last_search_click = None;
         return false;
     }
     let is_double = app
         .last_search_click
-        .is_some_and(|(at, prev)| prev == idx && at.elapsed() < SEARCH_DOUBLE_CLICK);
+        .is_some_and(|(at, prev)| prev == idx && at.elapsed() < LIST_DOUBLE_CLICK);
     app.last_search_click = if is_double {
         None
     } else {
@@ -384,8 +409,20 @@ async fn apply_action(app: &mut App, action: Action) {
             app.state.search.focus = true;
             app.state.search.query.push(c);
         }
-        Action::Download => download_selected(app).await,
-        Action::DownloadToFolder => open_folder_prompt(app, FolderPromptMode::DownloadTo),
+        Action::Download => {
+            if download_asks_for_folder(app.config.ask_save_path, false) {
+                open_folder_prompt(app, FolderPromptMode::DownloadTo);
+            } else {
+                download_selected(app).await;
+            }
+        }
+        Action::DownloadToFolder => {
+            if download_asks_for_folder(app.config.ask_save_path, true) {
+                open_folder_prompt(app, FolderPromptMode::DownloadTo);
+            } else {
+                download_selected(app).await;
+            }
+        }
         Action::ChangeDefaultFolder => open_folder_prompt(app, FolderPromptMode::SetDefault),
         Action::FolderType(c) => {
             if app.state.folder_prompt.open {
@@ -454,13 +491,48 @@ async fn apply_action(app: &mut App, action: Action) {
             }
         }
         Action::PlayerChoose => choose_player(app).await,
+        Action::PlayerPick(i) => {
+            if i < app.picker.options.len() {
+                app.picker.selected = i;
+                app.picker.mode = PickerMode::List;
+                choose_player(app).await;
+            }
+        }
         Action::ToggleSource(id) => {
+            let ids = crate::ui::search::sidebar_source_ids();
+            if let Some(i) = ids.iter().position(|s| *s == id) {
+                app.state.search.sidebar_sel = i;
+            }
             if app.disabled_sources.contains(&id) {
                 app.disabled_sources.remove(&id);
             } else {
                 app.disabled_sources.insert(id);
             }
             app.apply_source_filter();
+        }
+        Action::SidebarPrev => {
+            let n = crate::ui::search::sidebar_source_ids().len();
+            if n > 0 {
+                let sel = app.state.search.sidebar_sel;
+                app.state.search.sidebar_sel = sel.checked_sub(1).unwrap_or(n - 1);
+            }
+        }
+        Action::SidebarNext => {
+            let n = crate::ui::search::sidebar_source_ids().len();
+            if n > 0 {
+                app.state.search.sidebar_sel = (app.state.search.sidebar_sel + 1) % n;
+            }
+        }
+        Action::SidebarToggle => {
+            let ids = crate::ui::search::sidebar_source_ids();
+            if let Some(id) = ids.get(app.state.search.sidebar_sel).copied() {
+                if app.disabled_sources.contains(&id) {
+                    app.disabled_sources.remove(&id);
+                } else {
+                    app.disabled_sources.insert(id);
+                }
+                app.apply_source_filter();
+            }
         }
         Action::OpenSettings => {
             app.settings_open = !app.settings_open;

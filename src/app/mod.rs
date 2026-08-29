@@ -20,8 +20,8 @@ use crate::anim::{self, Ticker};
 use crate::core::cancel::CancelToken;
 use crate::core::paths;
 use crate::core::types::{
-    Engine as CoreEngine, EngineEvent, ItemView, QueueStatus, SearchCtx, SourceId, SourceStatus,
-    TorrentResult,
+    Engine as CoreEngine, EngineEvent, ItemView, QueueItem, QueueStatus, SearchCtx, SourceId,
+    SourceStatus, TorrentResult,
 };
 use crate::engine::fake::FakeEngine;
 use crate::engine::rqbit::RqbitEngine;
@@ -610,6 +610,25 @@ fn draw_frame(
     })
 }
 
+/// Live stats for the now-playing screen. Watch-now has no ledger row, so we
+/// fall back to the engine snapshot (FR-105).
+fn watch_stats(app: &App, id: &str) -> Option<ItemView> {
+    if let Some(view) = app.queue.views().into_iter().find(|v| v.item.id == id) {
+        return Some(view);
+    }
+    app.queue
+        .engine()
+        .snapshot()
+        .into_iter()
+        .find(|s| s.id == id)
+        .map(|s| {
+            ItemView::new(
+                QueueItem::new(id.to_string(), String::new(), None, None, PathBuf::new(), 0),
+                Some(s.stats),
+            )
+        })
+}
+
 /// Draws whichever screen is current, plus the status line and any overlay.
 fn draw(
     frame: &mut Frame,
@@ -644,7 +663,7 @@ fn draw(
         }
         Screen::NowPlaying => {
             if let Some(np) = &app.state.now_playing {
-                let view = app.queue.views().into_iter().find(|v| v.item.id == np.id);
+                let view = watch_stats(app, &np.id);
                 crate::ui::now_playing::draw(frame, rows[0], np, view.as_ref(), theme);
             }
         }
