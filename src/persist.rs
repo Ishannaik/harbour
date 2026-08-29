@@ -46,6 +46,9 @@ pub struct Config {
     pub theme: String,
     /// Keep seeding after a download completes.
     pub seed_by_default: bool,
+    /// When true, `d` asks for a folder (then files); `shift+d` is direct.
+    /// When false the keys swap. Default on (FR-29).
+    pub ask_save_path: bool,
     /// Extra announce URLs added to every torrent.
     pub trackers: Vec<String>,
     /// External player for watch mode (`w`): an explicit path or command
@@ -96,6 +99,7 @@ impl Default for Config {
             download_dir: paths::default_download_dir(),
             theme: "titanium".into(),
             seed_by_default: true,
+            ask_save_path: true,
             trackers: Vec::new(),
             player: None,
             disabled_sources: Vec::new(),
@@ -686,6 +690,7 @@ mod tests {
             download_dir: PathBuf::from("/tmp/somewhere"),
             theme: "midnight".into(),
             seed_by_default: false,
+            ask_save_path: false,
             trackers: vec!["udp://tracker.example:80".into()],
             player: Some("mpv".into()),
             disabled_sources: vec![SourceId::GamesHub, SourceId::TsukiBase],
@@ -719,6 +724,7 @@ mod tests {
         // couples this test to process-global state.
         assert_eq!(cfg.theme, "titanium");
         assert!(cfg.seed_by_default);
+        assert!(cfg.ask_save_path, "first run asks for a save path on d");
         assert!(cfg.trackers.is_empty());
         assert_eq!(
             cfg.indexer_url, "http://127.0.0.1:8765",

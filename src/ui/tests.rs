@@ -136,8 +136,8 @@ fn a_selected_result_footer_hints_watch_and_download() {
         "selected-row footer must name d-to-download, got:\n{out}"
     );
     assert!(
-        out.contains("dbl-click"),
-        "selected-row footer must name the mouse download gesture, got:\n{out}"
+        out.contains("space source"),
+        "selected-row footer must name source on/off, got:\n{out}"
     );
 }
 
@@ -402,11 +402,11 @@ fn player_picker_snapshot_modal() {
     let out = render(|f| {
         crate::ui::player::draw(f, f.area(), &theme, &picker, Some("mpv"));
     });
-    assert!(out.contains(" player "), "panel title shown");
+    assert!(out.contains("video player"), "panel title shown");
     assert!(out.contains('●'), "config choice marked");
     assert!(out.contains("mpv"));
     assert!(out.contains("Windows Media Player"));
-    assert!(out.contains("custom path"));
+    assert!(out.contains("click a name"));
     assert!(out.contains("not an existing absolute path"));
 }
 

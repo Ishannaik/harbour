@@ -168,9 +168,12 @@ requiring private announces; GPU/ASCII-image rendering.
 
 ### 4.4 Downloads (FR-29 … FR-41)
 
-- **FR-29** `d` on a selected result enqueues it to the default output folder (from
-  `config.toml`); `shift+d` prompts for a folder first, then enqueues; `o` changes the
-  default output folder (persisted).
+- **FR-29** Config `ask_save_path` (default true) chooses which download key asks
+  for a folder. When true, `d` prompts for a folder (seeded with the default), then
+  a file picker if the torrent has two or more files, then enqueues; `shift+d`
+  enqueues every file to the default folder with no prompts. When false the keys
+  swap (`d` is direct, `shift+d` asks). `o` still only changes the persisted default
+  folder. CLI `harbour <magnet|…>` (FR-39) is always direct — there is no TUI to ask.
 - **FR-30** Any number of items can be queued (unlimited queue); statuses progress
   `queued → downloading → failed`, and on completion move to `seeding`. `p` moves a
   downloading or seeding item to `paused` and back.
@@ -200,10 +203,11 @@ requiring private announces; GPU/ASCII-image rendering.
   from that file without re-fetching from the swarm.
 - **FR-38** Completed items drop into "recently downloaded" with a completion marker and
   start seeding by default.
-- **FR-39** `harbour <magnet|infohash|.torrent>` (FR-02) downloads into the default output
-  folder and behaves identically to an interactive `d` enqueue.
-- **FR-40** The user can change the output folder per item at enqueue time only
-  (`shift+d`); the per-item folder is recorded in the ledger and used on resume.
+- **FR-39** `harbour <magnet|infohash|.torrent>` (FR-02) downloads into the default
+  output folder with every file selected — the direct path, not the ask path. There is
+  no TUI, so `ask_save_path` does not apply.
+- **FR-40** The per-item output folder is chosen at enqueue time on the ask path
+  (FR-29); it is recorded in the ledger and used on resume.
 - **FR-41** All download mutations (enqueue, promote, pause, resume, remove) are applied
   through the engine via the input→action channel; UI never mutates engine state directly
   (unit-tested action layer).
@@ -249,8 +253,9 @@ requiring private announces; GPU/ASCII-image rendering.
   what has completed.
 - **FR-50** On startup the ledger is loaded and reconciled against librqbit session
   state; piece-level resume state comes from librqbit's session, not from `downloads.json`.
-- **FR-51** Config (`config.toml`) persists: default output folder, theme name, and
-  seed-by-default toggle; invalid config values fall back with a loud warning banner.
+- **FR-51** Config (`config.toml`) persists: default output folder, theme name,
+  seed-by-default toggle, and `ask_save_path`; invalid config values fall back with a
+  loud warning banner.
 - **FR-52** Cache layout is `cache/search/<source>/<query>.json`,
   `cache/torrents/<id>.torrent`, `cache/covers/` (covers unused in v1, directory reserved);
   search cache respects the 5-minute TTL from FR-17.
@@ -283,8 +288,9 @@ requiring private announces; GPU/ASCII-image rendering.
   landed for a real queue item; only the watch-now (2.3) cache is stream-and-delete.
 - **FR-58** The stream endpoint serves HTTP Range requests so the player can seek; seeking
   works on complete and partially-downloaded-but-watchable files.
-- **FR-59** Playback progress and player state are reflected in the now-playing view;
-  `q`/esc returns to the previous view and stops the stream cleanly.
+- **FR-59** Playback progress and player state are reflected in the now-playing view.
+  `q`/esc returns to the previous view and stops the stream cleanly. Clicks and other
+  keys do not end the session — the player is a separate window; the TUI is status.
 - **FR-60** Watch mode only activates while the swarm has the requested piece ranges;
   insufficient data shows an error banner instead of a broken stream.
 - **FR-61** The stream endpoint binds to loopback only (no external network exposure);
@@ -292,9 +298,11 @@ requiring private announces; GPU/ASCII-image rendering.
 - **FR-104** Watch launches only after a real HTTP `206 Partial Content` on the opening
   Range request within a deadline. Timeout, transport failure, or a bare `200` (Range
   not honored) is an error banner, never a player — no silent "unable to open MRL".
-- **FR-105** Now-playing shows measured download progress and speed from the live
-  `ItemView`. It never fabricates a buffer percentage. A slow-stream warning is
-  allowed only from measured speed versus the file's bitrate.
+- **FR-105** Now-playing shows measured download progress, download speed, upload
+  speed, peers, ETA, and bytes from the live engine stats (ledger `ItemView` or, for
+  watch-now, the engine snapshot — watch-now has no ledger row). It never fabricates a
+  buffer percentage. A slow-stream warning is allowed only from measured speed versus
+  the file's bitrate.
 - **FR-106** Browser is a first-class player target alongside mpv/VLC: the settings'
   player choice accepts `browser`, which opens the same loopback stream endpoint URL
   (`http://127.0.0.1:<port>/…`) in the system's default browser instead of spawning a
@@ -382,13 +390,13 @@ requiring private announces; GPU/ASCII-image rendering.
   never waits on engine sockets (OS reclaims them).
 - **UR-09** Terminal restore is unconditional (UR-08 + FR-09): on clean quit, panic, or
   crash, the terminal is restored to its prior state.
-- **UR-10** Keybinds (normative): Enter=search, `d`=download to default folder,
-  `shift+d`=download to folder, `o`=change output folder, `p`=pause/stop seed,
-  `x`=forget selected download (files stay), `shift+X`=forget and delete files
-  (both confirm, FR-76), `?`=help, `q`=quit (confirms first, FR-81), `w`=watch
-  (phase 6). Screen
-  navigation: `Tab` cycles search ⇄ downloads; `←`/`→` switch the downloads
-  tabs (Downloads/Seeding); `esc` closes the help overlay. `?` shows exactly these.
+- **UR-10** Keybinds (normative): Enter=search, `d`/`shift+d`=download ask vs direct
+  per `ask_save_path` (FR-29; default `d` asks, `shift+d` direct), `o`=change output
+  folder, `p`=pause/stop seed, `x`=forget selected download (files stay), `shift+X`=
+  forget and delete files (both confirm, FR-76), `?`=help, `q`=quit (confirms first,
+  FR-81), `w`=watch (phase 6). Screen navigation: `Tab` cycles search ⇄ downloads;
+  `←`/`→` switch the downloads tabs (Downloads/Seeding); `esc` closes the help overlay.
+  `?` shows exactly these.
 - **UR-11** Every async operation shows state: streaming search shows shimmer + per-source
   dots; downloads show bars; empty results show an empty state ("no results — try another
   query"), never a blank pane.
@@ -477,7 +485,8 @@ requiring private announces; GPU/ASCII-image rendering.
    `offline` in the sidebar with the other 9 present) — manual smoke against live sources.
 3. Results show name/source/size/seeders/leechers with the FR-24 colors; navigation and
    `?` keybind overlay work.
-4. `d` downloads to the default folder; `shift+d` prompts for a folder; `o` changes and
+4. With `ask_save_path` on (default), `d` prompts for a folder then files and `shift+d`
+   downloads to the default folder; flipping the setting swaps the keys; `o` changes and
    persists the default folder; `HARBOUR_MAX_DOWNLOADS` caps concurrency with oldest-first
    `promote()`.
 5. Downloads show progress/speed/peers/ETA; an interrupted download resumes after

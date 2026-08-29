@@ -72,7 +72,22 @@ pub(crate) fn page_size() -> usize {
     (term_h as usize).saturating_sub(8).max(5)
 }
 
+/// FR-29: `d` asks for a folder when `ask_save_path` is on; `shift+d` is the
+/// other one. Off swaps the keys.
+pub(crate) fn download_asks_for_folder(ask_save_path: bool, shift_d: bool) -> bool {
+    ask_save_path != shift_d
+}
+
 pub(crate) async fn download_selected(app: &mut App) {
+    enqueue_selected(app, false).await;
+}
+
+/// Ask-path: after the folder prompt, pick files when the torrent has more than one.
+pub(crate) async fn download_selected_picking_files(app: &mut App) {
+    enqueue_selected(app, true).await;
+}
+
+async fn enqueue_selected(app: &mut App, pick_files: bool) {
     let Some(result) = app.selected_result().cloned() else {
         app.warn("nothing selected to download");
         return;
@@ -101,17 +116,24 @@ pub(crate) async fn download_selected(app: &mut App) {
     let id = crate::core::magnet::info_hash_from_magnet(&magnet)
         .unwrap_or_else(|| result.info_hash.clone());
 
-    // Check if torrent contains multiple files (e.g. season pack / batch release)
-    let video_files = app.queue.engine().list_video_files(&id).await;
-    if video_files.len() > 1 {
-        app.batch_picker.open_for(
-            id,
-            result.name.clone(),
-            Some(magnet),
-            app.config.download_dir.clone(),
-            video_files,
-        );
-        return;
+    if pick_files {
+        let mut files = app.queue.engine().list_files(&id).await;
+        if files.len() <= 1 {
+            files = app.queue.engine().list_magnet_files(&magnet).await;
+        }
+        if files.len() > 1 {
+            app.batch_picker.open_for(
+                id,
+                result.name.clone(),
+                Some(magnet),
+                app.config.download_dir.clone(),
+                files,
+            );
+            return;
+        }
+        if files.is_empty() {
+            app.warn("could not list files yet — downloading all");
+        }
     }
 
     let outcome = app
@@ -677,7 +699,9 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::{Arc, Mutex};
 
-    use crate::core::types::{Engine as _, SearchFuture, Source, SourceDef, SourceId};
+    use crate::core::types::{
+        Engine as _, SearchFuture, Source, SourceDef, SourceId, TorrentFileView,
+    };
     use crate::engine::fake::FakeEngine;
     use crate::persist::{Config, Store};
     use crate::queue::Queue;
@@ -731,6 +755,28 @@ mod tests {
         (app, root)
     }
 
+    #[test]
+    fn download_keys_flip_with_ask_save_path() {
+        // Production change that fails this: returning the same bool for
+        // every (ask, shift+d) pair, or swapping the wrong way.
+        assert!(
+            download_asks_for_folder(true, false),
+            "d asks when ask_save_path is on"
+        );
+        assert!(
+            !download_asks_for_folder(true, true),
+            "shift+d is direct when ask_save_path is on"
+        );
+        assert!(
+            !download_asks_for_folder(false, false),
+            "d is direct when ask_save_path is off"
+        );
+        assert!(
+            download_asks_for_folder(false, true),
+            "shift+d asks when ask_save_path is off"
+        );
+    }
+
     #[tokio::test]
     async fn download_selected_switches_to_the_downloads_screen() {
         // FR-29 / #71: `d` (and a result double-click, which maps to the
@@ -759,6 +805,96 @@ mod tests {
             app.queue.get(&info_hash).is_some(),
             "the selected result is enqueued"
         );
+    }
+
+    fn dune_row(info_hash: &str) -> TorrentResult {
+        TorrentResult {
+            info_hash: info_hash.to_string(),
+            name: "Dune".into(),
+            size_bytes: 1_000,
+            seeders: 10,
+            leechers: 1,
+            num_files: None,
+            source: SourceId::CineVault,
+            magnet: Some(crate::core::magnet::build_magnet(info_hash, "Dune")),
+            added: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn ask_path_opens_picker_for_every_file_not_just_video() {
+        let engine = Arc::new(FakeEngine::new());
+        let (mut app, _root) = test_app(engine.clone(), "ask-path-picker");
+        let info_hash = "0123456789abcdef0123456789abcdef01234567".to_string();
+        engine.set_files(
+            &info_hash,
+            vec![
+                TorrentFileView {
+                    id: 0,
+                    name: "movie.mkv".into(),
+                    size_bytes: 900,
+                },
+                TorrentFileView {
+                    id: 1,
+                    name: "sample.mkv".into(),
+                    size_bytes: 50,
+                },
+                TorrentFileView {
+                    id: 2,
+                    name: "readme.nfo".into(),
+                    size_bytes: 10,
+                },
+            ],
+        );
+        app.state.screen = Screen::Search;
+        app.state.search.results = vec![dune_row(&info_hash)];
+        app.state.search.selected = 0;
+
+        download_selected_picking_files(&mut app).await;
+
+        assert!(app.batch_picker.open, "ask path shows the file picker");
+        assert_eq!(app.batch_picker.files.len(), 3);
+        assert!(
+            app.batch_picker
+                .files
+                .iter()
+                .any(|f| f.name == "readme.nfo"),
+            "picker lists non-video files"
+        );
+        assert!(
+            app.queue.get(&info_hash).is_none(),
+            "not queued until the picker confirms"
+        );
+    }
+
+    #[tokio::test]
+    async fn direct_download_skips_the_file_picker() {
+        let engine = Arc::new(FakeEngine::new());
+        let (mut app, _root) = test_app(engine.clone(), "direct-skips-picker");
+        let info_hash = "0123456789abcdef0123456789abcdef01234567".to_string();
+        engine.set_files(
+            &info_hash,
+            vec![
+                TorrentFileView {
+                    id: 0,
+                    name: "movie.mkv".into(),
+                    size_bytes: 900,
+                },
+                TorrentFileView {
+                    id: 1,
+                    name: "readme.nfo".into(),
+                    size_bytes: 10,
+                },
+            ],
+        );
+        app.state.screen = Screen::Search;
+        app.state.search.results = vec![dune_row(&info_hash)];
+        app.state.search.selected = 0;
+
+        download_selected(&mut app).await;
+
+        assert!(!app.batch_picker.open, "direct path skips the picker");
+        assert!(app.queue.get(&info_hash).is_some(), "enqueued immediately");
     }
 
     #[tokio::test]

@@ -86,6 +86,9 @@ pub struct SearchState {
     pub latency_ms: Option<u64>,
     pub sort_column: SortColumn,
     pub sort_order: SortOrder,
+    /// Which left-sidebar source `←`/`→`/`space` highlight. Clicking a row
+    /// also parks the cursor there so a later space toggles the same site.
+    pub sidebar_sel: usize,
 }
 
 impl SearchState {
@@ -148,6 +151,7 @@ impl Default for SearchState {
             latency_ms: None,
             sort_column: SortColumn::Default,
             sort_order: SortOrder::Desc,
+            sidebar_sel: 0,
         }
     }
 }

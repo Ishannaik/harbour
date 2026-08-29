@@ -12,6 +12,18 @@ use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
 use crate::theme::Theme;
 
+/// Plain-English first steps. Shown above the key list so someone who
+/// has never used a terminal app can still watch a file.
+pub const START_HERE: &[(&str, &str)] = &[
+    ("1", "Type a name, then press Enter to search"),
+    ("2", "Click a result, or press Enter / w to watch it"),
+    ("3", "First watch: click VLC or mpv (saved next time)"),
+    (
+        "4",
+        "d download · Tab downloads · double-click a download = folder",
+    ),
+];
+
 /// Every binding, in the order a new user meets them.
 ///
 /// This is the single source of truth for the overlay. `UR-10` requires `?` to
@@ -23,9 +35,19 @@ pub const BINDINGS: &[(&str, &str)] = &[
     ("↑ ↓", "move the selection"),
     ("tab", "switch between search and downloads"),
     // Search results pane: plain keys act on the selected row.
-    ("d", "search results: download the selected row"),
-    ("shift+D", "search results: download to a folder you pick"),
-    ("o", "change the default download folder"),
+    (
+        "d",
+        "download: ask folder then files (settings can swap keys)",
+    ),
+    ("shift+D", "download straight to the default folder"),
+    (
+        "o",
+        "search: default folder · downloads: open files in Explorer",
+    ),
+    (
+        "dbl-click",
+        "search: download · downloads: open the file location",
+    ),
     ("w", "watch — results: stream now · downloads: watch item"),
     ("s", "search results: settings · downloads: seeding tab"),
     (
@@ -39,7 +61,11 @@ pub const BINDINGS: &[(&str, &str)] = &[
     // Downloads screen.
     (
         "← →",
-        "downloads: switch between the downloads and seeding tabs",
+        "search: highlight a source · downloads: switch downloads/seeding tabs",
+    ),
+    (
+        "space",
+        "search results: turn the highlighted source on or off",
     ),
     ("p", "downloads: pause or resume the selected item"),
     ("r", "downloads: retry a failed item"),
@@ -55,7 +81,7 @@ pub const BINDINGS: &[(&str, &str)] = &[
     ),
     (
         "shift+P",
-        "anywhere: player picker — choose mpv/VLC/Windows Media Player",
+        "pick a video player (VLC / mpv) — also: settings, first row",
     ),
     ("shift+L", "copy the bugreport path for sharing"),
     ("in mpv", "j cycle subs · # cycle audio"),
@@ -85,11 +111,13 @@ pub fn draw(frame: &mut Frame, area: Rect, theme: &Theme) {
     let width = BINDINGS
         .iter()
         .chain(READING_RESULTS)
+        .chain(START_HERE)
         .map(|(k, d)| k.chars().count() + d.chars().count() + 6)
         .max()
         .unwrap_or(40)
         .clamp(30, area.width.saturating_sub(4).max(30) as usize) as u16;
-    let height = (BINDINGS.len() + READING_RESULTS.len() + 5).min(area.height as usize) as u16;
+    let height = (BINDINGS.len() + READING_RESULTS.len() + START_HERE.len() + 7)
+        .min(area.height as usize) as u16;
     let panel = Rect {
         x: area.x + area.width.saturating_sub(width) / 2,
         y: area.y + area.height.saturating_sub(height) / 2,
@@ -111,10 +139,49 @@ pub fn draw(frame: &mut Frame, area: Rect, theme: &Theme) {
     let key_width = BINDINGS
         .iter()
         .chain(READING_RESULTS)
+        .chain(START_HERE)
         .map(|(k, _)| k.chars().count())
         .max()
         .unwrap_or(5);
     let mut lines = vec![Line::from("")];
+    let start_div = " how to start ";
+    let fill = theme.symbols.border_h.as_ref().repeat(
+        panel
+            .width
+            .saturating_sub(2)
+            .saturating_sub(start_div.chars().count() as u16)
+            .max(1) as usize,
+    );
+    lines.push(Line::from(Span::styled(
+        format!("{start_div}{fill}"),
+        Style::default().fg(colors.muted().to_ratatui()),
+    )));
+    for (key, description) in START_HERE {
+        lines.push(Line::from(vec![
+            Span::raw("  "),
+            Span::styled(
+                format!("{key:>key_width$}"),
+                Style::default().fg(colors.accent().to_ratatui()),
+            ),
+            Span::raw("  "),
+            Span::styled(
+                (*description).to_string(),
+                Style::default().fg(colors.text().to_ratatui()),
+            ),
+        ]));
+    }
+    let keys_div = " keys ";
+    let fill = theme.symbols.border_h.as_ref().repeat(
+        panel
+            .width
+            .saturating_sub(2)
+            .saturating_sub(keys_div.chars().count() as u16)
+            .max(1) as usize,
+    );
+    lines.push(Line::from(Span::styled(
+        format!("{keys_div}{fill}"),
+        Style::default().fg(colors.muted().to_ratatui()),
+    )));
     for (key, description) in BINDINGS {
         lines.push(Line::from(vec![
             Span::raw("  "),
@@ -166,7 +233,7 @@ pub fn draw(frame: &mut Frame, area: Rect, theme: &Theme) {
                 .border_set(border)
                 .border_style(Style::default().fg(colors.border().to_ratatui()))
                 .title(Span::styled(
-                    " keys ",
+                    " help ",
                     Style::default().fg(colors.accent().to_ratatui()),
                 ))
                 .title(
@@ -194,6 +261,18 @@ mod tests {
         keys.dedup();
         assert_eq!(keys.len(), before, "a key is listed twice in the help");
         assert!(BINDINGS.iter().all(|(_, d)| !d.is_empty()));
+    }
+
+    #[test]
+    fn start_here_tells_a_new_user_how_to_watch() {
+        let steps: String = START_HERE
+            .iter()
+            .map(|(_, d)| *d)
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(steps.to_lowercase().contains("vlc") || steps.contains("player"));
+        assert!(steps.to_lowercase().contains("search"));
+        assert_eq!(START_HERE.len(), 4);
     }
 
     #[test]
