@@ -42,10 +42,10 @@ const CURSOR: &str = "▌";
 /// Every printable key types on this screen (so "dune" can never fire a
 /// download on the `d`); downloading is shift+D mid-query, or plain `d`
 /// with an empty query.
-const HINT: &str = "↵ search · tab downloads · s settings · ? help · esc results";
+const HINT: &str = "↵ search · click source on/off · tab downloads · ? help";
 /// The results pane owns the keyboard: plain keys act on the selected row.
 /// Kept short so it fits the main column beside the sidebar (issue #71).
-const RESULTS_HINT: &str = "enter watch · d download · shift+P · q quit · dbl-click";
+const RESULTS_HINT: &str = "space source · enter watch · d download · q quit";
 /// Placeholder while the query is empty and idle.
 const PLACEHOLDER: &str = "search torrents…";
 /// Bar label while searching on an empty query — the curated-browse mode
@@ -99,6 +99,14 @@ static EPOCH: LazyLock<Instant> = LazyLock::new(Instant::now);
 /// past the last source. The offset is relative to the sidebar's inner area,
 /// so `input.rs` can hit-test clicks against the same matrix the painter
 /// draws without duplicating its layout.
+/// Every toggleable sidebar id, in paint order (no group headers).
+pub fn sidebar_source_ids() -> Vec<SourceId> {
+    SIDEBAR
+        .iter()
+        .flat_map(|(_, rows)| rows.iter().map(|(id, _)| *id))
+        .collect()
+}
+
 pub fn sidebar_source_at(row: u16) -> Option<SourceId> {
     // Row 0 is the "Sources" title; the first source row sits at offset 1.
     let mut cursor = row.saturating_sub(1);
@@ -179,6 +187,8 @@ fn draw_sidebar(
         "Sources",
         Style::default().fg(colors.accent().to_ratatui()),
     )));
+    let ids = sidebar_source_ids();
+    let cursor_id = ids.get(state.sidebar_sel).copied();
     for (group, sources) in SIDEBAR {
         let active = sources
             .iter()
@@ -203,7 +213,7 @@ fn draw_sidebar(
                 state,
                 theme,
                 width,
-                hovered,
+                hovered || cursor_id == Some(*id),
             ));
         }
     }
@@ -230,19 +240,22 @@ fn source_line(
         Style::default()
     };
 
+    let switch = if disabled { "off" } else { "on" };
+    let name_w = width.saturating_sub(8); // "  · " + " on"
     // Disabled wins over every health state: the row is deliberately flat.
     if disabled {
         let (dot_str, fg) = if hovered {
-            ("  ▸ ", colors.text().to_ratatui())
+            ("  ▸ ", colors.dim().to_ratatui())
         } else {
             ("  · ", colors.dim().to_ratatui())
         };
         return Line::from(vec![
             Span::styled(dot_str, Style::default().fg(fg)),
             Span::styled(
-                truncate(label, width.saturating_sub(4)),
+                format!("{:width$}", truncate(label, name_w), width = name_w),
                 Style::default().fg(fg),
             ),
+            Span::styled(format!(" {switch}"), Style::default().fg(fg)),
         ])
         .style(base_style);
     }
@@ -261,15 +274,21 @@ fn source_line(
     } else {
         colors.text().to_ratatui()
     };
+    let sw_fg = if disabled {
+        colors.dim().to_ratatui()
+    } else {
+        colors.success().to_ratatui()
+    };
     Line::from(vec![
         Span::styled(
             format!("  {dot} "),
             Style::default().fg(dot_color.to_ratatui()),
         ),
         Span::styled(
-            truncate(label, width.saturating_sub(4)),
+            format!("{:width$}", truncate(label, name_w), width = name_w),
             Style::default().fg(text_fg),
         ),
+        Span::styled(format!(" {switch}"), Style::default().fg(sw_fg)),
     ])
     .style(base_style)
 }
@@ -1164,7 +1183,7 @@ mod tests {
     }
 
     #[test]
-    fn results_hint_names_the_player_picker() {
+    fn results_hint_names_source_toggle() {
         let state = SearchState {
             focus: false,
             ..SearchState::default()
@@ -1180,8 +1199,8 @@ mod tests {
             .flat_map(|y| (0..80).map(move |x| buf[(x, y)].symbol().to_string()))
             .collect();
         assert!(
-            text.contains("shift+P"),
-            "results footer must name the picker binding, got: {text}"
+            text.contains("space source"),
+            "results footer must name source toggle, got: {text}"
         );
     }
 

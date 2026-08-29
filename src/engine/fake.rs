@@ -71,6 +71,8 @@ pub struct FakeEngine {
     shutdown_called: Mutex<bool>,
     /// Video files `list_video_files` should report, keyed by torrent id.
     videos: Mutex<HashMap<InfoHash, Vec<TorrentFileView>>>,
+    /// All files `list_files` / `list_magnet_files` should report, keyed by id.
+    files: Mutex<HashMap<InfoHash, Vec<TorrentFileView>>>,
     /// The last [`Engine::remove`] call, if any: `(id, delete_files)`.
     last_remove: Mutex<Option<(InfoHash, bool)>>,
 }
@@ -328,6 +330,29 @@ impl Engine for FakeEngine {
             .unwrap_or_default();
         Box::pin(async move { files })
     }
+
+    fn list_files<'a>(&'a self, id: &'a str) -> EngineFuture<'a, Vec<TorrentFileView>> {
+        let files = self
+            .files
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(id)
+            .cloned()
+            .unwrap_or_default();
+        Box::pin(async move { files })
+    }
+
+    fn list_magnet_files<'a>(&'a self, magnet: &'a str) -> EngineFuture<'a, Vec<TorrentFileView>> {
+        let id = crate::core::magnet::info_hash_from_magnet(magnet).unwrap_or_default();
+        let files = self
+            .files
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(&id)
+            .cloned()
+            .unwrap_or_default();
+        Box::pin(async move { files })
+    }
 }
 
 impl FakeEngine {
@@ -348,6 +373,14 @@ impl FakeEngine {
     /// URL — enough for the player-picker path, not enough to spawn a player.
     pub fn set_video_files(&self, id: &str, files: Vec<TorrentFileView>) {
         self.videos
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(id.to_string(), files);
+    }
+
+    /// Files the batch picker should see for `id` (every file, not just video).
+    pub fn set_files(&self, id: &str, files: Vec<TorrentFileView>) {
+        self.files
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .insert(id.to_string(), files);

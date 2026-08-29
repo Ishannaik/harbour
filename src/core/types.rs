@@ -695,6 +695,16 @@ pub trait Engine: Send + Sync {
         Box::pin(async move { Vec::new() })
     }
 
+    /// Every file in `id`, torrent order. Empty until metadata has arrived.
+    fn list_files<'a>(&'a self, _id: &'a str) -> EngineFuture<'a, Vec<TorrentFileView>> {
+        Box::pin(async move { Vec::new() })
+    }
+
+    /// Resolve a magnet's file list without starting a download.
+    fn list_magnet_files<'a>(&'a self, _magnet: &'a str) -> EngineFuture<'a, Vec<TorrentFileView>> {
+        Box::pin(async move { Vec::new() })
+    }
+
     /// Stream URL for a specific file index in `id`.
     fn stream_file_url<'a>(
         &'a self,

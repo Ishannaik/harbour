@@ -40,7 +40,11 @@ pub struct PlayerPicker {
 }
 
 /// The hint line — single source of truth for the overlay's footer.
-pub const HINT: &str = "↑/↓ select · enter use · c custom path · esc cancel";
+pub const HINT: &str =
+    "click a name · enter use · 1-9 pick · c type a path · r refresh · esc cancel";
+const HOW: &str = "This is your video app (VLC is the easy one). Click it. Harbour remembers.";
+const EMPTY: &str =
+    "No player found. Install VLC from videolan.org, then press r — or c to type a path.";
 
 /// Draws the overlay: a dim backdrop, then a centred panel listing every
 /// installed player with `●` on the current `config.player` choice, the
@@ -54,36 +58,13 @@ pub fn draw(
 ) {
     let colors = &theme.colors;
 
-    // Dim the whole frame first; the panel repaints its own rectangle over
-    // it, so the screen behind stays visible but clearly de-emphasized.
     frame.render_widget(Clear, area);
     frame.render_widget(
         Paragraph::new("").style(Style::default().bg(colors.dim().to_ratatui())),
         area,
     );
 
-    let hint_width = HINT.chars().count() + 4;
-    let option_width = picker
-        .options
-        .iter()
-        .map(|(label, _)| label.chars().count() + 8)
-        .max()
-        .unwrap_or(0);
-    let custom_width = "path: ".len() + picker.custom.chars().count().min(36) + 4;
-    let width = hint_width
-        .max(option_width)
-        .max(custom_width)
-        .clamp(30, area.width.saturating_sub(4).max(30) as usize) as u16;
-
-    let option_rows = picker.options.len() as u16;
-    let error_rows = u16::from(picker.message.is_some());
-    let height = (5 + option_rows + error_rows).min(area.height);
-    let panel = Rect {
-        x: area.x + area.width.saturating_sub(width) / 2,
-        y: area.y + area.height.saturating_sub(height) / 2,
-        width: width.min(area.width),
-        height,
-    };
+    let panel = panel_rect(area, picker);
 
     let border = BorderSet {
         top_left: theme.symbols.border_tl.as_ref(),
@@ -96,7 +77,16 @@ pub fn draw(
         horizontal_bottom: theme.symbols.border_h.as_ref(),
     };
 
-    let mut lines = vec![Line::from("")];
+    let mut lines = vec![Line::from(Span::styled(
+        format!("  {HOW}"),
+        Style::default().fg(colors.muted().to_ratatui()),
+    ))];
+    if picker.options.is_empty() {
+        lines.push(Line::from(Span::styled(
+            format!("  {EMPTY}"),
+            Style::default().fg(colors.warning().to_ratatui()),
+        )));
+    }
     for (i, (label, command)) in picker.options.iter().enumerate() {
         let row_style = if i == picker.selected {
             Style::default()
@@ -105,22 +95,19 @@ pub fn draw(
         } else {
             Style::default().fg(colors.text().to_ratatui())
         };
-        // `▸` follows the selection; `●` marks the persisted config choice.
         let cursor = if i == picker.selected { "▸" } else { " " };
         let choice = if config_player == Some(command.as_str()) {
             "●"
         } else {
             "·"
         };
+        let n = i + 1;
         lines.push(Line::from(vec![
-            Span::raw(format!(" {cursor} {choice} ")),
+            Span::raw(format!(" {cursor} {choice} {n} ")),
             Span::styled(label.clone(), row_style),
         ]));
     }
 
-    // The custom-path line is the active input in custom mode, a hint
-    // otherwise; the text is capped so a long path cannot widen the panel
-    // past the terminal.
     let custom_display: String = picker.custom.chars().take(36).collect::<String>();
     let path_style = if picker.mode == PickerMode::Custom {
         colors.accent().to_ratatui()
@@ -154,13 +141,66 @@ pub fn draw(
                 .border_set(border)
                 .border_style(Style::default().fg(colors.border().to_ratatui()))
                 .title(Span::styled(
-                    " player ",
+                    " choose a video player ",
                     Style::default().fg(colors.accent().to_ratatui()),
                 ))
                 .style(Style::default().bg(colors.bg().to_ratatui())),
         ),
         panel,
     );
+}
+
+/// Centred panel used by paint and by click hit-testing.
+pub fn panel_rect(area: Rect, picker: &PlayerPicker) -> Rect {
+    let hint_width = HINT.chars().count() + 4;
+    let option_width = picker
+        .options
+        .iter()
+        .map(|(label, _)| label.chars().count() + 12)
+        .max()
+        .unwrap_or(0);
+    let how_w = HOW.chars().count() + 4;
+    let empty_w = if picker.options.is_empty() {
+        EMPTY.chars().count() + 4
+    } else {
+        0
+    };
+    let custom_width = "path: ".len() + picker.custom.chars().count().min(36) + 4;
+    let width = hint_width
+        .max(option_width)
+        .max(how_w)
+        .max(empty_w)
+        .max(custom_width)
+        .clamp(30, area.width.saturating_sub(4).max(30) as usize) as u16;
+
+    let empty_rows = u16::from(picker.options.is_empty());
+    let option_rows = picker.options.len() as u16;
+    let error_rows = u16::from(picker.message.is_some());
+    let height = (6 + option_rows + empty_rows + error_rows).min(area.height);
+    Rect {
+        x: area.x + area.width.saturating_sub(width) / 2,
+        y: area.y + area.height.saturating_sub(height) / 2,
+        width: width.min(area.width),
+        height,
+    }
+}
+
+/// Which installed-player row a click lands on, if any.
+/// Inner row 0 is the how-to line; options start at inner row 1.
+pub fn option_at(picker: &PlayerPicker, area: Rect, col: u16, row: u16) -> Option<usize> {
+    let panel = panel_rect(area, picker);
+    if col < panel.x || col >= panel.right() || row < panel.y || row >= panel.bottom() {
+        return None;
+    }
+    let inner_y = panel.y.saturating_add(1);
+    let offset = row.saturating_sub(inner_y).saturating_sub(1) as usize;
+    picker.options.get(offset).map(|_| offset)
+}
+
+/// True when the click is on the panel.
+pub fn click_in_panel(picker: &PlayerPicker, area: Rect, col: u16, row: u16) -> bool {
+    let panel = panel_rect(area, picker);
+    col >= panel.x && col < panel.right() && row >= panel.y && row < panel.bottom()
 }
 
 #[cfg(test)]
@@ -199,7 +239,8 @@ mod tests {
         assert!(text.contains('·'), "non-choice marked");
         assert!(text.contains("mpv"));
         assert!(text.contains("VLC"));
-        assert!(text.contains("custom path"));
+        assert!(text.contains("click a name"));
+        assert!(text.contains("choose a video player") || text.contains("video player"));
     }
 
     #[test]
@@ -220,6 +261,17 @@ mod tests {
             .collect();
         assert!(text.contains("not an existing absolute path"));
         assert!(text.contains("C:\\tools\\mpv.exe"));
+    }
+
+    #[test]
+    fn option_at_hits_the_first_player_row() {
+        let p = picker();
+        let area = Rect::new(0, 0, 80, 24);
+        let panel = panel_rect(area, &p);
+        let first = panel.y + 2; // inner y+1 = how-to; +1 = first option
+        assert_eq!(option_at(&p, area, panel.x + 2, first), Some(0));
+        assert_eq!(option_at(&p, area, panel.x + 2, first + 1), Some(1));
+        assert!(option_at(&p, area, 0, 0).is_none());
     }
 
     #[test]

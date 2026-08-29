@@ -9,7 +9,7 @@ use crate::ui::FolderPromptMode;
 use crate::ui::settings::{RowKind, TextField};
 
 use super::App;
-use super::actions::download_selected;
+use super::actions::download_selected_picking_files;
 use super::watch::open_player_picker;
 
 /// The settings overlay's Enter: per row kind, either open the player
@@ -43,13 +43,14 @@ fn settings_toggle_row(app: &mut App) {
             app.config.seed_by_default = !app.config.seed_by_default;
             app.queue.set_seed_by_default(app.config.seed_by_default);
         }
-        9 => {
+        4 => app.config.ask_save_path = !app.config.ask_save_path,
+        10 => {
             app.config.use_alt_rates = !app.config.use_alt_rates;
             apply_rate_limits(app);
         }
-        12 => app.config.enable_upnp = !app.config.enable_upnp,
-        13 => app.config.enable_dht = !app.config.enable_dht,
-        15 => {
+        13 => app.config.enable_upnp = !app.config.enable_upnp,
+        14 => app.config.enable_dht = !app.config.enable_dht,
+        16 => {
             app.config.stop_seed_at_ratio = !app.config.stop_seed_at_ratio;
             app.queue.set_stop_ratio(if app.config.stop_seed_at_ratio {
                 Some(app.config.seed_ratio)
@@ -366,7 +367,7 @@ pub(crate) async fn commit_folder_prompt(app: &mut App) {
             // `config.download_dir` into the queue item synchronously, so a
             // temporary swap is safe — the original is restored right after.
             let previous = std::mem::replace(&mut app.config.download_dir, dir);
-            download_selected(app).await;
+            download_selected_picking_files(app).await;
             app.config.download_dir = previous;
         }
     }
@@ -433,7 +434,7 @@ mod tests {
         app.settings.selected = 0;
         assert_eq!(
             crate::ui::settings::row_label(0),
-            Some("Default Video Player")
+            Some("Video Player (click / enter)")
         );
 
         settings_activate(&mut app);

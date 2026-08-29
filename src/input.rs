@@ -91,6 +91,8 @@ pub enum Action {
     PlayerDown,
     /// Use the selected (list mode) or entered (custom mode) player.
     PlayerChoose,
+    /// Click (or press 1–9) to use that installed player immediately.
+    PlayerPick(usize),
     /// Switch the picker to custom-path entry.
     PlayerCustom,
     /// Append a character to the custom player path.
@@ -107,6 +109,11 @@ pub enum Action {
     /// Enable/disable a source from the search sidebar (2.2): disabled
     /// sources are never queried or merged, and the choice persists.
     ToggleSource(SourceId),
+    /// Move the left-sidebar highlight (`←` / `→` on search).
+    SidebarPrev,
+    SidebarNext,
+    /// `space` on search results: toggle the highlighted sidebar source.
+    SidebarToggle,
     // --- Settings (2.5): everything in Config editable from the TUI ---
     /// Open or close the settings overlay.
     OpenSettings,
@@ -290,6 +297,10 @@ pub fn map_with_focus(key: KeyEvent, screen: Screen, flags: FocusFlags) -> Actio
             KeyCode::Up | KeyCode::Char('k') => Action::PlayerUp,
             KeyCode::Down | KeyCode::Char('j') => Action::PlayerDown,
             KeyCode::Enter => Action::PlayerChoose,
+            KeyCode::Char(d) if !picker_custom && d.is_ascii_digit() && d != '0' => {
+                Action::PlayerPick((d as u8 - b'1') as usize)
+            }
+            KeyCode::Char('r') if !picker_custom => Action::OpenPlayerPicker,
             KeyCode::Backspace if picker_custom => Action::PlayerBackspace,
             KeyCode::Char('c') if !picker_custom => Action::PlayerCustom,
             KeyCode::Char(c) if picker_custom => Action::PlayerType(c),
@@ -347,6 +358,8 @@ pub fn map_with_focus(key: KeyEvent, screen: Screen, flags: FocusFlags) -> Actio
             KeyCode::Enter => Action::Submit,
             KeyCode::Up => Action::MoveUp,
             KeyCode::Down => Action::MoveDown,
+            KeyCode::Left => Action::SidebarPrev,
+            KeyCode::Right => Action::SidebarNext,
             KeyCode::PageUp => Action::PageUp,
             KeyCode::PageDown => Action::PageDown,
             KeyCode::Tab => Action::SwitchScreen,
@@ -357,6 +370,9 @@ pub fn map_with_focus(key: KeyEvent, screen: Screen, flags: FocusFlags) -> Actio
         },
 
         Screen::Search => match key.code {
+            KeyCode::Char(' ') => Action::SidebarToggle,
+            KeyCode::Left => Action::SidebarPrev,
+            KeyCode::Right => Action::SidebarNext,
             KeyCode::Char('d') => Action::Download,
             KeyCode::Char('D') => Action::DownloadToFolder,
             KeyCode::Char('o') => Action::ChangeDefaultFolder,
@@ -501,35 +517,14 @@ pub fn mouse_to_action_click(
     match screen {
         Screen::Search => search_mouse_action(view_area, col, row, double_click),
         Screen::Downloads => {
-            // Mirrors `ui::downloads::draw`'s layout: a 1-cell panel
-            // border, then a 2-row tab band (label row + underline row)
-            // at the top of the inner area, then the body, with the hint
-            // line on the last inner row. A click anywhere on the tab
-            // band flips the seeding tab.
-            //
-            // Row height depends on the active tab: the Downloads tab
-            // renders two rows per item (name + progress bar), the Seeding
-            // tab one (seed_row). `show_seeding` picks the divisor.
-            let inner = view_area.inner(Margin::new(1, 1));
-            if col < inner.x || col >= inner.right() {
-                Action::None
-            } else {
-                let items_top = inner.y + 2;
-                let rows_per_item: u16 = if show_seeding { 1 } else { 2 };
-                match row {
-                    r if r < inner.y => Action::None,
-                    r if r < items_top => Action::ClickSeedingTab,
-                    r if r >= inner.bottom().saturating_sub(1) => Action::None,
-                    r => Action::ClickRow(((r - items_top) / rows_per_item) as usize),
-                }
-            }
+            downloads_mouse_action(view_area, col, row, show_seeding, double_click)
         }
         // The splash is an intro, not a state: anything moves past it,
         // clicks included.
         Screen::Splash => Action::Dismiss,
-        // Watch mode: a click ends the session and returns to the TUI,
-        // the same action q/esc map to (FR-59).
-        Screen::NowPlaying => Action::EndWatch,
+        // Watch mode: the TUI is a status screen next to the player window.
+        // A click must not end the session (FR-59); q/esc still do.
+        Screen::NowPlaying => Action::None,
         // Reachable only as a state; the `help_open` branch above handles
         // the real overlay. Mirror the keymap: a click closes it.
         Screen::Help => Action::ToggleHelp,
@@ -554,6 +549,36 @@ fn status_bar_click_action(col: u16, width: u16, screen: Screen) -> Option<Actio
         crate::ui::status::StatusTab::Help => Action::ToggleHelp,
     };
     Some(action)
+}
+
+fn downloads_mouse_action(
+    view_area: Rect,
+    col: u16,
+    row: u16,
+    show_seeding: bool,
+    double_click: bool,
+) -> Action {
+    // Mirrors `ui::downloads::draw`: 1-cell border, 2-row tab band, then items.
+    // Downloads tab is two rows per item; Seeding is one.
+    let inner = view_area.inner(Margin::new(1, 1));
+    if col < inner.x || col >= inner.right() {
+        return Action::None;
+    }
+    let items_top = inner.y + 2;
+    let rows_per_item: u16 = if show_seeding { 1 } else { 2 };
+    match row {
+        r if r < inner.y => Action::None,
+        r if r < items_top => Action::ClickSeedingTab,
+        r if r >= inner.bottom().saturating_sub(1) => Action::None,
+        r => {
+            let idx = ((r - items_top) / rows_per_item) as usize;
+            if double_click {
+                Action::OpenFolder
+            } else {
+                Action::ClickRow(idx)
+            }
+        }
+    }
 }
 
 fn search_mouse_action(view_area: Rect, col: u16, row: u16, double_click: bool) -> Action {
@@ -646,6 +671,9 @@ mod tests {
         // selected row — no shift-anything needed.
         let r = |code| map_with_focus(key(code), Screen::Search, FocusFlags::default());
         assert_eq!(r(KeyCode::Char('d')), Action::Download);
+        assert_eq!(r(KeyCode::Char(' ')), Action::SidebarToggle);
+        assert_eq!(r(KeyCode::Left), Action::SidebarPrev);
+        assert_eq!(r(KeyCode::Right), Action::SidebarNext);
         assert_eq!(r(KeyCode::Char('w')), Action::Watch);
         assert_eq!(r(KeyCode::Char('P')), Action::OpenPlayerPicker);
         assert_eq!(r(KeyCode::Char('s')), Action::OpenSettings);
@@ -859,6 +887,9 @@ mod tests {
             (KeyCode::Char('j'), Action::PlayerDown),
             (KeyCode::Enter, Action::PlayerChoose),
             (KeyCode::Char('c'), Action::PlayerCustom),
+            (KeyCode::Char('r'), Action::OpenPlayerPicker),
+            (KeyCode::Char('1'), Action::PlayerPick(0)),
+            (KeyCode::Char('2'), Action::PlayerPick(1)),
             (KeyCode::Esc, Action::Escape),
             (KeyCode::Char('q'), Action::Quit),
         ] {
@@ -1116,8 +1147,7 @@ mod tests {
                 "{code:?} toggles the tab"
             );
         }
-        // The search input pane is untouched: Right is unbound there, so it
-        // neither toggles a tab nor hijacks typing.
+        // Search uses the same arrows to walk the left source list, not tabs.
         assert_eq!(
             map(
                 key(KeyCode::Right),
@@ -1127,7 +1157,18 @@ mod tests {
                 false,
                 false
             ),
-            Action::None
+            Action::SidebarNext
+        );
+        assert_eq!(
+            map(
+                key(KeyCode::Left),
+                Screen::Search,
+                false,
+                false,
+                false,
+                false
+            ),
+            Action::SidebarPrev
         );
     }
 
@@ -1303,7 +1344,7 @@ mod tests {
             .collect();
         #[rustfmt::skip]
         let keys = [
-            "enter", "↑ ↓", "← →", "d", "shift+D", "o", "tab",
+            "enter", "↑ ↓", "← →", "space", "d", "shift+D", "o", "tab",
             "s", "p", "shift+P", "shift+L", "r", "x", "shift+X", "c", "shift+C", "esc", "?", "q",
         ];
         for key in keys {
@@ -1380,7 +1421,23 @@ mod tests {
                 false,
                 true
             ),
-            Action::ClickRow(0)
+            Action::OpenFolder
+        );
+    }
+
+    #[test]
+    fn a_double_click_on_a_download_opens_the_folder() {
+        let view = downloads_view();
+        let row = downloads_items_top();
+        assert_eq!(
+            mouse_to_action(Screen::Downloads, view, 30, row, false, false),
+            Action::ClickRow(0),
+            "single click still selects"
+        );
+        assert_eq!(
+            mouse_to_action_click(Screen::Downloads, view, 30, row, false, false, true),
+            Action::OpenFolder,
+            "double-click opens Explorer"
         );
     }
 
@@ -1621,14 +1678,14 @@ mod tests {
     }
 
     #[test]
-    fn a_click_anywhere_on_now_playing_ends_the_watch_session() {
+    fn a_click_on_now_playing_does_not_end_the_watch_session() {
         let view = search_view();
-        // Mirror of the q/esc binding: a click ends the session and
-        // returns to the TUI rather than quitting.
+        // The player is a separate window. Clicking the TUI to focus it
+        // must not kill playback — only q/esc end the session (FR-59).
         for (col, row) in [(0, 0), (99, 0), (0, 29), (99, 29), (200, 200)] {
             assert_eq!(
                 mouse_to_action(Screen::NowPlaying, view, col, row, false, false),
-                Action::EndWatch,
+                Action::None,
                 "click at ({col}, {row})"
             );
         }

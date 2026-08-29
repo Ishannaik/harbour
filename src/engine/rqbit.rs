@@ -28,8 +28,8 @@ use librqbit::api::TorrentIdOrHash;
 use librqbit::dht::Id20;
 use librqbit::http_api::HttpApi;
 use librqbit::{
-    AddTorrent, AddTorrentOptions, Api, ByteBuf, ManagedTorrent, Session, SessionOptions,
-    SessionPersistenceConfig,
+    AddTorrent, AddTorrentOptions, AddTorrentResponse, Api, ByteBuf, ManagedTorrent, Session,
+    SessionOptions, SessionPersistenceConfig,
 };
 
 /// librqbit's own alias is not re-exported at the crate root, and it is just an
@@ -157,6 +157,72 @@ impl RqbitEngine {
                 Err(_) if tokio::time::Instant::now() >= deadline => return Vec::new(),
                 Err(_) => tokio::time::sleep(METADATA_RETRY).await,
             }
+        }
+    }
+
+    async fn list_files_for(&self, id: &str) -> Vec<TorrentFileView> {
+        let Some(handle) = self.handles().get(id).cloned() else {
+            return Vec::new();
+        };
+        let deadline = tokio::time::Instant::now() + METADATA_GRACE;
+        loop {
+            let found = handle.with_metadata(|meta| {
+                meta.file_infos
+                    .iter()
+                    .enumerate()
+                    .map(|(i, f)| TorrentFileView {
+                        id: i,
+                        name: f.relative_filename.to_string_lossy().into_owned(),
+                        size_bytes: f.len,
+                    })
+                    .collect()
+            });
+            match found {
+                Ok(files) => return files,
+                Err(_) if tokio::time::Instant::now() >= deadline => return Vec::new(),
+                Err(_) => tokio::time::sleep(METADATA_RETRY).await,
+            }
+        }
+    }
+
+    async fn list_magnet_files_for(&self, magnet: &str) -> Vec<TorrentFileView> {
+        let opts = AddTorrentOptions {
+            list_only: true,
+            overwrite: true,
+            ..Default::default()
+        };
+        let response = self
+            .session
+            .add_torrent(AddTorrent::from_url(magnet.to_string()), Some(opts))
+            .await;
+        match response {
+            Ok(AddTorrentResponse::ListOnly(listed)) => match listed.info.iter_file_details() {
+                Ok(iter) => iter
+                    .enumerate()
+                    .filter_map(|(i, fd)| {
+                        Some(TorrentFileView {
+                            id: i,
+                            name: fd
+                                .filename
+                                .to_pathbuf()
+                                .ok()?
+                                .to_string_lossy()
+                                .into_owned(),
+                            size_bytes: fd.len,
+                        })
+                    })
+                    .collect(),
+                Err(_) => Vec::new(),
+            },
+            Ok(other) => {
+                let Some(handle) = other.into_handle() else {
+                    return Vec::new();
+                };
+                let id = handle.info_hash().as_string();
+                self.handles().insert(id.clone(), handle);
+                self.list_files_for(&id).await
+            }
+            Err(_) => Vec::new(),
         }
     }
 
@@ -612,6 +678,20 @@ impl Engine for RqbitEngine {
         id: &'a str,
     ) -> EngineFuture<'a, Vec<crate::core::types::TorrentFileView>> {
         Box::pin(async move { self.list_subtitle_files_for(id).await })
+    }
+
+    fn list_files<'a>(
+        &'a self,
+        id: &'a str,
+    ) -> EngineFuture<'a, Vec<crate::core::types::TorrentFileView>> {
+        Box::pin(async move { self.list_files_for(id).await })
+    }
+
+    fn list_magnet_files<'a>(
+        &'a self,
+        magnet: &'a str,
+    ) -> EngineFuture<'a, Vec<crate::core::types::TorrentFileView>> {
+        Box::pin(async move { self.list_magnet_files_for(magnet).await })
     }
 
     fn stream_file_url<'a>(
