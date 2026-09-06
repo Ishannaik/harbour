@@ -424,7 +424,7 @@ pub async fn run(
     queue.restore(items, safe_mode).await;
 
     // The one source: the indexer proxy. All ten site scrapers live in the
-    // user-run harbour-indexer service; the client ships zero scraping code.
+    // user-run indexer service; the client ships zero scraping code.
     let search = SearchEngine::new(vec![Arc::new(crate::sources::HttpSource::new(
         config.indexer_url.clone(),
     ))]);

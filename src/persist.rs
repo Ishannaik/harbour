@@ -59,7 +59,7 @@ pub struct Config {
     /// merged. Empty = everything enabled (additive: configs written by
     /// older builds keep working).
     pub disabled_sources: Vec<SourceId>,
-    /// Base URL of the user-run indexer service (`harbour-indexer`). The
+    /// Base URL of the user-run indexer service. The
     /// client ships zero scrapers; every search and magnet resolution is one
     /// HTTP call to this address. Defaults to the indexer's default bind.
     pub indexer_url: String,

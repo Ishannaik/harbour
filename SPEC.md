@@ -92,7 +92,7 @@ requiring private announces; GPU/ASCII-image rendering.
   to a file).
 - **FR-09a** A panic (and a process-level boot failure) sends a crash event to Sentry
   project `harbour` (org `ishan-rt`) only when `HARBOUR_SENTRY_DSN` is set. No DSN is
-  shipped in the binary or source. The indexer uses project `harbour-indexer` the same
+  shipped in the binary or source. A user-run indexer may report crashes the same
   way. The event is panic/boot payload + release + OS; magnets, queries, and home-dir
   paths are stripped. Missing DSN means Sentry stays off. `HARBOUR_SENTRY=0` disables
   even when a DSN is set. `HARBOUR_SENTRY_ENV` tags the environment (default `friends`).
@@ -105,8 +105,8 @@ requiring private announces; GPU/ASCII-image rendering.
 
 - **FR-11** Enter with a non-empty query searches all 10 curated sources in parallel
   (sources are defined by the user-run indexer, not the client). The fan-out
-  happens **inside the indexer** (`harbour-indexer`): the client sends one
-  `GET /search` to `indexer_url` and the indexer runs the enabled scrapers
+  happens **inside the indexer**: the client sends one
+  `GET /search` to `indexer_url` and the indexer queries enabled catalogs
   concurrently, returning the concatenated results. The client never scrapes;
   user-disabled sources are sent as `exclude` so they are never queried.
 - **FR-12** Enter with an empty query triggers curated top-list browsing (per-source
@@ -525,9 +525,8 @@ requiring private announces; GPU/ASCII-image rendering.
   scraping, cover art via sixel/halfblocks, headless daemons); their specs are deferred
   until the spikes conclude.
 - **OQ-5** RSS/JSON mirrors can rotate hosts; the canonical host list per source lives in
-  the `harbour-indexer` repo and may gain fallbacks without a spec change.
-- **OQ-6** HTML-scrape sources have no defined mirror policy; whether one gets multi-host
-  fallback like the JSON sources is decided when its first scrape fixture lands — an
-  indexer-repo concern, not a client one.
+  the user-run indexer and may gain fallbacks without a spec change.
+- **OQ-6** HTML catalogs have no defined mirror policy; whether one gets multi-host
+  fallback like the JSON sources is decided in the indexer — not a client concern.
 - **OQ-7** Minimum supported terminal size (UR-12 says 80×24) may be raised if watch-mode
   playback controls require more room — revisit in phase 6.

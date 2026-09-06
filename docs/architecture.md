@@ -47,11 +47,6 @@ src/
 │                 eased progress bars
 ├── state.rs      app state: results, queue view, tabs, selection, banners, offline set
 ├── sources.rs   HttpSource: the one `Source` adapter (talks to the user-run indexer)
-│   ├── gameshub.rs, cinevault.rs, vault-index.rs, reel-index.rs, showport.rs, tsukibase.rs, fansubs.rs,
-│   │   torrent-hub.rs
-│   ├── net.rs    resilient fetch: retries, per-source timeout, abort, multi-host fallback
-│   ├── magnet.rs magnet builder
-│   └── cache.rs  search cache (per (source, query), 5-min TTL) + torrent cache
 ├── engine.rs     librqbit wrapper: add, metadata capture, 500ms stats poll, seeding control
 ├── queue.rs      item ledger queued→downloading→failed / seeding→missing; cap + promote()
 ├── persist.rs    config.toml, downloads.json, history.json (cap 500), cache dirs,
@@ -69,7 +64,7 @@ One line each — responsibility + key dependencies:
 | `theme.rs` | Load/validate/apply the omp theme schema; live-reload `~/.harbour/themes/*.json`; truecolor detection | serde, serde_json, notify |
 | `anim.rs` | 30fps coalesced render loop, DEC 2026 sync output, spinner/easing timers | tokio, crossterm |
 | `state.rs` | Single source of truth for drawing; consumes engine events off the mpsc | tokio (mpsc) |
-| `sources.rs` | `HttpSource`, the one `Source` adapter — proxies search to the user-run indexer (scrapers live in `harbour-indexer`) | reqwest, serde |
+| `sources.rs` | `HttpSource`, the one `Source` adapter — proxies search to the user-run indexer | reqwest, serde |
 | `engine.rs` | Wrap librqbit: add items, capture metadata, poll stats at 500ms, seed/pause/stop | librqbit, tokio |
 | `queue.rs` | Item state machine + concurrency cap; oldest-first `promote()` when a slot frees | engine, persist |
 | `persist.rs` | Ledger/history/cache files, config, crash marker; atomic writes | serde, serde_json, toml |
@@ -84,12 +79,11 @@ in-process libmpv; revisit at phase 6).
 ### 3.0 Indexer split (Stremio model)
 
 The client ships **zero scrapers**. Search crosses an HTTP boundary to a
-user-run **indexer** service (separate repo: `harbour-indexer`) that owns the
-10 site adapters, the resilient fetch layer, and the search cache. This is the
+user-run **indexer** service that the user supplies. This is the
 Stremio addon model: the client is a neutral BitTorrent client (legal
 everywhere); the indexer is the piece the user supplies and runs.
 
-Wire contract (see `harbour-indexer` README for the full API):
+Wire contract (see [indexer-guide.md](indexer-guide.md) for the full API):
 
 - `GET {indexer_url}/search?q={query}&exclude={csv,SourceIds}` → `{"results":[…]}`;
   `exclude` lists site ids to skip (user-disabled sources are never queried).

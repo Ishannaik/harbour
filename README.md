@@ -143,7 +143,7 @@ flowchart TD
     end
 
     subgraph External ["External Services & Players"]
-        L["User Indexer (harbour-indexer) HTTP :8765"]
+        L["User Indexer HTTP :8765"]
         M["External Player (mpv / VLC)"]
     end
 
@@ -203,12 +203,8 @@ harbour 3b245504fb5f3c40d7be923e5900de2957e84d72
 harbour /path/to/distro.torrent
 ```
 
-### 4. Running the Companion Indexer (Optional)
-To enable multi-source searching across curated torrent indexes, run a companion indexer service such as [`harbour-indexer`](https://github.com/Ishannaik/harbour):
-```bash
-# Run the indexer (binds to http://127.0.0.1:8765 by default)
-harbour-indexer
-```
+### 4. Running a local indexer (optional)
+Search talks to an HTTP indexer you run on localhost. Catalogs are yours — see [LEGAL.md](LEGAL.md) and the [Custom Indexer Guide](docs/indexer-guide.md).
 
 ---
 

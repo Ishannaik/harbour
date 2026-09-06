@@ -33,8 +33,8 @@ allow = [
 multiple-versions = "allow"
 
 [advisories]
-# quick-xml DoS pair: the direct RSS-parser dep moved to the separate
-# harbour-indexer repo (out of the client); the vulnerable copy here is
+# quick-xml DoS pair: the direct RSS-parser dep moved to the indexer
+# (out of the client); the vulnerable copy here is
 # transitive via librqbit-upnp (hard-pinned to quick-xml 0.37.5, no
 # upstream fix — librqbit 9 is RC). Surface: UPnP responses from trusted
 # local-network devices only. Mirrors the audit-check ignore in ci.yml.

@@ -1,7 +1,7 @@
 //! The one client-side source: an HTTP proxy to the user-run harbour indexer.
 //!
 //! The client ships **zero scrapers** — all ten site adapters, the resilient
-//! fetch layer, and the search cache live in the separate `harbour-indexer`
+//! fetch layer, and the search cache live in a user-run indexer
 //! service. This module is the client's only [`Source`]: it forwards a search
 //! to the indexer over HTTP and turns the wire JSON back into
 //! [`TorrentResult`]s, so the client stays legal/neutral wherever it runs and
@@ -742,7 +742,7 @@ mod tests {
     #[test]
     fn the_registry_is_the_single_http_source() {
         // The client ships exactly one source: the indexer proxy. The ten site
-        // scrapers live in harbour-indexer, so `SourceId::ALL` (the toggleable
+        // catalogs live in the indexer, so `SourceId::ALL` (the toggleable
         // sites) is deliberately *not* the registry anymore.
         let source = HttpSource::new("http://127.0.0.1:8765".to_string());
         assert_eq!(source.def().id, SourceId::Indexer);

@@ -993,7 +993,7 @@ fn marquee_text(text: &str, width: usize, active: bool, elapsed: Duration) -> St
 
 /// Whether this site's feed carries trustworthy swarm counts.
 ///
-/// GamesHub is a blog and FanSubs RSS has no seed fields — harbour-indexer
+/// GamesHub is a blog and FanSubs RSS has no seed fields — the indexer
 /// sets `reports_health` false, so `seeders: 0` means *unknown*, not *dead*.
 fn reports_health(id: SourceId) -> bool {
     !matches!(id, SourceId::GamesHub | SourceId::FanSubs)
