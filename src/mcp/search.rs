@@ -151,7 +151,11 @@ async fn collect_events(
     let mut error: Option<String> = None;
     let deadline = tokio::time::Instant::now() + timeout;
 
-    while !finished.is_superset(enabled) && tokio::time::Instant::now() < deadline {
+    // A failed indexer sends nothing more, so stop waiting instead of running out the clock.
+    while error.is_none()
+        && !finished.is_superset(enabled)
+        && tokio::time::Instant::now() < deadline
+    {
         let remain = deadline.saturating_duration_since(tokio::time::Instant::now());
         let event = match tokio::time::timeout(remain, rx.recv()).await {
             Ok(Some(ev)) => ev,
