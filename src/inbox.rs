@@ -94,7 +94,9 @@ pub fn drain_inbox(store: &Store) -> InboxDrainResult {
             && path
                 .file_name()
                 .and_then(|n| n.to_str())
-                .is_some_and(|name| !name.starts_with('.'));
+                // Only finished requests: atomic_write stages `<name>.<n>.tmp` in this same
+                // directory, and draining that mid-write would reject a good request.
+                .is_some_and(|name| !name.starts_with('.') && name.ends_with(".json"));
         if is_visible_file {
             paths.push(path);
         }
@@ -197,6 +199,20 @@ mod tests {
         assert_eq!(result.items[0].request.magnet, magnet1);
         assert_eq!(result.items[1].request.magnet, magnet2);
         assert_eq!(result.items[2].request.magnet, magnet3);
+    }
+
+    #[test]
+    fn in_flight_tmp_files_are_left_alone() {
+        let (store, _root) = temp_store("inbox-tmp");
+        std::fs::create_dir_all(store.inbox_path()).unwrap();
+        let tmp = store.inbox_path().join("1-abc.json.123.tmp");
+        std::fs::write(&tmp, b"{\"magnet\": \"half-writ").unwrap();
+        let result = drain_inbox(&store);
+        assert!(result.items.is_empty() && result.rejected.is_empty());
+        assert!(
+            tmp.exists(),
+            "a staged write must not be moved to rejected/"
+        );
     }
 
     #[test]
