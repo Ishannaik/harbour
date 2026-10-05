@@ -48,6 +48,8 @@ async fn main() -> anyhow::Result<()> {
 
     let mut last_tick = Instant::now();
     let mut should_exit = false;
+    // Last live-reload failure, shown in the status line: stderr is unusable in raw mode.
+    let mut theme_warning: Option<String> = None;
 
     // Fast wake-up interval for polling inputs and advancing animation
     let mut tick_timer = tokio::time::interval(Duration::from_millis(8));
@@ -87,11 +89,13 @@ async fn main() -> anyhow::Result<()> {
                     match reload_res {
                         Ok(new_theme) => {
                             current_theme = new_theme;
+                            theme_warning = None;
                             spinner = Spinner::new(current_theme.symbols.spinner_frames.clone());
                             cadence.request_render();
                         }
                         Err(err) => {
-                            eprintln!("Warning: live theme reload failed: {err}");
+                            theme_warning = Some(format!("theme reload failed: {err}"));
+                            cadence.request_render();
                         }
                     }
                 }
@@ -134,7 +138,7 @@ async fn main() -> anyhow::Result<()> {
 
                             let spinner_style = Style::default().fg(current_theme.accent());
 
-                            let line = Line::from(vec![
+                            let mut spans = vec![
                                 Span::raw(" "),
                                 Span::styled(spinner.current_frame(), spinner_style),
                                 Span::raw("  "),
@@ -149,7 +153,15 @@ async fn main() -> anyhow::Result<()> {
                                     format!("{:.1} fps", stats.fps),
                                     Style::default().fg(current_theme.muted()),
                                 ),
-                            ]);
+                            ];
+                            if let Some(warning) = &theme_warning {
+                                spans.push(Span::raw("  "));
+                                spans.push(Span::styled(
+                                    warning.as_str(),
+                                    Style::default().fg(current_theme.warning()),
+                                ));
+                            }
+                            let line = Line::from(spans);
 
                             let status_bar = Paragraph::new(line).style(status_style);
                             f.render_widget(status_bar, status_area);

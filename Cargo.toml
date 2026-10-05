@@ -17,9 +17,9 @@ path = "src/main.rs"
 # Async runtime for the event loop and background tasks
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "time"] }
 # Terminal UI framework for rendering differential frames
-ratatui = "0.29"
+ratatui = { version = "0.30", default-features = false, features = ["crossterm"] }
 # Terminal manipulation (raw mode, alt-screen, events)
-crossterm = "0.28"
+crossterm = "0.29"
 # Command-line argument parsing with derive support
 clap = { version = "4", features = ["derive"] }
 # Data serialization and deserialization
