@@ -21,6 +21,7 @@ mod core;
 mod engine;
 mod ensure_indexer;
 mod fake;
+mod inbox;
 mod input;
 mod mcp;
 mod persist;
