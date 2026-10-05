@@ -1,5 +1,6 @@
 //! Model Context Protocol (MCP) server for harbour over stdio.
 
+pub mod downloads;
 pub mod search;
 
 use std::io::{self, BufRead, Write};
@@ -8,25 +9,42 @@ use std::sync::Arc;
 use serde_json::{Value, json};
 
 #[cfg(test)]
+use self::downloads::{AddDownloadOutcome, DownloadView};
+pub use self::downloads::{DownloadsHandler, LiveDownloads};
+#[cfg(test)]
 use self::search::SearchResult;
 pub use self::search::{LiveSearch, SearchHandler};
 
 /// Registered MCP tools.
 pub struct Tools {
     pub search: Arc<dyn SearchHandler>,
+    pub downloads: Arc<dyn DownloadsHandler>,
 }
 
 impl Tools {
     /// Constructs tools with an explicit search handler (used for test mocking).
     #[cfg(test)]
     pub fn new(search: Arc<dyn SearchHandler>) -> Self {
-        Self { search }
+        Self {
+            search,
+            downloads: Arc::new(LiveDownloads::new()),
+        }
+    }
+
+    /// Constructs tools with explicit search and downloads handlers.
+    #[cfg(test)]
+    pub fn with_downloads(
+        search: Arc<dyn SearchHandler>,
+        downloads: Arc<dyn DownloadsHandler>,
+    ) -> Self {
+        Self { search, downloads }
     }
 
     /// Constructs tools wired to live indexer and engine components.
     pub async fn live() -> Self {
         Self {
             search: Arc::new(LiveSearch::new().await),
+            downloads: Arc::new(LiveDownloads::new()),
         }
     }
 }
@@ -147,6 +165,35 @@ fn handle_tools_list(id: Value) -> Value {
                         },
                         "required": ["query"]
                     }
+                },
+                {
+                    "name": "list_downloads",
+                    "description": "Read-only list of downloads in the ledger",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {}
+                    }
+                },
+                {
+                    "name": "add_download",
+                    "description": "Add a download to the queue via the inbox",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "magnet": {
+                                "type": "string",
+                                "description": "Magnet link URI"
+                            },
+                            "info_hash": {
+                                "type": "string",
+                                "description": "40-hex or 32-base32 infohash"
+                            },
+                            "dir": {
+                                "type": "string",
+                                "description": "Optional absolute download destination directory"
+                            }
+                        }
+                    }
                 }
             ]
         }
@@ -160,10 +207,15 @@ async fn handle_tools_call(id: Value, params: Option<&Value>, tools: &Tools) -> 
         .unwrap_or("");
     let args = params.and_then(|p| p.get("arguments"));
 
-    if name != "search" {
-        return tool_error(id, format!("unknown tool: {name}"));
+    match name {
+        "search" => handle_search_call(id, args, tools).await,
+        "list_downloads" => handle_list_downloads_call(id, tools),
+        "add_download" => handle_add_download_call(id, args, tools),
+        _ => tool_error(id, format!("unknown tool: {name}")),
     }
+}
 
+async fn handle_search_call(id: Value, args: Option<&Value>, tools: &Tools) -> Value {
     let query = args
         .and_then(|a| a.get("query"))
         .and_then(Value::as_str)
@@ -199,6 +251,56 @@ async fn handle_tools_call(id: Value, params: Option<&Value>, tools: &Tools) -> 
             })
         }
         Err(err) => tool_error(id, format!("search error: {err}")),
+    }
+}
+
+fn handle_list_downloads_call(id: Value, tools: &Tools) -> Value {
+    match tools.downloads.list_downloads() {
+        Ok(downloads) => {
+            let text = serde_json::to_string(&downloads).unwrap_or_else(|_| "[]".to_string());
+            json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "result": {
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": text
+                        }
+                    ],
+                    "isError": false
+                }
+            })
+        }
+        Err(err) => tool_error(id, err),
+    }
+}
+
+fn handle_add_download_call(id: Value, args: Option<&Value>, tools: &Tools) -> Value {
+    let magnet = args.and_then(|a| a.get("magnet")).and_then(Value::as_str);
+    let info_hash = args
+        .and_then(|a| a.get("info_hash"))
+        .and_then(Value::as_str);
+    let dir = args.and_then(|a| a.get("dir")).and_then(Value::as_str);
+
+    match tools.downloads.add_download(magnet, info_hash, dir) {
+        Ok(outcome) => {
+            let text = serde_json::to_string(&outcome).unwrap_or_else(|_| "{}".to_string());
+            json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "result": {
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": text
+                        }
+                    ],
+                    "isError": false
+                }
+            })
+        }
+        Err(err) => tool_error(id, err),
     }
 }
 
@@ -334,17 +436,20 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn tools_list_lists_exactly_search_requiring_query() {
+    async fn tools_list_lists_all_three_tools() {
         let tools = Tools::new(Arc::new(MockSearch(Vec::new())));
         let req = r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#;
         let responses = run_rpc(req, &tools).await;
         assert_eq!(responses.len(), 1);
 
         let tool_list = responses[0]["result"]["tools"].as_array().unwrap();
-        assert_eq!(tool_list.len(), 1);
-        assert_eq!(tool_list[0]["name"], "search");
+        assert_eq!(tool_list.len(), 3);
+        assert!(tool_list.iter().any(|t| t["name"] == "search"));
+        assert!(tool_list.iter().any(|t| t["name"] == "list_downloads"));
+        assert!(tool_list.iter().any(|t| t["name"] == "add_download"));
 
-        let schema = &tool_list[0]["inputSchema"];
+        let search_tool = tool_list.iter().find(|t| t["name"] == "search").unwrap();
+        let schema = &search_tool["inputSchema"];
         assert_eq!(schema["type"], "object");
         assert!(schema["properties"]["query"].is_object());
         let required = schema["required"].as_array().unwrap();
@@ -455,5 +560,87 @@ mod tests {
                 .unwrap()
                 .contains("indexer unreachable")
         );
+    }
+
+    struct MockDownloads {
+        items: Vec<DownloadView>,
+        fail: Option<String>,
+    }
+
+    impl DownloadsHandler for MockDownloads {
+        fn list_downloads(&self) -> Result<Vec<DownloadView>, String> {
+            if let Some(err) = &self.fail {
+                Err(err.clone())
+            } else {
+                Ok(self.items.clone())
+            }
+        }
+
+        fn add_download(
+            &self,
+            _magnet: Option<&str>,
+            _info_hash: Option<&str>,
+            _dir: Option<&str>,
+        ) -> Result<AddDownloadOutcome, String> {
+            if let Some(err) = &self.fail {
+                Err(err.clone())
+            } else {
+                Ok(AddDownloadOutcome {
+                    queued_via: "inbox".into(),
+                    file: "/tmp/inbox/test.json".into(),
+                    picked_up_by: "running TUI, or next launch".into(),
+                })
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn tools_call_list_downloads_success() {
+        let downloads = MockDownloads {
+            items: vec![DownloadView {
+                id: "0123456789abcdef0123456789abcdef01234567".into(),
+                name: "Arch ISO".into(),
+                status: "seeding".into(),
+                progress: 1.0,
+                size: 800_000_000,
+                output_dir: "/dl/arch".into(),
+                dir: "/dl/arch".into(),
+            }],
+            fail: None,
+        };
+        let tools = Tools::with_downloads(Arc::new(MockSearch(Vec::new())), Arc::new(downloads));
+
+        let req = concat!(
+            r#"{"jsonrpc":"2.0","id":20,"method":"tools/call","#,
+            r#""params":{"name":"list_downloads"}}"#,
+        );
+        let res = &run_rpc(req, &tools).await[0];
+        assert_eq!(res["result"]["isError"], false);
+        let parsed: Vec<DownloadView> =
+            serde_json::from_str(res["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].name, "Arch ISO");
+    }
+
+    #[tokio::test]
+    async fn tools_call_add_download_success() {
+        let tools = Tools::with_downloads(
+            Arc::new(MockSearch(Vec::new())),
+            Arc::new(MockDownloads {
+                items: Vec::new(),
+                fail: None,
+            }),
+        );
+
+        let req = concat!(
+            r#"{"jsonrpc":"2.0","id":21,"method":"tools/call","#,
+            r#""params":{"name":"add_download","#,
+            r#""arguments":{"info_hash":"0123456789abcdef0123456789abcdef01234567"}}}"#,
+        );
+        let res = &run_rpc(req, &tools).await[0];
+        assert_eq!(res["result"]["isError"], false);
+        let parsed: AddDownloadOutcome =
+            serde_json::from_str(res["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(parsed.queued_via, "inbox");
     }
 }

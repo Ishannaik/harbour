@@ -486,6 +486,7 @@ pub async fn run(
         InitialAction::Magnet(magnet) => enqueue_magnet(&mut app, &magnet).await,
         InitialAction::TorrentFile(path) => enqueue_torrent(&mut app, &path).await,
     }
+    actions::drain_inbox_and_apply(&mut app).await;
 
     let _guard = TerminalGuard::enter()?;
     let mut terminal = Terminal::new(CrosstermBackend::new(io::stdout()))?;
@@ -524,6 +525,7 @@ pub async fn run(
         };
         if now.duration_since(last_poll) >= cadence {
             last_poll = now;
+            actions::drain_inbox_and_apply(&mut app).await;
             let events = app.queue.tick(now).await;
             for engine_event in events {
                 apply_event(&mut app, engine_event);
