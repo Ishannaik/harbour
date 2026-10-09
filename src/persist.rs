@@ -289,7 +289,17 @@ impl Store {
 
     /// Records a query at the front, de-duplicated, capped.
     pub fn push_history(&self, existing: &mut Vec<String>, query: &str) -> io::Result<()> {
-        let query = query.trim();
+        // Strip ASCII/Unicode control characters (e.g. NUL, BEL, ESC, newline)
+        // except tab. They are not visible, can sneak in via paste or malformed
+        // input, and would otherwise be persisted verbatim into the history
+        // file where they corrupt rendering and round-trips. Trailing/leading
+        // whitespace (including the surviving tabs) is trimmed afterwards.
+        let sanitized: String = query
+            .chars()
+            .map(|c| if matches!(c, '\r' | '\n' | '\t') { ' ' } else { c })
+            .filter(|c| !c.is_control())
+            .collect();
+        let query = sanitized.trim();
         if query.is_empty() {
             return Ok(());
         }
@@ -672,6 +682,47 @@ mod tests {
         let mut history = Vec::new();
         store.push_history(&mut history, "   ").unwrap();
         assert!(history.is_empty());
+    }
+
+    #[test]
+    fn control_characters_are_stripped_but_tabs_kept() {
+        // Regression test for #41: control characters (NUL, BEL, backspace,
+        // ESC, DEL) must be stripped from the recorded query. Newlines,
+        // carriage returns and tabs are replaced with spaces rather than
+        // removed, so "dune\npart two" becomes "dune part two" (not
+        // "dunepart two"). The sanitized query de-dupes against the
+        // un-sanitized original and persists cleanly to disk.
+        let store = temp_store("ctrl");
+        let mut history = Vec::new();
+
+        // A NUL in the middle of an otherwise normal query.
+        store
+            .push_history(&mut history, "dune\0part two")
+            .unwrap();
+        // Leading/trailing control chars + a BEL and a backspace in the middle.
+        store
+            .push_history(&mut history, "\x07shog\x08un\n")
+            .unwrap();
+        // Tab is replaced with a space, not preserved verbatim.
+        store
+            .push_history(&mut history, "foundation\tseason")
+            .unwrap();
+        // A newline between words becomes a space.
+        store
+            .push_history(&mut history, "arrakis\ndune")
+            .unwrap();
+        // A query that is *only* control characters must be treated as blank.
+        store.push_history(&mut history, "\x00\x07\x1b\n").unwrap();
+
+        assert_eq!(
+            history,
+            vec!["arrakis dune", "foundation season", "shogun", "dunepart two"],
+            "control chars stripped, newlines/tabs replaced with spaces, only-control query dropped"
+        );
+
+        // Reload to confirm on-disk persistence of the sanitized form.
+        let reloaded = store.load_history().value().clone();
+        assert_eq!(reloaded, history, "sanitized queries persist to disk");
     }
 
     #[test]
