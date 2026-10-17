@@ -15,3 +15,7 @@ cargo test
 - Keep the dependency tree lean. Justify every new crate.
 - Match the omp-grade polish bar: consistent keybindings, no dead UI states.
 - Follow `cargo fmt` and `cargo clippy -- -D warnings` before pushing.
+
+## Before you pick an issue
+
+Join the [Discord](https://discord.gg/KKvtRhQvRv) before picking an issue; claim it there or comment on the issue.

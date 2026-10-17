@@ -303,6 +303,12 @@ Harbour implements the complete 67-token **omp theme schema**.
 
 ---
 
+## Community
+
+Questions, bug reports, or just want to see what's being worked on? Join the [Discord](https://discord.gg/KKvtRhQvRv).
+
+---
+
 ## Environment Variables
 
 | Variable | Default | Description |
