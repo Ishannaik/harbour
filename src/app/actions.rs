@@ -659,6 +659,70 @@ pub(crate) async fn enqueue_torrent(app: &mut App, path: &std::path::Path) {
     app.refresh_downloads();
 }
 
+/// Drains pending download requests written to the inbox by MCP clients.
+pub(crate) async fn drain_inbox_and_apply(app: &mut App) {
+    let outcome = crate::inbox::drain_inbox(&app.store);
+    if !outcome.rejected.is_empty() {
+        let count = outcome.rejected.len();
+        let msg = if count == 1 {
+            let name = outcome.rejected[0]
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| outcome.rejected[0].display().to_string());
+            format!("rejected malformed inbox file: {name}")
+        } else {
+            format!("rejected {count} malformed inbox file(s)")
+        };
+        app.warn(msg);
+    }
+
+    let mut added_any = false;
+    for item in outcome.items {
+        let Some(info_hash) = crate::core::magnet::info_hash_from_magnet(&item.request.magnet)
+        else {
+            let _ = std::fs::remove_file(&item.path);
+            continue;
+        };
+
+        if app.queue.get(&info_hash).is_some() {
+            // Duplicate infohash already in the queue: delete the file, no second item.
+            let _ = std::fs::remove_file(&item.path);
+            continue;
+        }
+
+        let dir = item
+            .request
+            .dir
+            .unwrap_or_else(|| app.config.download_dir.clone());
+        let outcome = app
+            .queue
+            .add(
+                AddInput {
+                    id: info_hash.clone(),
+                    name: info_hash.clone(),
+                    source: None,
+                    magnet: Some(item.request.magnet),
+                    bytes: None,
+                    dir,
+                    size_bytes: 0,
+                    only_files: None,
+                },
+                now_ms(),
+            )
+            .await;
+
+        let _ = std::fs::remove_file(&item.path);
+        if outcome != AddOutcome::Duplicate {
+            added_any = true;
+        }
+    }
+
+    if added_any {
+        persist(app);
+        app.refresh_downloads();
+    }
+}
+
 /// Clears all completed / seeding items from the queue (files remain on disk).
 pub(crate) async fn clear_completed(app: &mut App) {
     let cleared = app.queue.clear_completed().await;
@@ -1282,5 +1346,69 @@ mod tests {
                 .is_some_and(|m| m.contains("playing")),
             "FR-77: a live watch session keeps the files"
         );
+    }
+
+    #[tokio::test]
+    async fn inbox_drain_adds_item_and_removes_file() {
+        let engine = Arc::new(FakeEngine::new());
+        let (mut app, root) = test_app(engine.clone(), "inbox-drain-add");
+        let hash = "0123456789abcdef0123456789abcdef01234567";
+        let magnet = format!("magnet:?xt=urn:btih:{hash}");
+
+        crate::inbox::write_inbox_request(&app.store, &magnet, hash, None).unwrap();
+        let inbox_files = std::fs::read_dir(app.store.inbox_path()).unwrap().count();
+        assert_eq!(inbox_files, 1);
+
+        drain_inbox_and_apply(&mut app).await;
+
+        assert!(app.queue.get(hash).is_some(), "item enqueued from inbox");
+        let remaining_files = std::fs::read_dir(app.store.inbox_path())
+            .map(|e| e.count())
+            .unwrap_or(0);
+        assert_eq!(remaining_files, 0, "inbox file deleted after add");
+        assert!(root.join("downloads.json").exists(), "ledger persisted");
+    }
+
+    #[tokio::test]
+    async fn inbox_drain_deletes_duplicate_file_without_second_item() {
+        let engine = Arc::new(FakeEngine::new());
+        let (mut app, _root) = test_app(engine.clone(), "inbox-duplicate");
+        let hash = "0123456789abcdef0123456789abcdef01234567";
+        let magnet = format!("magnet:?xt=urn:btih:{hash}");
+
+        enqueue_magnet(&mut app, &magnet).await;
+        assert_eq!(app.queue.items().len(), 1);
+
+        crate::inbox::write_inbox_request(&app.store, &magnet, hash, None).unwrap();
+
+        drain_inbox_and_apply(&mut app).await;
+
+        assert_eq!(app.queue.items().len(), 1, "no duplicate item in queue");
+        let remaining_files = std::fs::read_dir(app.store.inbox_path())
+            .map(|e| e.count())
+            .unwrap_or(0);
+        assert_eq!(remaining_files, 0, "duplicate inbox file deleted");
+    }
+
+    #[tokio::test]
+    async fn inbox_drain_rejection_raises_banner() {
+        let engine = Arc::new(FakeEngine::new());
+        let (mut app, _root) = test_app(engine.clone(), "inbox-reject");
+        let inbox_dir = app.store.inbox_path();
+        std::fs::create_dir_all(&inbox_dir).unwrap();
+
+        let bad_file = inbox_dir.join("9999-bad.json");
+        std::fs::write(&bad_file, b"not valid json").unwrap();
+
+        drain_inbox_and_apply(&mut app).await;
+
+        assert!(app.state.error_banner.is_some(), "error banner raised");
+        assert!(
+            app.store
+                .inbox_rejected_path()
+                .join("9999-bad.json")
+                .exists()
+        );
+        assert!(!bad_file.exists());
     }
 }

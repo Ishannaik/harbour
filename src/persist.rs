@@ -183,6 +183,14 @@ impl Store {
         self.root.join("boot.marker")
     }
 
+    pub fn inbox_path(&self) -> PathBuf {
+        self.root.join("inbox")
+    }
+
+    pub fn inbox_rejected_path(&self) -> PathBuf {
+        self.root.join("inbox").join("rejected")
+    }
+
     // --- ledger -------------------------------------------------------------
 
     /// Writes the ledger atomically. Only durable fields are in [`QueueItem`],
