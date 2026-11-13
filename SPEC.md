@@ -363,6 +363,48 @@ requiring private announces; GPU/ASCII-image rendering.
   (`cache/torrents/<id>.torrent`).
 - **FR-79** Deleting a `missing` item skips file deletion silently.
 
+### 4.10 MCP mode (FR-107 … FR-115)
+
+- **FR-107** `harbour mcp` starts a Model Context Protocol server on stdio for AI agents
+  (Claude Code, omp, any MCP client) to drive harbour without opening the TUI. State dir
+  resolves via `Store::from_env()` so `HARBOUR_STATE_DIR` relocates it for tests. Verified:
+  launch `harbour mcp`, observe no terminal alt-screen or TUI initialization.
+- **FR-108** Transport is newline-delimited JSON-RPC 2.0 over stdin/stdout. Hand-rolled on
+  `serde_json` with no MCP SDK crate dependency. stdout carries exclusively valid
+  JSON-RPC messages; all logging goes to stderr or `harbour.log`. Verified: redirect
+  stdout to parser while logging occurs.
+- **FR-109** Protocol methods supported: `initialize`, `notifications/initialized`,
+  `ping`, `tools/list`, and `tools/call`. `initialize` echoes client `protocolVersion`
+  when it is one of `"2025-06-18"`, `"2025-03-26"`, or `"2024-11-05"`, else answers
+  `"2025-06-18"`; reports capabilities `{"tools":{}}` and serverInfo `name` `"harbour"`,
+  `version` = `CARGO_PKG_VERSION`. `notifications/initialized` receives no reply.
+- **FR-110** JSON-RPC error dispatch: unknown methods with an `id` return error code
+  `-32601`; malformed JSON returns `-32700` with `id: null`; notifications never yield a
+  reply. Tool execution failures return successful RPC results with `isError: true`,
+  never protocol-level errors and never a process crash.
+- **FR-111** The MCP process never constructs an engine instance and never writes
+  `downloads.json`. Exactly one ledger writer exists: the TUI. Avoids port and session
+  contention with librqbit; keeps headless daemons (OQ-4, phase 7) out of scope.
+- **FR-112** Tool `search {query: string, limit?: int}` (limit default 20, max 100)
+  queries the user-run indexer using `SearchEngine` + `HttpSource` + config indexer URL
+  respecting disabled sources and `HARBOUR_SOURCE_TIMEOUT`. Output fields per result:
+  `name`, `info_hash`, `size_bytes`, `seeders`, `leechers`, `source`, `magnet`. Empty
+  query returns an error (curated top lists stay TUI-only).
+- **FR-113** Tool `list_downloads {}` provides a read-only snapshot of the ledger via
+  `Store::load_ledger`: `id`, `name`, `status` (`queued|downloading|paused|failed|
+  seeding|missing`), `progress`, `size`, and output directory. A corrupt ledger returns an
+  `isError: true` result naming the file, never a panic.
+- **FR-114** Tool `add_download {magnet?: string, info_hash?: string, dir?: string}`
+  accepts exactly one of `magnet` or `info_hash`, validating per CLI rules (FR-02/FR-05).
+  It writes a request file atomically (`persist::atomic_write`) to
+  `<state>/inbox/<unix_ms>-<hash>.json` and returns `{queued_via: "inbox", file,
+  picked_up_by: "running TUI, or next launch"}`.
+- **FR-115** TUI inbox consumption: on its existing queue tick, the TUI reads inbox files
+  oldest-first, adds each via the FR-02 path, and deletes the file on success. Malformed
+  files are moved to `inbox/rejected/` with a banner. If an infohash is already queued,
+  the inbox file is deleted with no second item added. Verified: write mock inbox file,
+  observe TUI enqueue and file deletion.
+
 ## 5. UI/UX requirements (UR)
 
 - **UR-01** Views, in order: splash (animated logo draw-in + gradient sweep) → search
@@ -510,6 +552,12 @@ requiring private announces; GPU/ASCII-image rendering.
 13. (Phase 6) `w` streams a complete item to libmpv over loopback Range requests with
     seek; non-loopback connections refused.
 14. No flicker: DEC 2026 sync output wraps every frame (observable on Windows Terminal).
+15. `harbour mcp` serves stdio JSON-RPC 2.0 without launching TUI or engine: protocol
+    negotiation, `ping`, and `tools/list` succeed; `search` and `list_downloads`
+    return valid tool responses with logging isolated to stderr.
+16. MCP `add_download` atomically writes `<state>/inbox/<unix_ms>-<hash>.json`; the
+    running TUI (or next launch) picks up requests oldest-first, enqueues via FR-02,
+    deletes processed files, and isolates bad requests to `inbox/rejected/`.
 
 ## 9. Open questions
 
@@ -523,7 +571,8 @@ requiring private announces; GPU/ASCII-image rendering.
   suggestion UI (and its keybind) is undecided — not a v1 commitment.
 - **OQ-4** Non-goals carry feasibility spikes in phase 7 (cs.rin.ru/online-fix.me
   scraping, cover art via sixel/halfblocks, headless daemons); their specs are deferred
-  until the spikes conclude.
+  until the spikes conclude. MCP mode is not a daemon (no engine, no ledger writes)
+  and does not resolve OQ-4.
 - **OQ-5** RSS/JSON mirrors can rotate hosts; the canonical host list per source lives in
   the user-run indexer and may gain fallbacks without a spec change.
 - **OQ-6** HTML catalogs have no defined mirror policy; whether one gets multi-host

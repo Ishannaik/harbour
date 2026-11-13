@@ -245,3 +245,17 @@ The comment convention is a user requirement and is normative:
 
 Rust naming: snake_case identifiers as in the context — `info_hash`,
 `size_bytes`, `reports_health`.
+
+## 8. MCP mode & inbox handoff (`src/mcp/`)
+
+`harbour mcp` launches a headless Model Context Protocol stdio server implemented
+in `src/mcp/`. It handles newline-delimited JSON-RPC 2.0 without initializing ratatui
+or constructing a librqbit engine session:
+- **Search & list**: `search` reuses `SearchEngine` + `HttpSource` against the indexer;
+  `list_downloads` reads `downloads.json` via `Store::load_ledger` without acquiring locks.
+- **Inbox spooling**: `add_download` validates inputs per FR-02/FR-05 and writes an
+  atomic request file (`persist::atomic_write`) to `<state>/inbox/<unix_ms>-<hash>.json`.
+- **TUI consumption**: The TUI remains the sole ledger writer. On its queue tick, it
+  processes inbox files oldest-first via the FR-02 enqueue path, deletes handled files,
+  and moves unparseable payloads to `inbox/rejected/`.
+
