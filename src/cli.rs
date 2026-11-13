@@ -23,6 +23,8 @@ pub enum Command {
     RunWithMagnet(String),
     /// Open the TUI and immediately enqueue this `.torrent` file.
     RunWithTorrent(PathBuf),
+    /// Run the Model Context Protocol (MCP) server on stdio.
+    Mcp,
     Help,
     Version,
     /// Write a shareable bug report and print its path (`FR-04a`).
@@ -42,6 +44,7 @@ usage
   harbour \"magnet:?xt=...\"      start a download on launch
   harbour <40-hex infohash>     same, from a bare infohash
   harbour path/to/file.torrent  open a .torrent file on launch
+  harbour mcp                   run the MCP server on stdio
   harbour --help                print this and exit
   harbour --version             print the version and exit
   harbour --bugreport           write ~/.harbour/bugreport.txt and print its path
@@ -95,6 +98,10 @@ pub fn parse(args: &[String]) -> Command {
                 args.len()
             ),
         };
+    }
+
+    if first == "mcp" {
+        return Command::Mcp;
     }
 
     if first.starts_with('-') {
@@ -290,6 +297,20 @@ mod tests {
     fn bugreport_flag_is_recognised_and_does_not_start_the_tui() {
         assert_eq!(parse_str(&["--bugreport"]), Command::BugReport);
         // The type system carries this: BugReport is not a Run variant.
+    }
+
+    #[test]
+    fn mcp_command_is_recognised_and_does_not_start_the_tui() {
+        assert_eq!(parse_str(&["mcp"]), Command::Mcp);
+        assert!(matches!(
+            parse_str(&["mcp", "extra"]),
+            Command::Invalid { .. }
+        ));
+    }
+
+    #[test]
+    fn help_text_documents_mcp() {
+        assert!(HELP.contains("harbour mcp"));
     }
 
     #[test]

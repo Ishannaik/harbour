@@ -22,6 +22,7 @@ mod engine;
 mod ensure_indexer;
 mod fake;
 mod input;
+mod mcp;
 mod persist;
 mod queue;
 mod search;
@@ -64,6 +65,16 @@ async fn main() -> ExitCode {
         cli::Command::Run => run_tui(InitialAction::None).await,
         cli::Command::RunWithMagnet(magnet) => run_tui(InitialAction::Magnet(magnet)).await,
         cli::Command::RunWithTorrent(path) => run_tui(InitialAction::TorrentFile(path)).await,
+        cli::Command::Mcp => {
+            let stdin = std::io::stdin();
+            let stdout = std::io::stdout();
+            if let Err(err) = crate::mcp::run_stdio(stdin.lock(), stdout.lock()).await {
+                eprintln!("harbour: mcp server error: {err}");
+                ExitCode::FAILURE
+            } else {
+                ExitCode::SUCCESS
+            }
+        }
         cli::Command::BugReport => {
             match crate::bugreport::write_bugreport(&crate::core::paths::state_dir()) {
                 Ok(path) => {
